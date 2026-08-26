@@ -1,0 +1,15 @@
+{
+  "channel": "delta",
+  "version": "1.0.0",
+  "min_agent_version": "1.0.0",
+  "updated_at": "2026-08-26T12:00:00Z",
+  "assets": [
+    {
+      "name": "Delta-1.0.0.apk",
+      "kind": "apk",
+      "url": "https://raw.githubusercontent.com/tinhpr9/phanserver-delta/main/delta/assets/Delta-1.0.0.apk",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0
+    }
+  ]
+}

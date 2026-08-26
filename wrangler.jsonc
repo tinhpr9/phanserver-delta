@@ -1,0 +1,29 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "phanserver-delta-worker",
+  "main": "worker/worker.js",
+  "compatibility_date": "2026-08-26",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "FLEET_STATE",
+        "class_name": "FleetState"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_classes": [
+        "FleetState"
+      ]
+    }
+  ],
+  "vars": {
+    "TELEGRAM_ADMIN_USER_ID": "6732389650",
+    "TONG_HOP_LINK_RAW": ""
+  }
+}

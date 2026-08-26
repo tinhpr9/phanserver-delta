@@ -1,0 +1,14 @@
+node_modules/
+.wrangler/
+dist/
+__pycache__/
+*.py[cod]
+*$py.class
+*.log
+.pytest_cache/
+.coverage
+htmlcov/
+.DS_Store
+*.prep.*
+*.tmp
+*.bak
