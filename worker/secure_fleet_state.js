@@ -6,6 +6,8 @@ import {
 
 const PAIR_TTL_MS = 10 * 60 * 1000;
 const PAIR_POLL_AFTER_SECONDS = 3;
+const PAIR_GLOBAL_MIN_INTERVAL_MS = 3000;
+const PAIR_DEVICE_MIN_INTERVAL_MS = 15000;
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -51,6 +53,7 @@ export class FleetState extends BaseFleetState {
   async readFleet() {
     const record = await super.readFleet();
     if (!record.pending_pairs) record.pending_pairs = {};
+    if (!record.pair_request_by_device) record.pair_request_by_device = {};
     return record;
   }
 
@@ -67,10 +70,13 @@ export class FleetState extends BaseFleetState {
     for (const [pairId, pair] of Object.entries(record.pending_pairs || {})) {
       if (!pair || Number(pair.expires_at || 0) <= now) delete record.pending_pairs[pairId];
     }
+    for (const [deviceId, createdAt] of Object.entries(record.pair_request_by_device || {})) {
+      if (now - Number(createdAt || 0) > PAIR_TTL_MS) delete record.pair_request_by_device[deviceId];
+    }
   }
 
   async notifyPairRequest(pairId, deviceId, deviceGroup, verificationCode) {
-    if (!this.env?.TELEGRAM_BOT_TOKEN || !this.env?.TELEGRAM_ADMIN_USER_ID) return true;
+    if (!this.env?.TELEGRAM_BOT_TOKEN || !this.env?.TELEGRAM_ADMIN_USER_ID) return false;
     const text = [
       "<b>GHÉP MÁY PHÂN SERVER</b>",
       "",
@@ -118,7 +124,8 @@ export class FleetState extends BaseFleetState {
 
     let workerOrigin;
     try {
-      workerOrigin = new URL(request.headers.get("X-Worker-Origin") || request.url).origin;
+      const testOrigin = this.env?.TEST_ENV ? request.headers.get("X-Worker-Origin") : null;
+      workerOrigin = new URL(testOrigin || request.url).origin;
     } catch (_error) {
       return json({ ok: false, error: "invalid_worker_origin" }, 400);
     }
@@ -128,6 +135,18 @@ export class FleetState extends BaseFleetState {
 
     const record = await this.readFleet();
     this.cleanupPendingPairs(record);
+    const now = Date.now();
+    if (!this.env?.TEST_ENV) {
+      const globalLast = Number(record.last_pair_request_at || 0);
+      const deviceLast = Number(record.pair_request_by_device?.[deviceId] || 0);
+      if (now - globalLast < PAIR_GLOBAL_MIN_INTERVAL_MS) {
+        return json({ ok: false, error: "pair_rate_limited", retry_after: 3 }, 429);
+      }
+      if (now - deviceLast < PAIR_DEVICE_MIN_INTERVAL_MS) {
+        return json({ ok: false, error: "pair_device_rate_limited", retry_after: 15 }, 429);
+      }
+    }
+
     for (const [existingPairId, pair] of Object.entries(record.pending_pairs)) {
       if (pair?.device_id === deviceId && pair?.status === "pending") {
         delete record.pending_pairs[existingPairId];
@@ -138,7 +157,6 @@ export class FleetState extends BaseFleetState {
     const pairToken = randomToken(32);
     const deviceSecret = randomToken(32);
     const verificationCode = String(crypto.getRandomValues(new Uint32Array(1))[0] % 1000000).padStart(6, "0");
-    const now = Date.now();
     record.pending_pairs[pairId] = {
       pair_id: pairId,
       device_id: deviceId,
@@ -152,6 +170,8 @@ export class FleetState extends BaseFleetState {
       created_at: now,
       expires_at: now + PAIR_TTL_MS,
     };
+    record.last_pair_request_at = now;
+    record.pair_request_by_device[deviceId] = now;
     await this.writeFleet(record);
 
     const notified = await this.notifyPairRequest(pairId, deviceId, deviceGroup, verificationCode);
@@ -308,7 +328,25 @@ export class FleetState extends BaseFleetState {
 
     const legacySecret = String(this.env?.AGENT_REPORT_SECRET || "");
     if (legacySecret) url.searchParams.set("secret", legacySecret);
-    return super.handleWebSocket(new Request(url.toString(), request));
+    const forwardedRequest = new Request(url.toString(), {
+      method: request.method,
+      headers: request.headers,
+    });
+    return super.handleWebSocket(forwardedRequest);
+  }
+
+  sendPayload(deviceId, payload) {
+    if (this.ctx?.getWebSockets) {
+      let sent = 0;
+      for (const ws of this.ctx.getWebSockets(`device:fleet:${deviceId}`)) {
+        try {
+          ws.send(JSON.stringify(payload));
+          sent += 1;
+        } catch (_error) {}
+      }
+      return sent;
+    }
+    return super.sendPayload(deviceId, payload);
   }
 
   async dispatchFleetAck(request) {
