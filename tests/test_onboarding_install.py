@@ -59,7 +59,8 @@ class TestOnboardingInstaller(unittest.TestCase):
     def test_source_contains_pinned_revision_and_pairing_flow(self):
         source = INSTALLER.read_text(encoding="utf-8")
         self.assertIn("resolve_revision", source)
-        self.assertIn("releases/$REVISION", source)
+        self.assertIn('RELEASE_ROOT="$INSTALL_ROOT/releases"', source)
+        self.assertIn('RELEASE_DIR="$RELEASE_ROOT/$REVISION"', source)
         self.assertIn("/agent/pair/request", source)
         self.assertIn("/agent/pair/status", source)
         self.assertIn("PHANSERVER_ONBOARDING=READY", source)
