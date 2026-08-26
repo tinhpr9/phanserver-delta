@@ -24,14 +24,25 @@ import urllib.parse
 import urllib.request
 from typing import Any, Dict, Optional
 
-# Ensure package imports work
+# Ensure package and local imports work
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+AGENT_DIR = pathlib.Path(__file__).resolve().parent
+DELTA_DIR = ROOT / "delta"
 
-from agent import config
-from agent import server_links
-from delta import delta_updater
+for p in (str(ROOT), str(AGENT_DIR), str(DELTA_DIR)):
+    if p not in sys.path:
+        sys.path.insert(0, p)
+
+try:
+    from agent import config, server_links
+except ImportError:
+    import config
+    import server_links
+
+try:
+    from delta import delta_updater
+except ImportError:
+    import delta_updater
 
 AGENT_VERSION = "phanserver-delta-agent-1.0.0"
 PROTOCOL_VERSION = "fleet-batch-v1"
@@ -179,7 +190,7 @@ def run_agent_loop(
         except Exception:
             state = {}
 
-    print(f"[*] Starting phanserver-delta agent: ID={device_id}, Group={device_group}, URL={report_url}")
+    print(f"[*] Starting phanserver-delta agent: ID={device_id}, Group={device_group}, URL={report_url}", flush=True)
 
     while True:
         metrics = collect_metrics()
