@@ -1,11 +1,11 @@
 import json
-import os
 import pathlib
-import sys
 import tempfile
 import unittest
 from unittest import mock
+from urllib.parse import parse_qs, urlparse
 
+import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent))
 
 from agent import agent, config
@@ -107,6 +107,56 @@ class TestDeviceAgent(unittest.TestCase):
         self.assertEqual(payload["device_id"], "m72")
         self.assertEqual(payload["device_group"], "NOVA")
         self.assertIn("allocate_server_2pc", payload["capabilities"])
+
+    @mock.patch("agent.agent.send_report", return_value=True)
+    def test_missing_device_id_fails_closed_instead_of_aliasing_m72(self, mock_report):
+        self.id_path.unlink()
+        with self.assertRaisesRegex(RuntimeError, "device_id_missing_or_invalid"):
+            agent.run_agent_loop(
+                config_path=self.cfg_path,
+                device_id_path=self.id_path,
+                device_group_path=self.group_path,
+                state_path=self.state_path,
+                links_path=self.links_path,
+                single_tick=True,
+            )
+        mock_report.assert_not_called()
+
+    def test_build_websocket_url_uses_same_worker_and_device_identity(self):
+        ws_url = agent.build_websocket_url(
+            "https://mock.worker/report",
+            "m73",
+            "NOVA",
+            "pair-secret",
+        )
+        parsed = urlparse(ws_url)
+        self.assertEqual(parsed.scheme, "wss")
+        self.assertEqual(parsed.netloc, "mock.worker")
+        self.assertEqual(parsed.path, "/ws")
+        query = parse_qs(parsed.query)
+        self.assertEqual(query["device_id"], ["m73"])
+        self.assertEqual(query["group"], ["NOVA"])
+        self.assertEqual(query["secret"], ["pair-secret"])
+
+    @mock.patch("agent.agent.run_websocket_session", return_value=None)
+    @mock.patch("agent.agent.send_report", return_value=True)
+    def test_long_running_agent_enters_websocket_receive_session(self, mock_report, mock_ws):
+        agent.run_agent_loop(
+            config_path=self.cfg_path,
+            device_id_path=self.id_path,
+            device_group_path=self.group_path,
+            state_path=self.state_path,
+            links_path=self.links_path,
+            single_tick=False,
+            max_sessions=1,
+        )
+        mock_report.assert_called()
+        mock_ws.assert_called_once()
+        args = mock_ws.call_args.args
+        self.assertEqual(args[0], "https://mock.worker/report")
+        self.assertEqual(args[1], "test-secret")
+        self.assertEqual(args[2], "m72")
+        self.assertEqual(args[3], "NOVA")
 
 
 if __name__ == "__main__":
