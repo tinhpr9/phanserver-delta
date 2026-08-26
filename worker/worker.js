@@ -1,4 +1,4 @@
-import { FleetState } from "./fleet_state.js";
+import { FleetState } from "./secure_fleet_state.js";
 import { handleUpdate } from "./phanserver.js";
 
 export { FleetState };
@@ -33,7 +33,6 @@ export default {
       });
     }
 
-    // Get FleetState Durable Object stub
     const fleetId = env.FLEET_STATE?.idFromName?.("global") || null;
     const fleetStub = fleetId ? env.FLEET_STATE.get(fleetId) : null;
 
