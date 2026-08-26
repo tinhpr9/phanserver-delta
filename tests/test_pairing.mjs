@@ -1,4 +1,4 @@
-import { FleetState } from "../worker/fleet_state.js";
+import { FleetState } from "../worker/worker.js";
 import { handleCallback } from "../worker/phanserver.js";
 
 let telegramPayload = null;
@@ -30,7 +30,6 @@ async function runTests() {
   };
   const fleet = new FleetState(ctx, env);
 
-  // Device asks to pair without possessing any pre-shared device secret.
   const requestRes = await fleet.fetch(new Request("https://localhost/agent/pair/request", {
     method: "POST",
     headers: {
@@ -50,7 +49,6 @@ async function runTests() {
   if (!pairButtons.some(b => b.callback_data === `pair_ok:${requestBody.pair_id}`)) throw new Error("Telegram approve callback missing");
   if (!pairButtons.some(b => b.callback_data === `pair_no:${requestBody.pair_id}`)) throw new Error("Telegram reject callback missing");
 
-  // Before Telegram approval, status stays pending.
   const pendingRes = await fleet.fetch(new Request("https://localhost/agent/pair/status", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -58,7 +56,6 @@ async function runTests() {
   }));
   if (pendingRes.status !== 202) throw new Error("pending pair status should be 202");
 
-  // Approval is an internal/admin operation and must reject unauthenticated callers.
   const unauthorizedDecision = await fleet.fetch(new Request("https://localhost/agent/pair/decision", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -76,7 +73,6 @@ async function runTests() {
   }));
   if (approveRes.status !== 200) throw new Error("pair approval failed");
 
-  // Wrong possession token cannot retrieve credentials.
   const wrongTokenRes = await fleet.fetch(new Request("https://localhost/agent/pair/status", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -84,7 +80,6 @@ async function runTests() {
   }));
   if (wrongTokenRes.status !== 403) throw new Error("wrong pair token was accepted");
 
-  // Approved holder receives only its per-device secret and canonical report URL.
   const approvedRes = await fleet.fetch(new Request("https://localhost/agent/pair/status", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -96,7 +91,6 @@ async function runTests() {
   if (!/^[A-Za-z0-9_-]{32,256}$/.test(approvedBody.agent_report_secret || "")) throw new Error("per-device secret missing");
   if (approvedBody.agent_report_secret === env.AGENT_REPORT_SECRET) throw new Error("global control secret leaked to device");
 
-  // The issued per-device secret authenticates heartbeat; a wrong secret does not.
   const heartbeatRes = await fleet.fetch(new Request("https://localhost/report", {
     method: "POST",
     headers: {
@@ -117,7 +111,6 @@ async function runTests() {
   }));
   if (badHeartbeatRes.status !== 401) throw new Error("wrong device secret accepted");
 
-  // Telegram callback must route the admin decision through the protected internal endpoint.
   const callbackCalls = [];
   const callbackAnswers = [];
   const callbackEnv = {
