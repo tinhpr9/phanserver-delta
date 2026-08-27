@@ -1,4 +1,4 @@
-import { FleetState } from "./secure_fleet_state.js";
+import { FleetState } from "./hardened_fleet_state.js";
 import { handleUpdate } from "./phanserver.js";
 
 export { FleetState };
@@ -44,6 +44,15 @@ export default {
       } catch (e) {
         return new Response("Error: " + e.message, { status: 500 });
       }
+    }
+
+    // Fleet-wide state and control are never public HTTP APIs. Telegram command
+    // handling talks to the Durable Object directly with localhost requests.
+    if (path === "/aot/hub/state" || path === "/aot/hub/control" || path === "/register") {
+      return new Response(JSON.stringify({ ok: false, error: "not_found" }), {
+        status: 404,
+        headers: { "Content-Type": "application/json", "Cache-Control": "no-store" }
+      });
     }
 
     if (fleetStub) {
