@@ -25,13 +25,23 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Verify Cloudflare deployment credentials exist
+      - name: Verify production credentials exist
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_WEBHOOK_SECRET: ${{ secrets.TELEGRAM_WEBHOOK_SECRET }}
         run: |
+          set -euo pipefail
           test -n "$CLOUDFLARE_API_TOKEN"
           test -n "$CLOUDFLARE_ACCOUNT_ID"
+          test -n "$TELEGRAM_BOT_TOKEN"
+          test -n "$TELEGRAM_WEBHOOK_SECRET"
+          case "$TELEGRAM_WEBHOOK_SECRET" in
+            *[!A-Za-z0-9_-]*|'') echo "Invalid TELEGRAM_WEBHOOK_SECRET format" >&2; exit 1 ;;
+          esac
+          test "${#TELEGRAM_WEBHOOK_SECRET}" -ge 16
+          test "${#TELEGRAM_WEBHOOK_SECRET}" -le 256
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
@@ -48,6 +58,19 @@ jobs:
           chmod +x tests/run_all_tests.sh
           ./tests/run_all_tests.sh
 
+      - name: Store Worker secrets
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_WEBHOOK_SECRET: ${{ secrets.TELEGRAM_WEBHOOK_SECRET }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$TELEGRAM_BOT_TOKEN" \
+            | npx wrangler secret put TELEGRAM_BOT_TOKEN --config wrangler.jsonc
+          printf '%s' "$TELEGRAM_WEBHOOK_SECRET" \
+            | npx wrangler secret put TELEGRAM_WEBHOOK_SECRET --config wrangler.jsonc
+
       - name: Deploy existing production Worker name
         uses: cloudflare/wrangler-action@9acf94ace14e7dc412b076f2c5c20b8ce93c79cd
         with:
@@ -56,8 +79,43 @@ jobs:
           workingDirectory: .
           command: deploy --config wrangler.jsonc
 
+      - name: Configure authenticated Telegram webhook
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_WEBHOOK_SECRET: ${{ secrets.TELEGRAM_WEBHOOK_SECRET }}
+          WEBHOOK_URL: https://phanserver-delta-worker.tinh1020pr.workers.dev/telegram/webhook
+        run: |
+          set -euo pipefail
+          response="$(curl -fsS --request POST \
+            --url "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook" \
+            --data-urlencode "url=${WEBHOOK_URL}" \
+            --data-urlencode "secret_token=${TELEGRAM_WEBHOOK_SECRET}")"
+          RESPONSE="$response" python3 - <<'PY'
+          import json, os
+          payload = json.loads(os.environ["RESPONSE"])
+          if payload.get("ok") is not True:
+              raise SystemExit("Telegram setWebhook failed")
+          PY
+
       - name: Verify deployed health endpoint
         run: |
           curl -fsSL --retry 5 --retry-delay 2 \
             https://phanserver-delta-worker.tinh1020pr.workers.dev/health \
             | grep -F '"status":"healthy"'
+
+      - name: Verify Telegram webhook target
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          WEBHOOK_URL: https://phanserver-delta-worker.tinh1020pr.workers.dev/telegram/webhook
+        run: |
+          set -euo pipefail
+          response="$(curl -fsS --url "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getWebhookInfo")"
+          RESPONSE="$response" WEBHOOK_URL="$WEBHOOK_URL" python3 - <<'PY'
+          import json, os
+          payload = json.loads(os.environ["RESPONSE"])
+          if payload.get("ok") is not True:
+              raise SystemExit("Telegram getWebhookInfo failed")
+          actual = str((payload.get("result") or {}).get("url") or "")
+          if actual != os.environ["WEBHOOK_URL"]:
+              raise SystemExit(f"Unexpected webhook URL: {actual}")
+          PY
