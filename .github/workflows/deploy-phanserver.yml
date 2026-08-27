@@ -32,17 +32,20 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_WEBHOOK_SECRET: ${{ secrets.TELEGRAM_WEBHOOK_SECRET }}
+          AGENT_REPORT_SECRET: ${{ secrets.AGENT_REPORT_SECRET }}
         run: |
           set -euo pipefail
           test -n "$CLOUDFLARE_API_TOKEN"
           test -n "$CLOUDFLARE_ACCOUNT_ID"
           test -n "$TELEGRAM_BOT_TOKEN"
           test -n "$TELEGRAM_WEBHOOK_SECRET"
+          test -n "$AGENT_REPORT_SECRET"
           case "$TELEGRAM_WEBHOOK_SECRET" in
             *[!A-Za-z0-9_-]*|'') echo "Invalid TELEGRAM_WEBHOOK_SECRET format" >&2; exit 1 ;;
           esac
           test "${#TELEGRAM_WEBHOOK_SECRET}" -ge 16
           test "${#TELEGRAM_WEBHOOK_SECRET}" -le 256
+          test "${#AGENT_REPORT_SECRET}" -ge 32
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
@@ -65,12 +68,15 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_WEBHOOK_SECRET: ${{ secrets.TELEGRAM_WEBHOOK_SECRET }}
+          AGENT_REPORT_SECRET: ${{ secrets.AGENT_REPORT_SECRET }}
         run: |
           set -euo pipefail
           printf '%s' "$TELEGRAM_BOT_TOKEN" \
             | npx wrangler secret put TELEGRAM_BOT_TOKEN --config wrangler.jsonc
           printf '%s' "$TELEGRAM_WEBHOOK_SECRET" \
             | npx wrangler secret put TELEGRAM_WEBHOOK_SECRET --config wrangler.jsonc
+          printf '%s' "$AGENT_REPORT_SECRET" \
+            | npx wrangler secret put AGENT_REPORT_SECRET --config wrangler.jsonc
 
       - name: Deploy existing production Worker name
         uses: cloudflare/wrangler-action@9acf94ace14e7dc412b076f2c5c20b8ce93c79cd
