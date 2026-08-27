@@ -216,6 +216,35 @@ export class FleetState extends SecureFleetState {
     });
   }
 
+  sendPayload(deviceId, payload) {
+    const encoded = JSON.stringify(payload);
+    let sent = 0;
+    const taggedSockets = this.ctx?.getWebSockets
+      ? this.ctx.getWebSockets(`device:fleet:${deviceId}`)
+      : [];
+
+    if (taggedSockets.length > 0) {
+      for (const ws of taggedSockets) {
+        try {
+          ws.send(encoded);
+          sent += 1;
+        } catch (_error) {}
+      }
+      return sent;
+    }
+
+    // Test/dev contexts may not implement Durable Object socket tags. Fall back
+    // to the in-memory socket only when no tagged socket exists, never both.
+    const live = this.aotLive.get(deviceId);
+    if (live?.socket) {
+      try {
+        live.socket.send(encoded);
+        sent += 1;
+      } catch (_error) {}
+    }
+    return sent;
+  }
+
   async handleWebSocket(request) {
     const upgradeHeader = request.headers.get("Upgrade");
     if (!upgradeHeader || upgradeHeader.toLowerCase() !== "websocket") {
