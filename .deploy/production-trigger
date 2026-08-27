@@ -1,3 +1,4 @@
 Deploy phanserver-delta onboarding-capable Worker for fresh-device verification.
 Expected source branch: feat/zero-touch-onboarding
-Pre-deploy CI baseline: b663030325c09a5d2f018a0652c4cfaced39672c
+Pre-deploy CI baseline: 153c9305cc15687941272a1974787ced2beedb2f
+Purpose: fresh UGPhone zero-touch onboarding + authenticated /phanserver end-to-end gate before merge.
