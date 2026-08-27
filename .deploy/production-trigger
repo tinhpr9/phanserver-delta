@@ -1,4 +1,5 @@
 Deploy phanserver-delta onboarding-capable Worker for fresh-device verification.
 Expected source branch: feat/zero-touch-onboarding
-Pre-deploy CI baseline: 87e4b38796b6f2bdd792b0b3ef9040f7c136c9cf
-Purpose: deploy the Hibernation-safe WebSocket transport for fresh UGPhone zero-touch onboarding + authenticated /phanserver end-to-end gate before merge.
+Validated code HEAD before deploy trigger: d5880ca0997ea23df1d01de4cd3b7dea56f49c13
+Pre-deploy CI: run #52 SUCCESS on d5880ca0997ea23df1d01de4cd3b7dea56f49c13
+Purpose: deploy rollback-safe legacy credential rotation plus Hibernation-safe WebSocket transport for the fresh UGPhone zero-touch onboarding + authenticated /phanserver end-to-end gate before merge.
