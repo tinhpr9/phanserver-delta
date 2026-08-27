@@ -6,7 +6,7 @@ STATE_ROOT="${PHANSERVER_DELTA_STATE_ROOT:-$HOME/.phanserver-delta}"
 PID_FILE="$STATE_ROOT/agent.pid"
 LOG_FILE="$STATE_ROOT/agent.log"
 PYTHON="${PYTHON:-$(command -v python3 || command -v python || true)}"
-AGENT="$ROOT/agent/agent.py"
+AGENT="$ROOT/agent/secure_agent.py"
 
 mkdir -p "$STATE_ROOT"
 
