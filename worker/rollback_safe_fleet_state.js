@@ -19,12 +19,10 @@ function safeEqual(left, right) {
  * Compatibility fence for re-onboarding devices that still authenticate with the
  * legacy AGENT_REPORT_SECRET and therefore do not yet have agent_secret_sha256.
  *
- * Materialize the current legacy credential as a per-device digest only after the
- * same decision capability checks used by the pairing flow pass. That makes the
- * existing runtime look like a normal current per-device credential to the lower
- * rotation layer, so the newly approved secret is staged instead of immediately
- * revoking the old runtime. Promotion still happens only when the new WebSocket
- * proves connectivity.
+ * Materialize the current legacy credential only while the lower pairing layers
+ * decide/stage the replacement credential. The digest is removed again before the
+ * request returns, so a failed installer still rolls back to the live legacy-secret
+ * behavior instead of pinning the device to an old copy of the global secret.
  */
 export class FleetState extends FinalFleetState {
   async handlePairDecision(request) {
@@ -68,15 +66,29 @@ export class FleetState extends FinalFleetState {
 
     const deviceId = normalizeDeviceId(pair.device_id);
     const existing = deviceId ? record.devices?.[deviceId] : null;
-    if (existing && !existing.agent_secret_sha256) {
-      // Before this point the device's current credential is represented implicitly
-      // by AGENT_REPORT_SECRET. Persisting its digest preserves exactly the same
-      // credential while allowing the normal pending-credential rotation path to
-      // keep it authoritative until the replacement WebSocket connects.
+    const materializedLegacy = Boolean(existing && !existing.agent_secret_sha256);
+    if (materializedLegacy) {
+      // Temporarily express the implicit legacy credential as a digest so the
+      // normal rotation layer recognizes this as an existing credential and stages
+      // the new secret instead of cutting over at Telegram approval.
       existing.agent_secret_sha256 = await sha256Hex(controlSecret);
       await this.writeFleet(record);
     }
 
-    return super.handlePairDecision(request);
+    const response = await super.handlePairDecision(request);
+
+    if (materializedLegacy && deviceId) {
+      // Restore the original legacy representation whether approval succeeded or
+      // failed. If approval succeeded, pending_agent_secret_sha256 remains staged
+      // and will promote only when the replacement WebSocket proves connectivity.
+      const fresh = await this.readFleet();
+      const device = fresh.devices?.[deviceId];
+      if (device) {
+        delete device.agent_secret_sha256;
+        await this.writeFleet(fresh);
+      }
+    }
+
+    return response;
   }
 }

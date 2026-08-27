@@ -132,6 +132,14 @@ async function runTests() {
     throw new Error("legacy socket was cut off at Telegram approval");
   }
 
+  const stagedRecord = await storage.get("fleet_state");
+  if (stagedRecord.devices.m74.agent_secret_sha256) {
+    throw new Error("legacy credential was pinned as a per-device digest after approval");
+  }
+  if (!stagedRecord.devices.m74.pending_agent_secret_sha256) {
+    throw new Error("legacy replacement credential was not left pending");
+  }
+
   const oldBeforePromotion = await heartbeat(fleet, "legacy-control-secret");
   if (oldBeforePromotion.status !== 200) {
     throw new Error("legacy credential stopped working before replacement WebSocket promotion");
