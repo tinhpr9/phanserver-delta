@@ -17,18 +17,23 @@ import urllib.request
 import zipfile
 from typing import Any, Optional
 
-DEFAULT_MANIFEST_URL = "https://raw.githubusercontent.com/tinhpr9/phanserver-delta/main/delta/manifest.json"
+try:
+    from delta.release_selector import ReleaseSelectionError, select_latest_stable_delta_release
+except ImportError:
+    from release_selector import ReleaseSelectionError, select_latest_stable_delta_release
+
+DEFAULT_RELEASES_URL = "https://api.github.com/repos/tinhpr9/phanserver-delta/releases?per_page=100"
 DEFAULT_DOWNLOAD_DIR = "/storage/emulated/0/Download/GitHub_All_Files"
 
 CHUNK_SIZE = 1024 * 1024
 MAX_ASSET_BYTES = 2 * 1024 * 1024 * 1024
-MAX_ZIP_ENTRIES = 256
-MAX_ZIP_APKS = 64
-MAX_ZIP_UNCOMPRESSED_BYTES = 4 * 1024 * 1024 * 1024
-MAX_ZIP_DEPTH = 8
+MAX_TOTAL_DOWNLOAD_BYTES = 16 * 1024 * 1024 * 1024
+MAX_RELEASE_JSON_BYTES = 4 * 1024 * 1024
+MAX_ZIP_ENTRIES = 4096
+MAX_ZIP_UNCOMPRESSED_BYTES = 16 * 1024 * 1024 * 1024
+MAX_ZIP_DEPTH = 16
 MAX_COMPRESSION_RATIO = 200
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
-_SAFE_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
 class DeltaUpdaterError(RuntimeError):
@@ -36,7 +41,6 @@ class DeltaUpdaterError(RuntimeError):
 
 
 def root_available() -> bool:
-    """Return True only when the process is root or a working su can reach uid 0."""
     if hasattr(os, "geteuid") and os.geteuid() == 0:
         return True
     su_path = shutil.which("su")
@@ -57,22 +61,19 @@ def root_available() -> bool:
 def calculate_sha256(filepath: str | pathlib.Path) -> str:
     hasher = hashlib.sha256()
     with open(filepath, "rb") as handle:
-        while True:
-            chunk = handle.read(65536)
-            if not chunk:
-                break
+        for chunk in iter(lambda: handle.read(65536), b""):
             hasher.update(chunk)
     return hasher.hexdigest().lower()
 
 
 def safe_asset_name(name: str) -> str:
-    value = str(name or "").strip()
+    value = str(name or "")
     safe = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in value)
-    return safe or "delta_asset"
+    return safe[:180] or "delta_asset"
 
 
 def validate_asset_kind(name: str) -> str:
-    lower = str(name or "").strip().lower()
+    lower = str(name or "").lower()
     if lower.endswith(".apk"):
         return "apk"
     if lower.endswith(".zip"):
@@ -80,18 +81,24 @@ def validate_asset_kind(name: str) -> str:
     return ""
 
 
+def _validate_asset_name(name: str, index: int) -> None:
+    if not name.strip() or "\x00" in name or "/" in name or "\\" in name:
+        raise DeltaUpdaterError(f"Manifest asset #{index} has unsafe name")
+    if name in {".", ".."} or len(name.encode("utf-8")) > 255:
+        raise DeltaUpdaterError(f"Manifest asset #{index} has unsafe name")
+
+
 def _validate_asset(asset: Any, index: int) -> dict[str, Any]:
     if not isinstance(asset, dict):
         raise DeltaUpdaterError(f"Manifest asset #{index} must be an object")
 
-    name = str(asset.get("name") or "").strip()
+    name = str(asset.get("name") or "")
     url = str(asset.get("url") or "").strip()
     sha256 = str(asset.get("sha256") or "").strip().lower()
     size = asset.get("size")
     kind = validate_asset_kind(name)
 
-    if not name or not _SAFE_NAME_RE.fullmatch(name) or safe_asset_name(name) != name:
-        raise DeltaUpdaterError(f"Manifest asset #{index} has unsafe name")
+    _validate_asset_name(name, index)
     if not kind:
         raise DeltaUpdaterError(f"Manifest asset #{index} must be .apk or .zip")
 
@@ -108,43 +115,12 @@ def _validate_asset(asset: Any, index: int) -> dict[str, Any]:
     if not isinstance(size, int) or isinstance(size, bool) or size <= 0:
         raise DeltaUpdaterError(f"Manifest asset #{index} requires positive size")
     if size > MAX_ASSET_BYTES:
-        raise DeltaUpdaterError(f"Manifest asset #{index} exceeds download limit")
+        raise DeltaUpdaterError(f"Manifest asset #{index} exceeds per-file download limit")
 
-    return {
-        **asset,
-        "name": name,
-        "url": url,
-        "sha256": sha256,
-        "size": size,
-        "kind": kind,
-    }
+    return {**asset, "name": name, "url": url, "sha256": sha256, "size": size, "kind": kind}
 
 
-def load_manifest(source: str | pathlib.Path | dict) -> dict[str, Any]:
-    """Load and strictly validate a Delta manifest."""
-    if isinstance(source, dict):
-        manifest = source
-    elif str(source).startswith(("http://", "https://")):
-        parsed_source = urllib.parse.urlparse(str(source))
-        if parsed_source.scheme != "https":
-            raise DeltaUpdaterError("Remote manifest must use HTTPS")
-        req = urllib.request.Request(
-            str(source),
-            headers={"User-Agent": "phanserver-delta-updater/2.0"},
-        )
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            raw = resp.read(1024 * 1024 + 1)
-        if len(raw) > 1024 * 1024:
-            raise DeltaUpdaterError("Manifest exceeds 1 MiB limit")
-        manifest = json.loads(raw.decode("utf-8"))
-    else:
-        path = pathlib.Path(source)
-        if not path.is_file():
-            raise DeltaUpdaterError(f"Manifest file not found: {source}")
-        if path.stat().st_size > 1024 * 1024:
-            raise DeltaUpdaterError("Manifest exceeds 1 MiB limit")
-        manifest = json.loads(path.read_text(encoding="utf-8"))
-
+def _validate_manifest_object(manifest: Any) -> dict[str, Any]:
     if not isinstance(manifest, dict):
         raise DeltaUpdaterError("Manifest format invalid: expected JSON object")
     if manifest.get("channel") != "delta":
@@ -154,7 +130,6 @@ def load_manifest(source: str | pathlib.Path | dict) -> dict[str, Any]:
     version = str(manifest.get("version") or "").strip()
     if not version:
         raise DeltaUpdaterError("Manifest version is missing")
-
     assets = manifest.get("assets")
     if not isinstance(assets, list) or not assets:
         raise DeltaUpdaterError("Manifest contains no assets")
@@ -163,8 +138,64 @@ def load_manifest(source: str | pathlib.Path | dict) -> dict[str, Any]:
     names = [asset["name"] for asset in validated]
     if len(names) != len(set(names)):
         raise DeltaUpdaterError("Manifest contains duplicate asset names")
-
+    total = sum(asset["size"] for asset in validated)
+    if total > MAX_TOTAL_DOWNLOAD_BYTES:
+        raise DeltaUpdaterError("Manifest total declared download size exceeds safety limit")
     return {**manifest, "version": version, "assets": validated}
+
+
+def load_latest_release_manifest(releases_url: str = DEFAULT_RELEASES_URL) -> dict[str, Any]:
+    parsed = urllib.parse.urlparse(releases_url)
+    if parsed.scheme != "https" or parsed.netloc.lower() != "api.github.com":
+        raise DeltaUpdaterError("Delta releases API URL must use api.github.com over HTTPS")
+    if parsed.path != "/repos/tinhpr9/phanserver-delta/releases":
+        raise DeltaUpdaterError("Delta releases API URL points outside the trusted repo")
+
+    req = urllib.request.Request(
+        releases_url,
+        headers={
+            "User-Agent": "phanserver-delta-updater/3.0",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        raw = resp.read(MAX_RELEASE_JSON_BYTES + 1)
+    if len(raw) > MAX_RELEASE_JSON_BYTES:
+        raise DeltaUpdaterError("GitHub releases payload exceeds safety limit")
+    try:
+        releases = json.loads(raw.decode("utf-8"))
+        manifest = select_latest_stable_delta_release(releases)
+    except (json.JSONDecodeError, ReleaseSelectionError) as exc:
+        raise DeltaUpdaterError(f"Delta release selection failed: {exc}") from exc
+    return _validate_manifest_object(manifest)
+
+
+def load_manifest(source: str | pathlib.Path | dict) -> dict[str, Any]:
+    """Load a caller-supplied manifest. Production default uses GitHub Releases directly."""
+    if isinstance(source, dict):
+        manifest = source
+    elif str(source).startswith(("http://", "https://")):
+        parsed_source = urllib.parse.urlparse(str(source))
+        if parsed_source.scheme != "https":
+            raise DeltaUpdaterError("Remote manifest must use HTTPS")
+        req = urllib.request.Request(
+            str(source),
+            headers={"User-Agent": "phanserver-delta-updater/3.0"},
+        )
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            raw = resp.read(MAX_RELEASE_JSON_BYTES + 1)
+        if len(raw) > MAX_RELEASE_JSON_BYTES:
+            raise DeltaUpdaterError("Manifest exceeds safety limit")
+        manifest = json.loads(raw.decode("utf-8"))
+    else:
+        path = pathlib.Path(source)
+        if not path.is_file():
+            raise DeltaUpdaterError(f"Manifest file not found: {source}")
+        if path.stat().st_size > MAX_RELEASE_JSON_BYTES:
+            raise DeltaUpdaterError("Manifest exceeds safety limit")
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+    return _validate_manifest_object(manifest)
 
 
 def _stream_to_verified_file(
@@ -192,7 +223,6 @@ def _stream_to_verified_file(
                 hasher.update(chunk)
             output.flush()
             os.fsync(output.fileno())
-
         if written <= 0:
             raise DeltaUpdaterError("Downloaded asset is empty")
         if written != expected_size:
@@ -221,7 +251,6 @@ def download_asset(
     expected_sha256: str,
     max_bytes: int = MAX_ASSET_BYTES,
 ) -> None:
-    """Download to a .part file, verify bytes, then atomically replace destination."""
     if expected_size <= 0 or expected_size > max_bytes:
         raise DeltaUpdaterError("Expected asset size is outside safety limits")
     if not _SHA256_RE.fullmatch(str(expected_sha256).lower()):
@@ -230,12 +259,8 @@ def download_asset(
     dest = pathlib.Path(destination)
     dest.parent.mkdir(parents=True, exist_ok=True)
     parsed = urllib.parse.urlparse(url)
-
     if parsed.scheme == "https":
-        req = urllib.request.Request(
-            url,
-            headers={"User-Agent": "phanserver-delta-updater/2.0"},
-        )
+        req = urllib.request.Request(url, headers={"User-Agent": "phanserver-delta-updater/3.0"})
         with urllib.request.urlopen(req, timeout=60) as response:
             content_length = response.headers.get("Content-Length")
             if content_length:
@@ -255,7 +280,6 @@ def download_asset(
                 max_bytes=max_bytes,
             )
         return
-
     if parsed.scheme == "file":
         local_path = pathlib.Path(urllib.request.url2pathname(parsed.path))
         if not local_path.is_file():
@@ -274,12 +298,10 @@ def download_asset(
                 max_bytes=max_bytes,
             )
         return
-
     raise DeltaUpdaterError(f"Unsupported asset URL scheme: {url}")
 
 
 def install_apk(apk_path: str | pathlib.Path) -> None:
-    """Install one verified APK without interpolating its path into a shell command."""
     apk = pathlib.Path(apk_path)
     if not apk.is_file() or apk.stat().st_size <= 0:
         raise DeltaUpdaterError(f"APK is missing or empty: {apk}")
@@ -287,12 +309,7 @@ def install_apk(apk_path: str | pathlib.Path) -> None:
         raise DeltaUpdaterError(
             "Root access required for pm install. Non-root environment is unsupported for Delta APK installation."
         )
-
-    common_kwargs = {
-        "capture_output": True,
-        "text": True,
-        "timeout": 180,
-    }
+    common_kwargs = {"capture_output": True, "text": True, "timeout": 180}
     if hasattr(os, "geteuid") and os.geteuid() == 0:
         result = subprocess.run(["pm", "install", "-r", "-d", str(apk)], **common_kwargs)
     else:
@@ -301,14 +318,11 @@ def install_apk(apk_path: str | pathlib.Path) -> None:
             raise DeltaUpdaterError("Root access disappeared before APK installation")
         env = os.environ.copy()
         env["DELTA_APK_PATH"] = str(apk)
-        # The command string is constant. The APK path is passed only via an
-        # environment variable and expanded inside quotes, never concatenated.
         result = subprocess.run(
             [su_path, "-c", 'exec pm install -r -d "$DELTA_APK_PATH"'],
             env=env,
             **common_kwargs,
         )
-
     output = ((result.stdout or "") + "\n" + (result.stderr or "")).strip()
     if result.returncode != 0 or "Success" not in output:
         raise DeltaUpdaterError(
@@ -336,17 +350,14 @@ def _validate_zip_member(member: zipfile.ZipInfo) -> None:
 
 
 def extract_zip_apks(zip_path: str | pathlib.Path, output_dir: str | pathlib.Path) -> list[pathlib.Path]:
-    """Validate the whole ZIP, CRC-test it, then extract only bounded APK members."""
     out_dir = pathlib.Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     extracted: list[pathlib.Path] = []
-
     try:
         with zipfile.ZipFile(zip_path, "r") as archive:
             members = archive.infolist()
             if not members or len(members) > MAX_ZIP_ENTRIES:
                 raise DeltaUpdaterError("ZIP entry count is outside safety limits")
-
             total_uncompressed = 0
             apk_members: list[zipfile.ZipInfo] = []
             for member in members:
@@ -360,19 +371,14 @@ def extract_zip_apks(zip_path: str | pathlib.Path, output_dir: str | pathlib.Pat
                     if member.file_size <= 0:
                         raise DeltaUpdaterError(f"APK inside ZIP is empty: {member.filename}")
                     apk_members.append(member)
-
             if not apk_members:
                 raise DeltaUpdaterError(f"ZIP archive contains no APK files: {zip_path}")
-            if len(apk_members) > MAX_ZIP_APKS:
-                raise DeltaUpdaterError("ZIP contains too many APK files")
-
             bad_crc = archive.testzip()
             if bad_crc is not None:
                 raise DeltaUpdaterError(f"ZIP CRC corrupted at entry: {bad_crc}")
-
             for index, member in enumerate(apk_members, 1):
                 clean_base = safe_asset_name(pathlib.PurePosixPath(member.filename).name)
-                dest = out_dir / f"{index:03d}_{clean_base}"
+                dest = out_dir / f"{index:04d}_{clean_base}"
                 written = 0
                 with archive.open(member, "r") as source, open(dest, "xb") as target:
                     while True:
@@ -393,12 +399,10 @@ def extract_zip_apks(zip_path: str | pathlib.Path, output_dir: str | pathlib.Pat
             except OSError:
                 pass
         raise
-
     return extracted
 
 
 def _select_assets(assets: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Prefer direct APK assets; use ZIP only when no direct APK exists."""
     direct = [asset for asset in assets if asset.get("kind") == "apk"]
     if direct:
         return direct
@@ -412,42 +416,54 @@ def run_delta_update(
     manifest_source: Optional[str | pathlib.Path | dict] = None,
     download_dir: Optional[str | pathlib.Path] = None,
 ) -> dict[str, Any]:
-    """Download verified Delta bytes, install them, and clean all temporary artifacts."""
-    source = manifest_source or DEFAULT_MANIFEST_URL
+    """Verify the whole selected release first, then install its APK set."""
     dl_dir = pathlib.Path(download_dir or DEFAULT_DOWNLOAD_DIR)
     dl_dir.mkdir(parents=True, exist_ok=True)
-
-    manifest = load_manifest(source)
+    manifest = (
+        load_latest_release_manifest()
+        if manifest_source is None
+        else load_manifest(manifest_source)
+    )
     assets = _select_assets(manifest["assets"])
-    installed_count = 0
 
     with tempfile.TemporaryDirectory(prefix=".delta-txn-", dir=dl_dir) as transaction_dir:
         tx_root = pathlib.Path(transaction_dir)
+        staged: list[tuple[dict[str, Any], pathlib.Path]] = []
+
+        # Phase 1: download + byte-verify every selected release asset.
         for index, asset in enumerate(assets, 1):
-            target = tx_root / f"{index:03d}_{asset['name']}"
+            target = tx_root / f"{index:04d}_{safe_asset_name(asset['name'])}"
             download_asset(
                 asset["url"],
                 target,
                 expected_size=asset["size"],
                 expected_sha256=asset["sha256"],
             )
+            staged.append((asset, target))
 
+        # Phase 2: validate/extract every archive and build the complete install queue.
+        install_queue: list[pathlib.Path] = []
+        for index, (asset, target) in enumerate(staged, 1):
             if asset["kind"] == "apk":
-                install_apk(target)
-                installed_count += 1
+                install_queue.append(target)
             else:
-                extract_dir = tx_root / f"extract_{index:03d}"
-                for apk in extract_zip_apks(target, extract_dir):
-                    install_apk(apk)
-                    installed_count += 1
+                extract_dir = tx_root / f"extract_{index:04d}"
+                install_queue.extend(extract_zip_apks(target, extract_dir))
 
-    if installed_count <= 0:
-        raise DeltaUpdaterError("UPDATE_DELTA finished but zero APKs were installed")
+        if not install_queue:
+            raise DeltaUpdaterError("UPDATE_DELTA verified release but found zero APKs")
+
+        # Phase 3: only after the complete set is verified do Android mutations begin.
+        for apk in install_queue:
+            install_apk(apk)
+
+        installed_count = len(install_queue)
 
     return {
         "ok": True,
         "channel": "delta",
         "version": manifest["version"],
+        "release_tag": manifest.get("release_tag"),
         "installed_count": installed_count,
     }
 
