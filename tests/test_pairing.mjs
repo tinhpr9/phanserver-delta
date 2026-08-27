@@ -111,6 +111,52 @@ async function runTests() {
   }));
   if (badHeartbeatRes.status !== 401) throw new Error("wrong device secret accepted");
 
+  const badWebSocketRes = await fleet.fetch(new Request(
+    "https://localhost/ws?device_id=m73&group=NOVA&secret=not-the-issued-secret",
+    { headers: { Upgrade: "websocket" } }
+  ));
+  if (badWebSocketRes.status !== 401) throw new Error("wrong websocket device secret accepted");
+
+  const sentPayloads = [];
+  const fakeSocket = { send(value) { sentPayloads.push(value); } };
+  const deliveryFleet = new FleetState({
+    storage: new MockStorage(),
+    getWebSockets() { return [fakeSocket]; }
+  }, env);
+  deliveryFleet.aotLive.set("m73", { socket: fakeSocket });
+  const deliveryCount = deliveryFleet.sendPayload("m73", { action: "PREPARE_ALLOCATE_SERVER" });
+  if (deliveryCount !== 1 || sentPayloads.length !== 1) throw new Error("payload was delivered more than once");
+
+  const productionEnv = {
+    TELEGRAM_BOT_TOKEN: "mock-token",
+    TELEGRAM_ADMIN_USER_ID: "123",
+    AGENT_REPORT_SECRET: "legacy-control-secret"
+  };
+  const rateFleet = new FleetState({ storage: new MockStorage(), getWebSockets() { return []; } }, productionEnv);
+  const firstRateRes = await rateFleet.fetch(new Request("https://phanserver.example/agent/pair/request", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ device_id: "m75", device_group: "NOVA" })
+  }));
+  if (firstRateRes.status !== 201) throw new Error("first production pair request should succeed");
+  const secondRateRes = await rateFleet.fetch(new Request("https://phanserver.example/agent/pair/request", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ device_id: "m76", device_group: "NOVA" })
+  }));
+  if (secondRateRes.status !== 429) throw new Error("production pair requests were not rate limited");
+
+  const noTelegramFleet = new FleetState(
+    { storage: new MockStorage(), getWebSockets() { return []; } },
+    { AGENT_REPORT_SECRET: "legacy-control-secret" }
+  );
+  const noTelegramRes = await noTelegramFleet.fetch(new Request("https://phanserver.example/agent/pair/request", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ device_id: "m77", device_group: "MARMOT" })
+  }));
+  if (noTelegramRes.status !== 502) throw new Error("pairing did not fail closed without Telegram admin configuration");
+
   const callbackCalls = [];
   const callbackAnswers = [];
   const callbackEnv = {
