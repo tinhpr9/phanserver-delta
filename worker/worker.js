@@ -1,7 +1,25 @@
-import { FleetState } from "./fleet_state.js";
+import { FleetState } from "./rollback_safe_fleet_state.js";
 import { handleUpdate } from "./phanserver.js";
 
 export { FleetState };
+
+function json(data, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { "Content-Type": "application/json", "Cache-Control": "no-store" }
+  });
+}
+
+function safeEqual(left, right) {
+  const a = String(left || "");
+  const b = String(right || "");
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let index = 0; index < a.length; index++) {
+    diff |= a.charCodeAt(index) ^ b.charCodeAt(index);
+  }
+  return diff === 0;
+}
 
 export default {
   async fetch(request, env, ctx) {
@@ -9,13 +27,11 @@ export default {
     const path = url.pathname;
 
     if (path === "/health") {
-      return new Response(JSON.stringify({ status: "healthy", service: "phanserver-delta" }), {
-        headers: { "Content-Type": "application/json" }
-      });
+      return json({ status: "healthy", service: "phanserver-delta" });
     }
 
     if (path === "/delta/manifest") {
-      return new Response(JSON.stringify({
+      return json({
         channel: "delta",
         version: "1.0.0",
         release_date: "2026-08-26T12:00:00Z",
@@ -28,32 +44,40 @@ export default {
             size: 1024
           }
         ]
-      }), {
-        headers: { "Content-Type": "application/json" }
       });
     }
 
-    // Get FleetState Durable Object stub
     const fleetId = env.FLEET_STATE?.idFromName?.("global") || null;
     const fleetStub = fleetId ? env.FLEET_STATE.get(fleetId) : null;
 
     if (path === "/telegram/webhook" && request.method === "POST") {
+      const configuredSecret = String(env?.TELEGRAM_WEBHOOK_SECRET || "");
+      if (!configuredSecret) {
+        return json({ ok: false, error: "telegram_webhook_secret_not_configured" }, 503);
+      }
+      const presentedSecret = String(request.headers.get("X-Telegram-Bot-Api-Secret-Token") || "");
+      if (!safeEqual(presentedSecret, configuredSecret)) {
+        return json({ ok: false, error: "unauthorized" }, 401);
+      }
       try {
         const update = await request.json();
         await handleUpdate(update, env, fleetStub);
         return new Response("OK", { status: 200 });
       } catch (e) {
-        return new Response("Error: " + e.message, { status: 500 });
+        return json({ ok: false, error: "telegram_update_invalid" }, 400);
       }
+    }
+
+    // Fleet-wide state and control are never public HTTP APIs. Telegram command
+    // handling talks to the Durable Object directly with localhost requests.
+    if (path === "/aot/hub/state" || path === "/aot/hub/control" || path === "/register") {
+      return json({ ok: false, error: "not_found" }, 404);
     }
 
     if (fleetStub) {
       return fleetStub.fetch(request);
     }
 
-    return new Response(JSON.stringify({ ok: false, error: "fleet_state_unreachable" }), {
-      status: 503,
-      headers: { "Content-Type": "application/json" }
-    });
+    return json({ ok: false, error: "fleet_state_unreachable" }, 503);
   }
 };

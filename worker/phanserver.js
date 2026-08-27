@@ -92,7 +92,10 @@ export async function fleetStateCall(env, fleetState, path, init = {}) {
   }
   const req = new Request(`https://localhost${path}`, {
     method: init.method || "GET",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...(init.headers || {})
+    },
     body: init.body ? JSON.stringify(init.body) : undefined
   });
   const res = await fleetState.fetch(req);
@@ -217,6 +220,40 @@ export async function handleUpdate(update, env, fleetState) {
 
 export async function handleCallback(callback, chatId, messageId, env, fleetState, fromId) {
   const data = callback.data || "";
+
+  if (data.startsWith("pair_ok:") || data.startsWith("pair_no:")) {
+    const approve = data.startsWith("pair_ok:");
+    const pairId = data.slice(approve ? "pair_ok:".length : "pair_no:".length);
+    if (!/^[A-Za-z0-9_-]{8,64}$/.test(pairId)) {
+      await answerCallback(callback.id, env, "Yêu cầu ghép máy không hợp lệ.", true);
+      return;
+    }
+    const internalKey = String(env?.AGENT_REPORT_SECRET || "");
+    if (!internalKey) {
+      await answerCallback(callback.id, env, "Worker chưa cấu hình khóa ghép máy.", true);
+      return;
+    }
+    const decisionRes = await fleetStateCall(env, fleetState, "/agent/pair/decision", {
+      method: "POST",
+      headers: { "X-Internal-Pair-Key": internalKey },
+      body: {
+        pair_id: pairId,
+        decision: approve ? "approve" : "reject"
+      }
+    });
+    if (!decisionRes?.response?.ok || !decisionRes?.data?.ok) {
+      const reason = String(decisionRes?.data?.error || "pair_decision_failed");
+      await answerCallback(callback.id, env, `Không xử lý được ghép máy: ${reason}`, true);
+      return;
+    }
+    const deviceId = String(decisionRes.data.device_id || "máy");
+    if (approve) {
+      await answerCallback(callback.id, env, `Đã chấp nhận ${deviceId}.`);
+    } else {
+      await answerCallback(callback.id, env, `Đã từ chối ${deviceId}.`);
+    }
+    return;
+  }
 
   if (data.startsWith("allocate_cancel:")) {
     const token = data.slice("allocate_cancel:".length);
