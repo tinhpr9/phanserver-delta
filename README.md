@@ -4,17 +4,19 @@ Dedicated, isolated vertical slice for **Telegram `/phanserver`** allocation con
 
 ## Key Features
 - **Strict Telegram Command Control**: `/phanserver <device1,device2...> <tabs>` (tabs 1..10).
+- **Authenticated Telegram Ingress**: `/telegram/webhook` fails closed unless Telegram presents the configured webhook secret token.
 - **Target Validation**: Case-insensitive device ID normalization, group resolution (`MARMOT`, `NOVA`), online gating, duplicate rejection.
 - **Fail-Closed 2PC Protocol**: Two-phase commit (`PREPARE_ALLOCATE_SERVER` -> `COMMIT_ALLOCATE_SERVER` / `ABORT_ALLOCATE_SERVER`) ensuring all target devices succeed or roll back atomically.
 - **Authenticated Live Agent**: Heartbeat plus authenticated WebSocket command reception; a missing/invalid Device ID fails closed instead of aliasing another machine.
 - **Zero-Touch Fresh-Device Onboarding**: one installer command creates identity/group/config, asks for Telegram-admin approval with a matching 6-digit code, installs an exact pinned Git revision, starts the standalone service, and verifies the device ONLINE before reporting READY.
-- **Atomic File Updates**: Writes `/storage/emulated/0/Download/Shouko/server_links.txt` atomically with automatic rollback to `.bak` upon launcher error.
-- **Standalone Delta Updater**: Dedicated release manifest with SHA-256 verification and root access checks.
-- **Idempotency & Replay Safety**: Token consumption prevents double-confirmation; local journal prevents duplicate intent executions.
+- **Private Runtime State**: onboarding identity, credential, journal, and server-link state live under `$HOME/.phanserver-delta/device`, not Android shared storage.
+- **Transactional Rollback**: failed startup/ONLINE verification restores the previous identity, group, config, service wrapper, boot entry, and active release pointer.
+- **Standalone Delta Updater**: dedicated release manifest with SHA-256 verification and root access checks.
+- **Idempotency & Replay Safety**: token consumption prevents double-confirmation; local journal prevents duplicate intent executions.
 
 ## Fresh UGPhone Onboarding
 
-Normal first-time setup takes only the intended Device ID and group. For example, `73 2` becomes device `m73` in group `NOVA` (`1` = `MARMOT`, `2` = `NOVA`). The installer itself creates `device_id.txt`, `device_group.txt`, and `agent_config.json`; do not create those files by hand.
+Normal first-time setup takes only the intended Device ID and group. For example, `73 2` becomes device `m73` in group `NOVA` (`1` = `MARMOT`, `2` = `NOVA`). The installer itself creates the identity and credential files; do not create them by hand.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/tinhpr9/phanserver-delta/main/deploy/install.sh | bash -s -- 73 2
@@ -45,10 +47,11 @@ For staging or evidence-gated verification, `PHANSERVER_WORKER_ORIGIN` may point
 ```text
 phanserver-delta/
 ├── worker/
-│   ├── worker.js                # Cloudflare Worker router & endpoints
+│   ├── worker.js                # Public Worker router + Telegram ingress gate
 │   ├── phanserver.js            # Telegram /phanserver + pairing callbacks
 │   ├── fleet_state.js           # Base online tracking & 2PC coordinator
 │   ├── secure_fleet_state.js    # Pairing + per-device authentication layer
+│   ├── hardened_fleet_state.js  # Public-route, rotation, socket/ACK hardening
 │   └── tong_hop_link.js         # Link pool parser & package mapping
 ├── data/
 │   └── tong_hop_link.txt        # Link pool data
@@ -57,7 +60,8 @@ phanserver-delta/
 │   ├── delta_updater.py         # Standalone Delta updater with SHA-256 checks
 │   └── tests/                   # Delta updater test suite
 ├── agent/
-│   ├── agent.py                 # Heartbeat + WebSocket device daemon
+│   ├── agent.py                 # Base heartbeat/2PC behavior
+│   ├── secure_agent.py          # Production WebSocket transport entrypoint
 │   ├── config.py                # Device config & ID parser
 │   ├── server_links.py          # 2PC server links executor & Roblox opener
 │   └── tests/                   # Device agent test suite
@@ -66,11 +70,13 @@ phanserver-delta/
 │   ├── test_telegram_phanserver.mjs
 │   ├── test_fleet_state_2pc.mjs
 │   ├── test_pairing.mjs
+│   ├── test_worker_security.mjs
 │   ├── test_onboarding_install.py
 │   ├── test_e2e_flow.py
 │   └── run_all_tests.sh
 ├── deploy/
-│   ├── install.sh               # One-time fresh-device onboarding
+│   ├── install.sh               # Small one-time bootstrap loader
+│   ├── install_runtime.sh       # Pinned transactional onboarding runtime
 │   ├── device_service.sh        # Installed standalone agent supervisor
 │   └── agent_service.sh         # Repository/dev start-stop helper
 └── wrangler.jsonc               # Worker deployment configuration
@@ -84,8 +90,11 @@ phanserver-delta/
 
 ## Worker Deployment
 
-```bash
-wrangler deploy
-```
+Production Telegram ingress requires two Worker secrets:
+
+- `TELEGRAM_BOT_TOKEN`: the Telegram bot token.
+- `TELEGRAM_WEBHOOK_SECRET`: a separate random webhook secret containing only letters, digits, `_`, or `-`.
+
+The production deployment workflow expects matching GitHub Actions secrets with those names. It stores them in Cloudflare, deploys the Worker, then calls Telegram `setWebhook` with the same webhook secret. This keeps the Worker and Telegram configuration synchronized and prevents a caller from forging an admin update by posting arbitrary JSON to the public webhook.
 
 A fresh-device onboarding flow is not considered verified from unit tests or CI alone. It requires a fresh UGPhone end-to-end gate that proves the exact Device ID transitions from not-ready to ONLINE and can complete a real `/phanserver` allocation.
