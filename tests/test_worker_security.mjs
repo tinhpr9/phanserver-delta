@@ -1,4 +1,4 @@
-import worker from "../worker/worker.js";
+import worker, { FleetState } from "../worker/worker.js";
 
 async function runTests() {
   let forwarded = 0;
@@ -105,6 +105,28 @@ async function runTests() {
 
   if (forwarded !== 0) {
     throw new Error("Security-gated public requests reached FleetState");
+  }
+
+  // A live Durable Object socket is represented both by a socket tag and aotLive.
+  // One logical command must still produce exactly one WebSocket frame.
+  const sentFrames = [];
+  const liveSocket = {
+    send(data) { sentFrames.push(JSON.parse(data)); }
+  };
+  const dispatchCtx = {
+    getWebSockets(tag) {
+      return tag === "device:fleet:m73" ? [liveSocket] : [];
+    }
+  };
+  const dispatchFleet = new FleetState(dispatchCtx, { TEST_ENV: true });
+  dispatchFleet.aotLive.set("m73", { socket: liveSocket });
+  const sentCount = dispatchFleet.sendPayload("m73", {
+    type: "aot_batch_action",
+    action: "PREPARE_ALLOCATE_SERVER",
+    action_id: "dedupe-test"
+  });
+  if (sentCount !== 1 || sentFrames.length !== 1) {
+    throw new Error("Fleet command was sent more than once to the same live socket");
   }
 
   console.log("TEST_WORKER_SECURITY=OK");
