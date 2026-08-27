@@ -37,6 +37,14 @@ async function runTests() {
   };
   const fleet = new FleetState(ctx, env);
 
+  // A never-before-seen Device ID must not create a WebSocket using the global
+  // legacy Worker secret. Legacy compatibility is only for an existing fleet record.
+  const freshLegacyWs = await fleet.fetch(new Request(
+    "https://localhost/ws?device_id=m73&group=NOVA",
+    { headers: { Upgrade: "websocket", "X-Agent-Secret": "legacy-control-secret" } }
+  ));
+  if (freshLegacyWs.status !== 401) throw new Error("fresh device accepted legacy websocket credential");
+
   const requestRes = await fleet.fetch(new Request("https://localhost/agent/pair/request", {
     method: "POST",
     headers: {
@@ -100,7 +108,9 @@ async function runTests() {
     body: JSON.stringify({ pair_id: decisionHandle, decision: "approve" })
   }));
   if (approveRes.status !== 200) throw new Error("pair approval failed");
-  if (closedSockets.length !== 0) throw new Error("fresh-device approval unexpectedly closed a socket");
+  if (closedSockets.length !== 1 || closedSockets[0].code !== 4001) {
+    throw new Error("fresh-device approval did not evict stale legacy socket");
+  }
 
   const approvedRes = await fleet.fetch(new Request("https://localhost/agent/pair/status", {
     method: "POST",
