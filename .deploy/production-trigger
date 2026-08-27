@@ -1,5 +1,5 @@
 Deploy phanserver-delta onboarding-capable Worker for fresh-device verification.
 Expected source branch: feat/zero-touch-onboarding
-Validated code HEAD before deploy trigger: 2b36db97f349706b1a74fd2ef625689c305dc6f9
-Pre-deploy CI: run #54 SUCCESS on 2b36db97f349706b1a74fd2ef625689c305dc6f9
-Purpose: deploy the current isolated phanserver-delta code with standalone Telegram onboarding, authenticated WebSocket transport, rollback-safe credential rotation, and all five production credentials for the fresh UGPhone end-to-end gate before merge.
+Validated code HEAD before deploy trigger: 9de11978ebdb7894a2b6b471451a8feda97e5ff5
+Pre-deploy CI: run #56 SUCCESS on 9de11978ebdb7894a2b6b471451a8feda97e5ff5
+Purpose: deploy the isolated phanserver-delta code with the canonical bundled tong_hop_link.txt production pool, standalone Telegram onboarding, authenticated WebSocket transport, rollback-safe credential rotation, and all production credentials for the fresh UGPhone end-to-end gate before merge.
