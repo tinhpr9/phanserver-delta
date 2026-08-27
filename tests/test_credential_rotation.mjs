@@ -76,12 +76,31 @@ async function heartbeatStatus(fleet, deviceId, secret) {
   }));
 }
 
+async function ownStatus(fleet, deviceId, secret) {
+  const response = await fleet.fetch(new Request("https://localhost/agent/status", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Agent-Secret": secret
+    },
+    body: JSON.stringify({ device_id: deviceId })
+  }));
+  return { response, body: await response.json() };
+}
+
 async function runTests() {
   const storage = new MockStorage();
+  const closedSockets = [];
+  const oldSocket = {
+    send() {},
+    close(code, reason) { closedSockets.push({ code, reason }); }
+  };
   const fleet = new FleetState(
     {
       storage,
-      getWebSockets() { return []; }
+      getWebSockets(tag) {
+        return tag === "device:fleet:m73" ? [oldSocket] : [];
+      }
     },
     {
       TEST_ENV: true,
@@ -97,32 +116,64 @@ async function runTests() {
   const firstHeartbeat = await heartbeatStatus(fleet, "m73", oldSecret);
   if (firstHeartbeat.status !== 200) throw new Error("initial credential was not usable");
 
-  // Re-onboarding rotates to a new credential. Until the new runtime proves a
-  // WebSocket connection, the previous credential remains valid only for the
-  // short rollback grace window so installer rollback can recover the old runtime.
+  // Re-onboarding issues a new credential but does NOT cut over immediately.
+  // The old runtime stays authoritative until the new credential proves a live
+  // WebSocket, so a failed installer can roll back without server-side repair.
   const secondPair = await requestPair(fleet);
   const newSecret = await approvePair(fleet, secondPair);
   if (newSecret === oldSecret) throw new Error("credential rotation reused the old secret");
-
-  const oldDuringGrace = await heartbeatStatus(fleet, "m73", oldSecret);
-  if (oldDuringGrace.status !== 200) {
-    throw new Error("previous credential was not preserved for rollback grace");
+  if (closedSockets.length !== 0) {
+    throw new Error("old socket was closed before new runtime proved connectivity");
   }
-  const newDuringGrace = await heartbeatStatus(fleet, "m73", newSecret);
-  if (newDuringGrace.status !== 200) throw new Error("new credential was not usable during grace");
 
-  // A successful WebSocket authenticated with the new credential commits the
-  // rotation. The old credential must then fail immediately, not wait for TTL.
-  const committed = await fleet.commitCredentialRotation("m73", newSecret);
-  if (!committed) throw new Error("credential rotation did not commit");
-
-  const oldAfterCommit = await heartbeatStatus(fleet, "m73", oldSecret);
-  if (oldAfterCommit.status !== 401) {
-    throw new Error("old credential remained valid after rotation commit");
+  const oldBeforePromotion = await heartbeatStatus(fleet, "m73", oldSecret);
+  if (oldBeforePromotion.status !== 200) {
+    throw new Error("old credential stopped working before promotion");
   }
-  const newAfterCommit = await heartbeatStatus(fleet, "m73", newSecret);
-  if (newAfterCommit.status !== 200) {
-    throw new Error("new credential failed after rotation commit");
+  const newBeforePromotion = await heartbeatStatus(fleet, "m73", newSecret);
+  if (newBeforePromotion.status !== 200) {
+    throw new Error("staged credential could not authenticate during onboarding");
+  }
+
+  // Status queried with the staged credential must not inherit ONLINE from the
+  // old socket; otherwise the installer could falsely report READY.
+  const stagedStatus = await ownStatus(fleet, "m73", newSecret);
+  if (stagedStatus.response.status !== 200 || stagedStatus.body.device?.online !== false) {
+    throw new Error("staged credential inherited old runtime ONLINE state");
+  }
+
+  // A third pairing cannot stack another rotation while the staged credential is
+  // still waiting to prove its WebSocket.
+  telegramPayload = null;
+  const stackedPair = await fleet.fetch(new Request("https://localhost/agent/pair/request", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Worker-Origin": "https://phanserver.example"
+    },
+    body: JSON.stringify({ device_id: "m73", device_group: "NOVA" })
+  }));
+  const stackedBody = await stackedPair.json();
+  if (stackedPair.status !== 409 || stackedBody.error !== "credential_rotation_pending") {
+    throw new Error("a second credential rotation could be stacked");
+  }
+
+  // This method models the atomic cutover performed immediately before the new
+  // authenticated WebSocket is accepted. It revokes the old credential and closes
+  // old sockets only after the new credential has proved itself.
+  const promoted = await fleet.promotePendingCredential("m73", newSecret);
+  if (!promoted) throw new Error("pending credential did not promote");
+  if (closedSockets.length !== 1 || closedSockets[0].code !== 4001) {
+    throw new Error("old socket was not closed at credential promotion");
+  }
+
+  const oldAfterPromotion = await heartbeatStatus(fleet, "m73", oldSecret);
+  if (oldAfterPromotion.status !== 401) {
+    throw new Error("old credential remained valid after promotion");
+  }
+  const newAfterPromotion = await heartbeatStatus(fleet, "m73", newSecret);
+  if (newAfterPromotion.status !== 200) {
+    throw new Error("new credential failed after promotion");
   }
 
   console.log("TEST_CREDENTIAL_ROTATION=OK");
