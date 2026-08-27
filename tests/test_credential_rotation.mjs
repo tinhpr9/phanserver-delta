@@ -110,11 +110,14 @@ async function runTests() {
     }
   );
 
-  // First onboarding establishes the currently working credential.
+  // First onboarding establishes the currently working credential. Fresh approval
+  // may evict any stale pre-pair legacy-tagged socket; that behavior is covered by
+  // test_pairing.mjs and must not be counted as a re-onboarding cutover here.
   const firstPair = await requestPair(fleet);
   const oldSecret = await approvePair(fleet, firstPair);
   const firstHeartbeat = await heartbeatStatus(fleet, "m73", oldSecret);
   if (firstHeartbeat.status !== 200) throw new Error("initial credential was not usable");
+  closedSockets.length = 0;
 
   // Re-onboarding issues a new credential but does NOT cut over immediately.
   // The old runtime stays authoritative until the new credential proves a live
