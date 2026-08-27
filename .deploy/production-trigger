@@ -1,0 +1,3 @@
+Deploy phanserver-delta onboarding-capable Worker for fresh-device verification.
+Expected source branch: feat/zero-touch-onboarding
+Pre-deploy CI baseline: b663030325c09a5d2f018a0652c4cfaced39672c
