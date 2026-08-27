@@ -3,6 +3,7 @@ name: Deploy Phanserver Worker
 on:
   push:
     branches:
+      - main
       - feat/zero-touch-onboarding
     paths:
       - '.deploy/production-trigger'
