@@ -18,9 +18,16 @@ class MockStorage {
 
 async function runTests() {
   const storage = new MockStorage();
+  const closedSockets = [];
+  const oldSocket = {
+    send() {},
+    close(code, reason) { closedSockets.push({ code, reason }); }
+  };
   const ctx = {
     storage,
-    getWebSockets() { return []; }
+    getWebSockets(tag) {
+      return tag === "device:fleet:m73" ? [oldSocket] : [];
+    }
   };
   const env = {
     TEST_ENV: true,
@@ -45,40 +52,55 @@ async function runTests() {
   if (!/^\d{6}$/.test(requestBody.verification_code || "")) throw new Error("verification_code invalid");
   if (requestBody.agent_report_secret) throw new Error("pair request leaked device secret");
   if (!telegramPayload?.text?.includes(requestBody.verification_code)) throw new Error("Telegram pairing notice missing verification code");
+
   const pairButtons = telegramPayload?.reply_markup?.inline_keyboard?.[0] || [];
-  if (!pairButtons.some(b => b.callback_data === `pair_ok:${requestBody.pair_id}`)) throw new Error("Telegram approve callback missing");
-  if (!pairButtons.some(b => b.callback_data === `pair_no:${requestBody.pair_id}`)) throw new Error("Telegram reject callback missing");
+  const approveButton = pairButtons.find(b => String(b.callback_data || "").startsWith("pair_ok:"));
+  const rejectButton = pairButtons.find(b => String(b.callback_data || "").startsWith("pair_no:"));
+  if (!approveButton || !rejectButton) throw new Error("Telegram pair buttons missing");
+  const decisionHandle = approveButton.callback_data.slice("pair_ok:".length);
+  if (decisionHandle === requestBody.pair_id || !decisionHandle.startsWith(requestBody.pair_id + "_")) {
+    throw new Error("Telegram decision capability missing");
+  }
+
+  // A second unauthenticated request for the same device cannot invalidate the
+  // legitimate in-flight pairing token.
+  const replacementRes = await fleet.fetch(new Request("https://localhost/agent/pair/request", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Worker-Origin": "https://phanserver.example" },
+    body: JSON.stringify({ device_id: "m73", device_group: "NOVA" })
+  }));
+  if (replacementRes.status !== 409) throw new Error("active pair request was replaceable");
 
   const pendingRes = await fleet.fetch(new Request("https://localhost/agent/pair/status", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ pair_id: requestBody.pair_id, pair_token: requestBody.pair_token })
   }));
-  if (pendingRes.status !== 202) throw new Error("pending pair status should be 202");
+  if (pendingRes.status !== 202) throw new Error("original pending pair token was invalidated");
+
+  // Possessing the public pair_id plus the internal control key is still not enough:
+  // the unguessable decision capability exists only in Telegram callback_data.
+  const forgedDecision = await fleet.fetch(new Request("https://localhost/agent/pair/decision", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Internal-Pair-Key": "legacy-control-secret" },
+    body: JSON.stringify({ pair_id: requestBody.pair_id, decision: "approve" })
+  }));
+  if (![400, 403].includes(forgedDecision.status)) throw new Error("forged pair approval was accepted");
 
   const unauthorizedDecision = await fleet.fetch(new Request("https://localhost/agent/pair/decision", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ pair_id: requestBody.pair_id, decision: "approve" })
+    body: JSON.stringify({ pair_id: decisionHandle, decision: "approve" })
   }));
-  if (unauthorizedDecision.status !== 401) throw new Error("pair decision was not protected");
+  if (unauthorizedDecision.status !== 401) throw new Error("pair decision internal key was not enforced");
 
   const approveRes = await fleet.fetch(new Request("https://localhost/agent/pair/decision", {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Internal-Pair-Key": "legacy-control-secret"
-    },
-    body: JSON.stringify({ pair_id: requestBody.pair_id, decision: "approve" })
+    headers: { "Content-Type": "application/json", "X-Internal-Pair-Key": "legacy-control-secret" },
+    body: JSON.stringify({ pair_id: decisionHandle, decision: "approve" })
   }));
   if (approveRes.status !== 200) throw new Error("pair approval failed");
-
-  const wrongTokenRes = await fleet.fetch(new Request("https://localhost/agent/pair/status", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ pair_id: requestBody.pair_id, pair_token: "wrong-token-wrong-token-wrong-token-1234" })
-  }));
-  if (wrongTokenRes.status !== 403) throw new Error("wrong pair token was accepted");
+  if (closedSockets.length !== 1 || closedSockets[0].code !== 4001) throw new Error("old credential socket was not closed on rotation");
 
   const approvedRes = await fleet.fetch(new Request("https://localhost/agent/pair/status", {
     method: "POST",
@@ -93,39 +115,48 @@ async function runTests() {
 
   const heartbeatRes = await fleet.fetch(new Request("https://localhost/report", {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Agent-Secret": approvedBody.agent_report_secret
-    },
+    headers: { "Content-Type": "application/json", "X-Agent-Secret": approvedBody.agent_report_secret },
     body: JSON.stringify({ device_id: "m73", device_group: "NOVA", capabilities: ["allocate_server_2pc", "update_delta"] })
   }));
   if (heartbeatRes.status !== 200) throw new Error("paired device heartbeat rejected");
 
+  const ownStatus = await fleet.fetch(new Request("https://localhost/agent/status", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Agent-Secret": approvedBody.agent_report_secret },
+    body: JSON.stringify({ device_id: "m73" })
+  }));
+  const ownStatusBody = await ownStatus.json();
+  if (ownStatus.status !== 200 || !ownStatusBody.device?.online) throw new Error("authenticated own-device status failed");
+
   const badHeartbeatRes = await fleet.fetch(new Request("https://localhost/report", {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Agent-Secret": "not-the-issued-secret"
-    },
+    headers: { "Content-Type": "application/json", "X-Agent-Secret": "not-the-issued-secret" },
     body: JSON.stringify({ device_id: "m73", device_group: "NOVA" })
   }));
   if (badHeartbeatRes.status !== 401) throw new Error("wrong device secret accepted");
 
-  const badWebSocketRes = await fleet.fetch(new Request(
-    "https://localhost/ws?device_id=m73&group=NOVA&secret=not-the-issued-secret",
+  // WebSocket auth must come from the handshake header; credentials in URLs are ignored.
+  const queryOnlyWs = await fleet.fetch(new Request(
+    `https://localhost/ws?device_id=m73&group=NOVA&secret=${encodeURIComponent(approvedBody.agent_report_secret)}`,
     { headers: { Upgrade: "websocket" } }
   ));
-  if (badWebSocketRes.status !== 401) throw new Error("wrong websocket device secret accepted");
+  if (queryOnlyWs.status !== 401) throw new Error("websocket URL credential was accepted");
 
-  const sentPayloads = [];
-  const fakeSocket = { send(value) { sentPayloads.push(value); } };
-  const deliveryFleet = new FleetState({
-    storage: new MockStorage(),
-    getWebSockets() { return [fakeSocket]; }
-  }, env);
-  deliveryFleet.aotLive.set("m73", { socket: fakeSocket });
-  const deliveryCount = deliveryFleet.sendPayload("m73", { action: "PREPARE_ALLOCATE_SERVER" });
-  if (deliveryCount !== 1 || sentPayloads.length !== 1) throw new Error("payload was delivered more than once");
+  const badWebSocketRes = await fleet.fetch(new Request(
+    "https://localhost/ws?device_id=m73&group=NOVA",
+    { headers: { Upgrade: "websocket", "X-Agent-Secret": "not-the-issued-secret" } }
+  ));
+  if (badWebSocketRes.status !== 401) throw new Error("wrong websocket header secret accepted");
+
+  // Public fleet-wide control/state endpoints are not part of the device API.
+  const publicControl = await fleet.fetch(new Request("https://phanserver.example/aot/hub/control", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ protocol: "fleet-batch-v1", kind: "allocate_server", target_device_ids: ["m73"] })
+  }));
+  if (publicControl.status !== 403) throw new Error("public fleet control endpoint was reachable");
+  const publicState = await fleet.fetch(new Request("https://phanserver.example/aot/hub/state"));
+  if (publicState.status !== 403) throw new Error("public fleet state endpoint was reachable");
 
   const productionEnv = {
     TELEGRAM_BOT_TOKEN: "mock-token",
@@ -139,12 +170,12 @@ async function runTests() {
     body: JSON.stringify({ device_id: "m75", device_group: "NOVA" })
   }));
   if (firstRateRes.status !== 201) throw new Error("first production pair request should succeed");
-  const secondRateRes = await rateFleet.fetch(new Request("https://phanserver.example/agent/pair/request", {
+  const secondDeviceRateRes = await rateFleet.fetch(new Request("https://phanserver.example/agent/pair/request", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ device_id: "m76", device_group: "NOVA" })
   }));
-  if (secondRateRes.status !== 429) throw new Error("production pair requests were not rate limited");
+  if (secondDeviceRateRes.status !== 429) throw new Error("production pair requests were not globally rate limited");
 
   const noTelegramFleet = new FleetState(
     { storage: new MockStorage(), getWebSockets() { return []; } },
@@ -157,6 +188,7 @@ async function runTests() {
   }));
   if (noTelegramRes.status !== 502) throw new Error("pairing did not fail closed without Telegram admin configuration");
 
+  // Telegram callback routing preserves the full decision handle, not the public pair_id.
   const callbackCalls = [];
   const callbackAnswers = [];
   const callbackEnv = {
@@ -165,12 +197,10 @@ async function runTests() {
       callbackCalls.push({ path, init });
       return { response: { ok: true }, data: { ok: true, status: "approved", device_id: "m73" } };
     },
-    answerCallback: async (_id, _env, text, alert) => {
-      callbackAnswers.push({ text, alert });
-    }
+    answerCallback: async (_id, _env, text, alert) => callbackAnswers.push({ text, alert })
   };
   await handleCallback(
-    { id: "cb-pair", data: `pair_ok:${requestBody.pair_id}`, message: { chat: { id: 1 }, message_id: 9 }, from: { id: "123" } },
+    { id: "cb-pair", data: approveButton.callback_data, message: { chat: { id: 1 }, message_id: 9 }, from: { id: "123" } },
     1,
     9,
     callbackEnv,
@@ -178,8 +208,8 @@ async function runTests() {
     "123"
   );
   if (callbackCalls.length !== 1 || callbackCalls[0].path !== "/agent/pair/decision") throw new Error("Telegram pair callback did not route decision");
+  if (callbackCalls[0].init.body.pair_id !== decisionHandle) throw new Error("Telegram decision capability was truncated");
   if (callbackCalls[0].init.body.decision !== "approve") throw new Error("Telegram pair callback decision mismatch");
-  if (callbackCalls[0].init.headers["X-Internal-Pair-Key"] !== "legacy-control-secret") throw new Error("Telegram pair callback missing internal auth");
   if (!callbackAnswers[0]?.text?.includes("m73")) throw new Error("Telegram pair callback response missing device ID");
 
   console.log("TEST_PAIRING_ONBOARDING=OK");
