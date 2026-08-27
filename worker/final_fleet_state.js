@@ -1,4 +1,11 @@
 import { FleetState as HardenedFleetState } from "./hardened_fleet_state.js";
+import {
+  FleetState as BaseFleetState,
+  normalizeDeviceGroup,
+  normalizeDeviceId,
+} from "./fleet_state.js";
+
+const CAPABILITIES = ["allocate_server_2pc", "update_delta"];
 
 function safeEqual(left, right) {
   const a = String(left || "");
@@ -9,16 +16,92 @@ function safeEqual(left, right) {
   return diff === 0;
 }
 
+function decodeWebSocketMessage(message) {
+  if (typeof message === "string") return message;
+  if (message instanceof ArrayBuffer) return new TextDecoder().decode(message);
+  if (ArrayBuffer.isView(message)) {
+    return new TextDecoder().decode(message.buffer.slice(message.byteOffset, message.byteOffset + message.byteLength));
+  }
+  return "";
+}
+
 /**
- * Final security invariants that depend on the distinction between a legacy
- * device and a never-before-seen Device ID.
+ * Final production invariants for fresh-device onboarding and Durable Object
+ * WebSocket transport.
  *
- * Existing fleet records may temporarily use AGENT_REPORT_SECRET for backwards
- * compatibility. A fresh/nonexistent Device ID must never be able to create a
- * legacy-authenticated WebSocket before pairing, and fresh approval must evict
- * any stale tagged socket that predates the new per-device credential.
+ * Cloudflare's ctx.acceptWebSocket() uses the Hibernation API. Therefore ACK and
+ * close handling must live in webSocketMessage/webSocketClose rather than
+ * addEventListener callbacks, and socket identity must survive hibernation via a
+ * serialized attachment.
  */
 export class FleetState extends HardenedFleetState {
+  constructor(ctx, env) {
+    super(ctx, env);
+    this.restoreLiveSocketsFromAttachments();
+  }
+
+  socketAttachment(ws) {
+    try {
+      const attachment = ws?.deserializeAttachment?.();
+      return attachment && typeof attachment === "object" ? attachment : null;
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  restoreLiveSocketsFromAttachments() {
+    if (!this.ctx?.getWebSockets) return;
+    const newestByDevice = new Map();
+    for (const ws of this.ctx.getWebSockets()) {
+      const attachment = this.socketAttachment(ws);
+      const deviceId = normalizeDeviceId(attachment?.device_id);
+      const connectedAt = Number(attachment?.connected_at || 0);
+      if (!deviceId || !connectedAt) continue;
+      const previous = newestByDevice.get(deviceId);
+      if (!previous || connectedAt > previous.connected_at) {
+        newestByDevice.set(deviceId, { socket: ws, connected_at: connectedAt });
+      }
+    }
+    for (const [deviceId, entry] of newestByDevice) {
+      this.aotLive.set(deviceId, {
+        capabilities: CAPABILITIES,
+        connected_at: entry.connected_at,
+        socket: entry.socket,
+      });
+    }
+  }
+
+  currentSocket(deviceId) {
+    const live = this.aotLive?.get?.(deviceId);
+    if (live?.socket) return live.socket;
+
+    if (!this.ctx?.getWebSockets) return null;
+    let best = null;
+    let bestAt = -1;
+    for (const ws of this.ctx.getWebSockets(`device:fleet:${deviceId}`)) {
+      const attachment = this.socketAttachment(ws);
+      if (normalizeDeviceId(attachment?.device_id) !== deviceId) continue;
+      const connectedAt = Number(attachment?.connected_at || 0);
+      if (connectedAt > bestAt) {
+        best = ws;
+        bestAt = connectedAt;
+      }
+    }
+    if (best) {
+      this.aotLive.set(deviceId, {
+        capabilities: CAPABILITIES,
+        connected_at: bestAt,
+        socket: best,
+      });
+    }
+    return best;
+  }
+
+  isCurrentSocket(deviceId, ws) {
+    const current = this.currentSocket(deviceId);
+    return current ? current === ws : false;
+  }
+
   async credentialKind(deviceId, presentedSecret) {
     const record = await this.readFleet();
     const device = record.devices?.[deviceId];
@@ -28,6 +111,53 @@ export class FleetState extends HardenedFleetState {
       return null;
     }
     return super.credentialKind(deviceId, presentedSecret);
+  }
+
+  isDeviceOnline(id, recordDevice) {
+    const deviceId = normalizeDeviceId(id);
+    if (!deviceId) return false;
+
+    if (this.currentSocket(deviceId)) return true;
+
+    // A paired device is ONLINE only when its authenticated command socket exists.
+    // A recent HTTP heartbeat alone must not satisfy fresh onboarding readiness.
+    if (recordDevice?.agent_secret_sha256) return false;
+
+    // Temporary compatibility for pre-pairing legacy fleet sockets that were
+    // accepted before session attachments existed.
+    if (this.ctx?.getWebSockets) {
+      const legacySockets = this.ctx.getWebSockets(`device:fleet:${deviceId}`);
+      if (legacySockets.length > 0) return true;
+    }
+    return super.isDeviceOnline(deviceId, recordDevice);
+  }
+
+  sendPayload(deviceId, payload) {
+    const encoded = JSON.stringify(payload);
+    const current = this.currentSocket(deviceId);
+    if (current) {
+      try {
+        current.send(encoded);
+        return 1;
+      } catch (_error) {
+        return 0;
+      }
+    }
+
+    // Compatibility only: old pre-attachment sockets can exist during rollout.
+    // Send to one socket, never every tagged socket, to preserve exactly-once intent.
+    if (this.ctx?.getWebSockets) {
+      const legacySockets = this.ctx.getWebSockets(`device:fleet:${deviceId}`);
+      if (legacySockets.length > 0) {
+        try {
+          legacySockets[0].send(encoded);
+          return 1;
+        } catch (_error) {
+          return 0;
+        }
+      }
+    }
+    return 0;
   }
 
   async handlePairDecision(request) {
@@ -58,9 +188,126 @@ export class FleetState extends HardenedFleetState {
       const device = fresh.devices?.[freshDeviceId];
       if (device) {
         device.online = false;
+        delete device.active_ws_session_id;
         await this.writeFleet(fresh);
       }
     }
     return response;
+  }
+
+  async handleWebSocket(request) {
+    const upgradeHeader = request.headers.get("Upgrade");
+    if (!upgradeHeader || upgradeHeader.toLowerCase() !== "websocket") {
+      return new Response("Expected WebSocket", { status: 426 });
+    }
+
+    const url = new URL(request.url);
+    const deviceId = normalizeDeviceId(url.searchParams.get("device_id"));
+    const requestedGroup = normalizeDeviceGroup(url.searchParams.get("group"));
+    const presentedSecret = String(request.headers.get("X-Agent-Secret") || "");
+    if (!deviceId) return new Response("Invalid device_id", { status: 400 });
+
+    const kind = await this.credentialKind(deviceId, presentedSecret);
+    if (!kind) return new Response("Unauthorized", { status: 401 });
+
+    // Validate immutable identity/group before rotating credentials or evicting the
+    // currently working socket. A malformed reconnect must not take a healthy device down.
+    let record = await this.readFleet();
+    const before = record.devices?.[deviceId];
+    if (before?.device_group && requestedGroup && normalizeDeviceGroup(before.device_group) !== requestedGroup) {
+      return new Response("Device group mismatch", { status: 409 });
+    }
+
+    if (kind === "pending") {
+      if (!(await this.promotePendingCredential(deviceId, presentedSecret))) {
+        return new Response("Credential rotation failed", { status: 409 });
+      }
+    } else {
+      this.closeExistingDeviceSockets(deviceId, 4000, "device_reconnected");
+    }
+
+    const pair = new WebSocketPair();
+    const [client, server] = [pair[0], pair[1]];
+    const sessionId = crypto.randomUUID();
+    const connectedAt = Date.now();
+    const tag = `device:fleet:${deviceId}`;
+
+    server.serializeAttachment({
+      device_id: deviceId,
+      session_id: sessionId,
+      connected_at: connectedAt,
+    });
+    this.ctx?.acceptWebSocket?.(server, [tag]);
+    this.aotLive.set(deviceId, {
+      capabilities: CAPABILITIES,
+      connected_at: connectedAt,
+      socket: server,
+    });
+
+    record = await this.readFleet();
+    const existing = record.devices?.[deviceId] || {
+      device_id: deviceId,
+      joined_at: connectedAt,
+      device_group: requestedGroup || "NOVA",
+    };
+    existing.device_group = normalizeDeviceGroup(existing.device_group || requestedGroup || "NOVA") || "NOVA";
+    existing.online = true;
+    existing.last_seen = connectedAt;
+    existing.capabilities = CAPABILITIES;
+    existing.active_ws_session_id = sessionId;
+    record.devices[deviceId] = existing;
+    await this.writeFleet(record);
+
+    return new Response(null, { status: 101, webSocket: client });
+  }
+
+  async webSocketMessage(ws, message) {
+    const attachment = this.socketAttachment(ws);
+    const deviceId = normalizeDeviceId(attachment?.device_id);
+    if (!deviceId || !this.isCurrentSocket(deviceId, ws)) return;
+
+    let parsed;
+    try {
+      parsed = JSON.parse(decodeWebSocketMessage(message));
+    } catch (_error) {
+      return;
+    }
+    if (parsed?.type !== "ack") return;
+    if (normalizeDeviceId(parsed.device_id) !== deviceId) return;
+
+    await BaseFleetState.prototype.dispatchFleetAck.call(
+      this,
+      new Request("https://localhost/aot/ack", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(parsed),
+      }),
+    );
+  }
+
+  async releaseSocketSession(ws) {
+    const attachment = this.socketAttachment(ws);
+    const deviceId = normalizeDeviceId(attachment?.device_id);
+    const sessionId = String(attachment?.session_id || "");
+    if (!deviceId || !sessionId) return;
+
+    const live = this.aotLive?.get?.(deviceId);
+    if (live?.socket === ws) this.aotLive.delete(deviceId);
+
+    const record = await this.readFleet();
+    const device = record.devices?.[deviceId];
+    if (!device || String(device.active_ws_session_id || "") !== sessionId) return;
+
+    device.online = false;
+    delete device.active_ws_session_id;
+    await this.writeFleet(record);
+  }
+
+  async webSocketClose(ws, _code, _reason, _wasClean) {
+    await this.releaseSocketSession(ws);
+  }
+
+  async webSocketError(ws, _error) {
+    await this.releaseSocketSession(ws);
   }
 }
