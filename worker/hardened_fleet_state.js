@@ -6,6 +6,7 @@ import {
 } from "./fleet_state.js";
 
 const CAPABILITIES = ["allocate_server_2pc", "update_delta"];
+const CREDENTIAL_ROLLBACK_GRACE_MS = 5 * 60 * 1000;
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -167,6 +168,10 @@ export class FleetState extends SecureFleetState {
       return json({ ok: false, error: "pair_decision_token_invalid" }, 403);
     }
 
+    const previousSecretHash = decision === "approve"
+      ? String(record.devices?.[pair.device_id]?.agent_secret_sha256 || "")
+      : "";
+
     if (decision === "approve") {
       // Re-pairing rotates credentials. Close sockets authenticated with the old
       // credential before the new digest becomes authoritative.
@@ -187,7 +192,65 @@ export class FleetState extends SecureFleetState {
       },
       body: JSON.stringify({ pair_id: pairId, decision }),
     });
-    return super.handlePairDecision(forwarded);
+    const response = await super.handlePairDecision(forwarded);
+
+    // Server-side credential rotation happens at approval time, before the new
+    // runtime has proven it can establish a live WebSocket. Preserve the prior
+    // digest for a short rollback-only grace window. The first successful socket
+    // using the new credential commits the rotation and removes this fallback.
+    if (
+      decision === "approve" &&
+      response.ok &&
+      previousSecretHash &&
+      !safeEqual(previousSecretHash, String(pair.device_secret_sha256 || ""))
+    ) {
+      const fresh = await this.readFleet();
+      const device = fresh.devices?.[pair.device_id];
+      if (device) {
+        device.previous_agent_secret_sha256 = previousSecretHash;
+        device.previous_agent_secret_expires_at = Date.now() + CREDENTIAL_ROLLBACK_GRACE_MS;
+        await this.writeFleet(fresh);
+      }
+    }
+
+    return response;
+  }
+
+  async verifyDeviceSecret(deviceId, presentedSecret) {
+    if (await super.verifyDeviceSecret(deviceId, presentedSecret)) return true;
+    if (!presentedSecret) return false;
+
+    const record = await this.readFleet();
+    const device = record.devices?.[deviceId];
+    const previousHash = String(device?.previous_agent_secret_sha256 || "");
+    const expiresAt = Number(device?.previous_agent_secret_expires_at || 0);
+    if (!previousHash) return false;
+
+    if (expiresAt <= Date.now()) {
+      delete device.previous_agent_secret_sha256;
+      delete device.previous_agent_secret_expires_at;
+      await this.writeFleet(record);
+      return false;
+    }
+
+    const presentedHash = await sha256Hex(presentedSecret);
+    return safeEqual(presentedHash, previousHash);
+  }
+
+  async commitCredentialRotation(deviceId, presentedSecret) {
+    if (!presentedSecret) return false;
+    const record = await this.readFleet();
+    const device = record.devices?.[deviceId];
+    if (!device?.previous_agent_secret_sha256) return false;
+
+    const presentedHash = await sha256Hex(presentedSecret);
+    const currentHash = String(device.agent_secret_sha256 || "");
+    if (!currentHash || !safeEqual(presentedHash, currentHash)) return false;
+
+    delete device.previous_agent_secret_sha256;
+    delete device.previous_agent_secret_expires_at;
+    await this.writeFleet(record);
+    return true;
   }
 
   async handleAgentStatus(request) {
@@ -281,6 +344,7 @@ export class FleetState extends SecureFleetState {
     const tag = `device:fleet:${deviceId}`;
     this.ctx?.acceptWebSocket?.(server, [tag]);
     this.aotLive.set(deviceId, { capabilities: CAPABILITIES, connected_at: Date.now(), socket: server });
+    await this.commitCredentialRotation(deviceId, presentedSecret);
 
     server.addEventListener("message", async (event) => {
       try {
