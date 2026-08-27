@@ -113,14 +113,41 @@ export class FleetState extends HardenedFleetState {
     return super.credentialKind(deviceId, presentedSecret);
   }
 
+  async promotePendingCredential(deviceId, presentedSecret) {
+    const promoted = await super.promotePendingCredential(deviceId, presentedSecret);
+    if (!promoted) return false;
+
+    // Promotion closes the old command socket. Invalidate its persisted session ID
+    // immediately so a late ACK from that closing socket cannot advance a 2PC batch
+    // during the small interval before the replacement socket is accepted.
+    const record = await this.readFleet();
+    const device = record.devices?.[deviceId];
+    if (device?.active_ws_session_id) {
+      delete device.active_ws_session_id;
+      await this.writeFleet(record);
+    }
+    this.aotLive?.delete?.(deviceId);
+    return true;
+  }
+
   isDeviceOnline(id, recordDevice) {
     const deviceId = normalizeDeviceId(id);
     if (!deviceId) return false;
 
-    if (this.currentSocket(deviceId)) return true;
+    const current = this.currentSocket(deviceId);
+    if (current) {
+      if (!recordDevice?.agent_secret_sha256) return true;
+      const attachment = this.socketAttachment(current);
+      const socketSessionId = String(attachment?.session_id || "");
+      const activeSessionId = String(recordDevice?.active_ws_session_id || "");
+      if (socketSessionId && activeSessionId && safeEqual(socketSessionId, activeSessionId)) {
+        return true;
+      }
+    }
 
-    // A paired device is ONLINE only when its authenticated command socket exists.
-    // A recent HTTP heartbeat alone must not satisfy fresh onboarding readiness.
+    // A paired device is ONLINE only when its authenticated command socket is the
+    // persisted active session. A recent HTTP heartbeat alone must not satisfy
+    // fresh onboarding readiness.
     if (recordDevice?.agent_secret_sha256) return false;
 
     // Temporary compatibility for pre-pairing legacy fleet sockets that were
@@ -232,12 +259,14 @@ export class FleetState extends HardenedFleetState {
     const connectedAt = Date.now();
     const tag = `device:fleet:${deviceId}`;
 
+    // Cloudflare's Hibernation API accepts the socket first; only then are
+    // send/close and attachment methods guaranteed to be usable on the server end.
+    this.ctx?.acceptWebSocket?.(server, [tag]);
     server.serializeAttachment({
       device_id: deviceId,
       session_id: sessionId,
       connected_at: connectedAt,
     });
-    this.ctx?.acceptWebSocket?.(server, [tag]);
     this.aotLive.set(deviceId, {
       capabilities: CAPABILITIES,
       connected_at: connectedAt,
@@ -264,7 +293,15 @@ export class FleetState extends HardenedFleetState {
   async webSocketMessage(ws, message) {
     const attachment = this.socketAttachment(ws);
     const deviceId = normalizeDeviceId(attachment?.device_id);
-    if (!deviceId || !this.isCurrentSocket(deviceId, ws)) return;
+    const sessionId = String(attachment?.session_id || "");
+    if (!deviceId || !sessionId || !this.isCurrentSocket(deviceId, ws)) return;
+
+    // The attachment identifies the socket after hibernation, while storage is the
+    // authoritative active-session fence. Both must agree before an ACK is allowed
+    // to mutate the 2PC state machine.
+    const record = await this.readFleet();
+    const activeSessionId = String(record.devices?.[deviceId]?.active_ws_session_id || "");
+    if (!activeSessionId || !safeEqual(activeSessionId, sessionId)) return;
 
     let parsed;
     try {
