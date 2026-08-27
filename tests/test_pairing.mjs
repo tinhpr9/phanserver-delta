@@ -136,7 +136,10 @@ async function runTests() {
     body: JSON.stringify({ device_id: "m73" })
   }));
   const ownStatusBody = await ownStatus.json();
-  if (ownStatus.status !== 200 || !ownStatusBody.device?.online) throw new Error("authenticated own-device status failed");
+  if (ownStatus.status !== 200) throw new Error("authenticated own-device status failed");
+  if (ownStatusBody.device?.online !== false) {
+    throw new Error("heartbeat-only device incorrectly reported ONLINE before command WebSocket");
+  }
 
   const badHeartbeatRes = await fleet.fetch(new Request("https://localhost/report", {
     method: "POST",
