@@ -3,7 +3,9 @@
 
 The base agent owns allocation behavior and retry logic. This entrypoint replaces
 only the WebSocket transport so the per-device credential is carried in the
-X-Agent-Secret handshake header instead of the URL query string.
+X-Agent-Secret handshake header instead of the URL query string. Fresh-device
+identity/config/state live under the private phanserver install root, so setup
+does not depend on Android shared-storage permission.
 """
 
 import argparse
@@ -11,6 +13,7 @@ import base64
 import hashlib
 import json
 import os
+import pathlib
 import socket
 import ssl
 import urllib.parse
@@ -159,7 +162,21 @@ def main() -> None:
     # becomes the only live command path used by the installed service.
     base.build_websocket_url = build_websocket_url
     base.run_websocket_session = run_websocket_session
-    base.run_agent_loop(single_tick=args.once)
+
+    state_root = pathlib.Path(
+        os.environ.get("PHANSERVER_DELTA_STATE_ROOT", str(pathlib.Path.home() / ".phanserver-delta"))
+    )
+    device_root = state_root / "device"
+    device_root.mkdir(parents=True, exist_ok=True)
+
+    base.run_agent_loop(
+        config_path=device_root / "agent_config.json",
+        device_id_path=device_root / "device_id.txt",
+        device_group_path=device_root / "device_group.txt",
+        state_path=device_root / "state.json",
+        links_path=device_root / "server_links.txt",
+        single_tick=args.once,
+    )
 
 
 if __name__ == "__main__":
