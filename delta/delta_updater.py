@@ -12,6 +12,7 @@ import shutil
 import stat
 import subprocess
 import tempfile
+import time
 import urllib.parse
 import urllib.request
 import zipfile
@@ -283,28 +284,94 @@ def download_asset(
     dest.parent.mkdir(parents=True, exist_ok=True)
     parsed = urllib.parse.urlparse(url)
     if parsed.scheme == "https":
-        req = urllib.request.Request(url, headers={"User-Agent": "phanserver-delta-updater/3.2"})
-        with urllib.request.urlopen(req, timeout=60) as response:
-            _require_https_final_url(response, "Asset download")
-            content_length = response.headers.get("Content-Length")
-            if content_length:
-                try:
-                    remote_size = int(content_length)
-                except ValueError as exc:
-                    raise DeltaUpdaterError("Invalid Content-Length from asset server") from exc
-                if remote_size != expected_size or remote_size > max_bytes:
-                    raise DeltaUpdaterError(
-                        f"Asset Content-Length mismatch: expected {expected_size}, got {remote_size}"
+        part = dest.with_name(dest.name + ".part")
+        max_retries = 6
+        last_error = None
+        last_reported_percent = -1
+        written = 0
+
+        if progress_label:
+            print(f"[DOWNLOAD] {progress_label}: 0% (0/{expected_size} bytes)", flush=True)
+
+        for attempt in range(1, max_retries + 1):
+            try:
+                current_size = part.stat().st_size if part.is_file() else 0
+                if current_size > expected_size:
+                    part.unlink(missing_ok=True)
+                    current_size = 0
+
+                headers = {"User-Agent": "phanserver-delta-updater/3.2"}
+                if current_size > 0:
+                    headers["Range"] = f"bytes={current_size}-"
+
+                req = urllib.request.Request(url, headers=headers)
+                with urllib.request.urlopen(req, timeout=60) as response:
+                    _require_https_final_url(response, "Asset download")
+                    status_code = getattr(response, "status", 200)
+
+                    if status_code == 206 and current_size > 0:
+                        file_mode = "ab"
+                        written = current_size
+                    else:
+                        file_mode = "wb"
+                        written = 0
+
+                    with open(part, file_mode) as output:
+                        while True:
+                            chunk = response.read(CHUNK_SIZE)
+                            if not chunk:
+                                break
+                            written += len(chunk)
+                            if written > max_bytes or written > expected_size:
+                                raise DeltaUpdaterError("Downloaded asset exceeded declared size or safety limit")
+                            output.write(chunk)
+                            if progress_label:
+                                percent = min(100, written * 100 // expected_size)
+                                if percent == 100 or percent >= last_reported_percent + PROGRESS_REPORT_PERCENT:
+                                    print(
+                                        f"[DOWNLOAD] {progress_label}: {percent}% "
+                                        f"({written}/{expected_size} bytes)",
+                                        flush=True,
+                                    )
+                                    last_reported_percent = percent
+                        output.flush()
+                        os.fsync(output.fileno())
+
+                if written == expected_size:
+                    hasher = hashlib.sha256()
+                    with open(part, "rb") as f:
+                        while chunk := f.read(CHUNK_SIZE):
+                            hasher.update(chunk)
+                    actual_sha256 = hasher.hexdigest().lower()
+                    if actual_sha256 != expected_sha256:
+                        part.unlink(missing_ok=True)
+                        raise DeltaUpdaterError(
+                            f"SHA256 checksum mismatch: expected {expected_sha256}, got {actual_sha256}"
+                        )
+                    os.replace(part, dest)
+                    return
+                else:
+                    last_error = DeltaUpdaterError(
+                        f"Downloaded asset size mismatch: expected {expected_size}, got {written}"
                     )
-            _stream_to_verified_file(
-                response,
-                dest,
-                expected_size=expected_size,
-                expected_sha256=expected_sha256,
-                max_bytes=max_bytes,
-                progress_label=progress_label,
-            )
-        return
+            except Exception as exc:
+                last_error = exc
+                err_msg = str(exc)
+                if isinstance(exc, DeltaUpdaterError) and (
+                    "outside HTTPS" in err_msg
+                    or "checksum mismatch" in err_msg
+                    or "exceeded declared size" in err_msg
+                ):
+                    break
+                if attempt == max_retries:
+                    break
+                time.sleep(2)
+
+        part.unlink(missing_ok=True)
+        if isinstance(last_error, DeltaUpdaterError):
+            raise last_error
+        raise DeltaUpdaterError(f"Download failed after {max_retries} attempts: {last_error}") from last_error
+
     if parsed.scheme == "file":
         local_path = pathlib.Path(urllib.request.url2pathname(parsed.path))
         if not local_path.is_file():
