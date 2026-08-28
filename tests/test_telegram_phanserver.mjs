@@ -201,6 +201,11 @@ async function runTests() {
     throw new Error("devices test failed: " + (sentMessages[0]?.text || ""));
   }
 
+  await triggerMessage("UPDATE");
+  if (!sentMessages[0]?.text.includes("UPDATE_TARGET_REQUIRED") || !sentMessages[0].text.includes("/update m1")) {
+    throw new Error("bare update guidance test failed: " + (sentMessages[0]?.text || ""));
+  }
+
   await triggerMessage("/update m1,m2");
   const updateCall = fleetControlCalls.at(-1);
   if (updateCall?.kind !== "update_delta" || updateCall?.protocol !== "fleet-batch-v1") {
