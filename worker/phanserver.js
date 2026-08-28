@@ -198,8 +198,12 @@ export async function handleUpdate(update, env, fleetState) {
         assets = manifest?.assets || [];
         tag = manifest?.release_tag || manifest?.version || tag;
       } else {
+        const headers = { "User-Agent": "phanserver-delta-worker", "Accept": "application/vnd.github.v3+json" };
+        if (env?.GITHUB_TOKEN) {
+          headers["Authorization"] = `Bearer ${env.GITHUB_TOKEN}`;
+        }
         const manifestRes = await fetch("https://api.github.com/repos/tinhpr9/phanserver-delta/releases?per_page=5", {
-          headers: { "User-Agent": "phanserver-delta-worker" }
+          headers
         }).catch(() => null);
         if (manifestRes && manifestRes.ok) {
           const releases = await manifestRes.json();

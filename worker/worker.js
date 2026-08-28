@@ -16,8 +16,12 @@ export default {
 
     if (path === "/delta/manifest") {
       try {
+        const headers = { "User-Agent": "phanserver-delta-worker", "Accept": "application/vnd.github.v3+json" };
+        if (env?.GITHUB_TOKEN) {
+          headers["Authorization"] = `Bearer ${env.GITHUB_TOKEN}`;
+        }
         const ghRes = await fetch("https://api.github.com/repos/tinhpr9/phanserver-delta/releases?per_page=5", {
-          headers: { "User-Agent": "phanserver-delta-worker" }
+          headers
         });
         if (ghRes.ok) {
           const releases = await ghRes.json();
@@ -46,6 +50,7 @@ export default {
         channel: "delta",
         version: "1.0.0",
         release_date: "2026-08-26T12:00:00Z",
+        debug_error: debugError,
         assets: [
           {
             name: "Delta-v1.0.0.apk",
