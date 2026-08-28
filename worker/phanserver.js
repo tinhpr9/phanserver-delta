@@ -171,6 +171,24 @@ export async function handleUpdate(update, env, fleetState) {
     return;
   }
 
+  if (input.toUpperCase() === "UPDATE" || input === "/update") {
+    try {
+      const stateResult = await fleetStateCall(env, fleetState, "/aot/hub/state");
+      const devices = stateResult.data?.state?.devices || [];
+      const onlineIds = devices
+        .filter(device => device.online)
+        .map(device => String(device.device_id))
+        .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+      const text = onlineIds.length
+        ? `UPDATE_TARGET_REQUIRED\nONLINE_DEVICES=${onlineIds.join(",")}\nGửi: /update <device1,device2...>`
+        : `UPDATE_BLOCKED=NO_ONLINE_DEVICES\nDEVICES=${devices.length}\nONLINE=0`;
+      await telegram(env, "sendMessage", { chat_id: chatId, text });
+    } catch (error) {
+      await telegram(env, "sendMessage", { chat_id: chatId, text: "UPDATE_UNAVAILABLE" });
+    }
+    return;
+  }
+
   if (input.match(/^\/update(?:\s|$)/)) {
     const parts = input.split(/\s+/);
     if (parts.length !== 2) {
