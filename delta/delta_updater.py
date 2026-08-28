@@ -345,12 +345,10 @@ def install_apk(apk_path: str | pathlib.Path) -> None:
             su_path = shutil.which("su")
             if not su_path:
                 raise DeltaUpdaterError("Root access disappeared before APK installation")
-            env = os.environ.copy()
-            env["DELTA_APK_SIZE"] = str(apk_size)
+            su_cmd = f"exec pm install -r -d -S {apk_size} -"
             result = subprocess.run(
-                [su_path, "-c", 'exec pm install -r -d -S "$DELTA_APK_SIZE" -'],
+                [su_path, "-c", su_cmd],
                 stdin=source,
-                env=env,
                 **common_kwargs,
             )
     output = ((result.stdout or "") + "\n" + (result.stderr or "")).strip()

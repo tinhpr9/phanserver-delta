@@ -146,7 +146,7 @@ class TestDeltaUpdater(unittest.TestCase):
 
         def capture_stdin(*args, **kwargs):
             captured["payload"] = kwargs["stdin"].read()
-            captured["env"] = kwargs["env"]
+            captured["args"] = args[0] if args else kwargs.get("args")
             return mock.MagicMock(returncode=0, stdout="Success\n", stderr="")
 
         mock_run.side_effect = capture_stdin
@@ -154,10 +154,33 @@ class TestDeltaUpdater(unittest.TestCase):
 
         self.assertEqual(
             mock_run.call_args.args[0],
-            ["/system/xbin/su", "-c", 'exec pm install -r -d -S "$DELTA_APK_SIZE" -'],
+            ["/system/xbin/su", "-c", "exec pm install -r -d -S 8 -"],
         )
         self.assertEqual(captured["payload"], b"fake-apk")
-        self.assertEqual(captured["env"]["DELTA_APK_SIZE"], "8")
+        self.assertNotIn("DELTA_APK_SIZE", mock_run.call_args.kwargs.get("env") or {})
+
+    @mock.patch("delta.delta_updater.shutil.which", return_value="/system/xbin/su")
+    @mock.patch("delta.delta_updater.os.geteuid", return_value=2000)
+    @mock.patch("delta.delta_updater.root_available", return_value=True)
+    @mock.patch("delta.delta_updater.subprocess.run")
+    def test_install_apk_via_su_regression_purged_env_has_positive_size(self, mock_run, _mock_root, _mock_euid, _mock_which):
+        # Simulates su purging environment variables where DELTA_APK_SIZE would become empty
+        apk = self.root_path / "app.apk"
+        payload = b"123456789012345"
+        apk.write_bytes(payload)
+
+        def mock_su_run(cmd_args, **kwargs):
+            cmd_str = cmd_args[2]
+            # Ensure the command string itself contains the numeric size -S <positive_int> -
+            self.assertIn(f"-S {len(payload)} -", cmd_str)
+            self.assertNotIn("$DELTA_APK_SIZE", cmd_str)
+            # Verify payload is passed via stdin
+            streamed = kwargs["stdin"].read()
+            self.assertEqual(streamed, payload)
+            return mock.MagicMock(returncode=0, stdout="Success\n", stderr="")
+
+        mock_run.side_effect = mock_su_run
+        delta_updater.install_apk(apk)
 
     def test_extract_zip_apks_crc_and_normal_content(self):
         archive = self.root_path / "download.zip"
@@ -227,6 +250,50 @@ class TestDeltaUpdater(unittest.TestCase):
                 download_dir=self.root_path / "downloads",
             )
         mock_install.assert_not_called()
+
+    @mock.patch("delta.delta_updater.shutil.which", return_value="/system/xbin/su")
+    @mock.patch("delta.delta_updater.os.geteuid", return_value=2000)
+    @mock.patch("delta.delta_updater.root_available", return_value=True)
+    @mock.patch("delta.delta_updater.subprocess.run")
+    def test_e2e_updater_full_flow_with_su_subprocess(self, mock_run, _mock_root, _mock_euid, _mock_which):
+        direct = self.root_path / "app1.apk"
+        direct.write_bytes(b"APK_PAYLOAD_1")
+        archive = self.root_path / "bundle.zip"
+        with zipfile.ZipFile(archive, "w") as bundle:
+            bundle.writestr("nested.apk", b"APK_PAYLOAD_NESTED")
+
+        installed_commands = []
+        installed_payloads = []
+
+        def mock_su_run(cmd_args, **kwargs):
+            installed_commands.append(cmd_args)
+            installed_payloads.append(kwargs["stdin"].read())
+            return mock.MagicMock(returncode=0, stdout="Success\n", stderr="")
+
+        mock_run.side_effect = mock_su_run
+
+        download_root = self.root_path / "downloads_e2e"
+        result = delta_updater.run_delta_update(
+            self.manifest(self.asset(direct), self.asset(archive)),
+            download_dir=download_root,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["installed_count"], 2)
+        self.assertEqual(len(installed_commands), 2)
+        # Verify commands contain exact positive sizes and stream exact payloads
+        self.assertEqual(
+            installed_commands[0],
+            ["/system/xbin/su", "-c", f"exec pm install -r -d -S {len(b'APK_PAYLOAD_1')} -"],
+        )
+        self.assertEqual(installed_payloads[0], b"APK_PAYLOAD_1")
+        self.assertEqual(
+            installed_commands[1],
+            ["/system/xbin/su", "-c", f"exec pm install -r -d -S {len(b'APK_PAYLOAD_NESTED')} -"],
+        )
+        self.assertEqual(installed_payloads[1], b"APK_PAYLOAD_NESTED")
+        # Verify download directory cleaned up
+        self.assertEqual(list(download_root.iterdir()), [])
 
 
 if __name__ == "__main__":
