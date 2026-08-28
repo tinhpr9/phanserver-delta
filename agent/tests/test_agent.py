@@ -92,7 +92,28 @@ class TestDeviceAgent(unittest.TestCase):
             self.assertTrue(res_commit)
             self.assertEqual(mock_ack.call_args[1]["status"], "OPENED")
 
-    @mock.patch("agent.agent.send_report", return_value=True)
+    @mock.patch("agent.agent.send_ack", return_value=True)
+    @mock.patch("agent.agent.delta_updater.run_delta_update")
+    def test_update_delta_is_idempotent(self, mock_update, mock_ack):
+        message = {
+            "protocol": "fleet-batch-v1",
+            "action": "UPDATE_DELTA",
+            "action_id": "delta-100",
+            "target_device_ids": ["m72"],
+        }
+        state = {}
+        self.assertTrue(agent.handle_incoming_batch_action(
+            message, "m72", "https://mock/report", "sec", state, self.state_path, self.links_path
+        ))
+        self.assertEqual(mock_update.call_count, 1)
+        self.assertEqual(mock_ack.call_args.kwargs["batch_action"], "UPDATE_DELTA")
+        self.assertTrue(self.state_path.is_file())
+        self.assertTrue(agent.handle_incoming_batch_action(
+            message, "m72", "https://mock/report", "sec", state, self.state_path, self.links_path
+        ))
+        self.assertEqual(mock_update.call_count, 1)
+
+    @mock.patch("agent.agent.send_report_response", return_value={})
     def test_run_agent_loop_once(self, mock_report):
         agent.run_agent_loop(
             config_path=self.cfg_path,
