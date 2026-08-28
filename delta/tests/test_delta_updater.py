@@ -273,6 +273,30 @@ class TestDeltaUpdater(unittest.TestCase):
         # Verify download directory cleaned up
         self.assertEqual(list(download_root.iterdir()), [])
 
+    def test_filter_apks_modes(self):
+        apks = [
+            pathlib.Path("0001_1.1.1.1_warp.apk"),
+            pathlib.Path("0002_opera_mini.apk"),
+            pathlib.Path("0003_delta_roblox_1.apk"),
+            pathlib.Path("0004_delta_roblox_2.apk"),
+            pathlib.Path("0005_swift_backup.apk"),
+        ]
+        # All
+        self.assertEqual(len(delta_updater.filter_apks(apks, "all")), 5)
+        # By index
+        self.assertEqual(delta_updater.filter_apks(apks, "2"), [apks[1]])
+        # By range
+        self.assertEqual(delta_updater.filter_apks(apks, "1-3"), apks[0:3])
+        # By keyword
+        self.assertEqual(delta_updater.filter_apks(apks, "opera"), [apks[1]])
+        self.assertEqual(len(delta_updater.filter_apks(apks, "delta")), 2)
+        # Random
+        self.assertEqual(len(delta_updater.filter_apks(apks, "random")), 1)
+        # Keyword random
+        res_kw_rnd = delta_updater.filter_apks(apks, "delta:random")
+        self.assertEqual(len(res_kw_rnd), 1)
+        self.assertIn("delta", res_kw_rnd[0].name)
+
 
 if __name__ == "__main__":
     unittest.main()

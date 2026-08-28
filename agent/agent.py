@@ -177,7 +177,8 @@ def handle_incoming_batch_action(
             )
             return True
         try:
-            delta_updater.run_delta_update()
+            selection = message.get("selection")
+            delta_updater.run_delta_update(selection=selection)
             result = {"status": "OPENED", "executed": True}
         except Exception as e:
             result = {"status": "FAILED", "executed": False, "reason": str(e)[:160]}

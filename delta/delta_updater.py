@@ -494,6 +494,72 @@ def extract_zip_apks(zip_path: str | pathlib.Path, output_dir: str | pathlib.Pat
     return extracted
 
 
+def parse_indices(spec: str, total: int) -> list[int]:
+    """Parse comma/dash separated 1-based indices (e.g. '1,3,5' or '1-3' or '4')."""
+    selected: set[int] = set()
+    for part in spec.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            bounds = part.split("-", 1)
+            if bounds[0].isdigit() and bounds[1].isdigit():
+                start, end = int(bounds[0]), int(bounds[1])
+                for idx in range(start, end + 1):
+                    if 1 <= idx <= total:
+                        selected.add(idx - 1)
+        elif part.isdigit():
+            idx = int(part)
+            if 1 <= idx <= total:
+                selected.add(idx - 1)
+    return sorted(selected)
+
+
+def filter_apks(
+    install_queue: list[pathlib.Path], selection: Optional[str] = None
+) -> list[pathlib.Path]:
+    if not install_queue:
+        return []
+    if not selection or str(selection).strip().lower() in ("all", "none", "*", ""):
+        return install_queue
+
+    sel = str(selection).strip().lower()
+
+    # Full random
+    if sel in ("random", "rnd"):
+        import random
+        return [random.choice(install_queue)]
+
+    # Keyword random (e.g. "delta:random", "opera:rnd", "random:3")
+    if sel.startswith("random:"):
+        count_str = sel.split(":", 1)[1]
+        count = int(count_str) if count_str.isdigit() else 1
+        count = max(1, min(count, len(install_queue)))
+        import random
+        return random.sample(install_queue, count)
+
+    if ":random" in sel or ":rnd" in sel:
+        kw = sel.split(":", 1)[0]
+        matched = [apk for apk in install_queue if kw in apk.name.lower()]
+        if not matched:
+            raise DeltaUpdaterError(f"Không tìm thấy APK nào chứa từ khóa '{kw}' để chọn ngẫu nhiên")
+        import random
+        return [random.choice(matched)]
+
+    # Numeric indices (e.g. "4", "1,3,5", "1-4")
+    if re.match(r"^\d+(?:-\d+|,\d+)*$", sel):
+        indices = parse_indices(sel, len(install_queue))
+        if not indices:
+            raise DeltaUpdaterError(f"Chỉ số lựa chọn '{selection}' vượt quá số lượng APK ({len(install_queue)})")
+        return [install_queue[i] for i in indices]
+
+    # Keyword / App name filter (e.g. "opera", "1.1.1.1", "delta", "roblox")
+    matched = [apk for apk in install_queue if sel in apk.name.lower()]
+    if not matched:
+        raise DeltaUpdaterError(f"Không tìm thấy APK nào khớp với '{selection}' trong Release")
+    return matched
+
+
 def _select_assets(assets: list[dict[str, Any]]) -> list[dict[str, Any]]:
     selected = [asset for asset in assets if asset.get("kind") in {"apk", "zip"}]
     if not selected:
@@ -504,6 +570,7 @@ def _select_assets(assets: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def run_delta_update(
     manifest_source: Optional[str | pathlib.Path | dict] = None,
     download_dir: Optional[str | pathlib.Path] = None,
+    selection: Optional[str] = None,
 ) -> dict[str, Any]:
     """Verify every selected APK/ZIP before the first Android install mutation."""
     dl_dir = pathlib.Path(download_dir or DEFAULT_DOWNLOAD_DIR)
@@ -548,6 +615,10 @@ def run_delta_update(
         if not install_queue:
             raise DeltaUpdaterError("UPDATE_DELTA verified release but found zero APKs")
 
+        install_queue = filter_apks(install_queue, selection)
+        if not install_queue:
+            raise DeltaUpdaterError("UPDATE_DELTA không tìm thấy APK nào phù hợp với điều kiện lọc")
+
         print(f"[INSTALL] all assets verified; installing {len(install_queue)} APK(s)", flush=True)
         for index, apk in enumerate(install_queue, 1):
             print(f"[INSTALL] {index}/{len(install_queue)} {apk.name}", flush=True)
@@ -560,6 +631,7 @@ def run_delta_update(
         "version": manifest["version"],
         "release_tag": manifest.get("release_tag"),
         "installed_count": installed_count,
+        "selection": selection or "all",
     }
 
 

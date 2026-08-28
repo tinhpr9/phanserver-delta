@@ -302,13 +302,17 @@ export class FleetState {
     }
 
     if (body.kind === "update_delta") {
-      return this.queueDeltaUpdate(record, Array.isArray(body.target_device_ids) ? body.target_device_ids : []);
+      return this.queueDeltaUpdate(
+        record,
+        Array.isArray(body.target_device_ids) ? body.target_device_ids : [],
+        body.selection || "all"
+      );
     }
 
     return json({ ok: false, error: "unsupported_fleet_control" }, 400);
   }
 
-  async queueDeltaUpdate(record, requestedTargetIds) {
+  async queueDeltaUpdate(record, requestedTargetIds, selection = "all") {
     const fresh = await this.readFleet();
     const targets = [];
     const seen = new Set();
@@ -331,6 +335,7 @@ export class FleetState {
       protocol: AOT_HUB_PROTOCOL_VERSION,
       action_id: actionId,
       action: "UPDATE_DELTA",
+      selection: selection,
       target_device_ids: targets,
       created_at: Date.now()
     };

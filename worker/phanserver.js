@@ -180,7 +180,7 @@ export async function handleUpdate(update, env, fleetState) {
         .map(device => String(device.device_id))
         .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
       const text = onlineIds.length
-        ? `UPDATE_TARGET_REQUIRED\nONLINE_DEVICES=${onlineIds.join(",")}\nGửi: /update <device1,device2...>`
+        ? `UPDATE_TARGET_REQUIRED\nONLINE_DEVICES=${onlineIds.join(",")}\nGửi: /update ${onlineIds.join(",")}`
         : `UPDATE_BLOCKED=NO_ONLINE_DEVICES\nDEVICES=${devices.length}\nONLINE=0`;
       await telegram(env, "sendMessage", { chat_id: chatId, text });
     } catch (error) {
@@ -189,22 +189,56 @@ export async function handleUpdate(update, env, fleetState) {
     return;
   }
 
+  if (input === "/apks" || input === "/release") {
+    try {
+      let assets = [];
+      let version = "1.0.0";
+      if (env?.getManifest) {
+        const manifest = await env.getManifest(env);
+        assets = manifest?.assets || [];
+        version = manifest?.version || version;
+      } else {
+        const manifestRes = await fetch("https://phanserver-delta-worker.tinh1020pr.workers.dev/delta/manifest").catch(() => null);
+        if (manifestRes && manifestRes.ok) {
+          const manifestData = await manifestRes.json();
+          assets = manifestData?.assets || [];
+          version = manifestData?.version || version;
+        }
+      }
+      if (!assets.length) {
+        assets = [{ name: "Delta-v1.0.0.apk", size: 1024, kind: "apk" }];
+      }
+      let text = `📦 DANH SÁCH APP TRONG RELEASE (v${version}):\n`;
+      assets.forEach((a, i) => {
+        text += `${i + 1}. ${a.name} (${a.size || "N/A"} bytes)\n`;
+      });
+      text += `\n💡 Gợi ý lệnh:\n• Cài tất cả: /update <device1,device2...>\n• Cài chọn lọc: /update <device> <keyword|số_thứ_tự>\n• Bốc ngẫu nhiên: /update <device> random`;
+      await telegram(env, "sendMessage", { chat_id: chatId, text });
+    } catch (error) {
+      await telegram(env, "sendMessage", { chat_id: chatId, text: "Lỗi lấy danh sách Release." });
+    }
+    return;
+  }
+
   if (input.match(/^\/update(?:\s|$)/)) {
     const parts = input.split(/\s+/);
-    if (parts.length !== 2) {
-      await telegram(env, "sendMessage", { chat_id: chatId, text: "Cú pháp: /update <device1,device2...>" });
+    if (parts.length < 2 || parts.length > 3) {
+      await telegram(env, "sendMessage", { chat_id: chatId, text: "Cú pháp: /update <device1,device2...> [selection]" });
       return;
     }
+    const targetStr = parts[1];
+    const selection = parts[2] || "all";
     try {
-      const ids = await resolveAndValidateTelegramTargets(parts[1], env, fleetState);
+      const ids = await resolveAndValidateTelegramTargets(targetStr, env, fleetState);
       const result = await fleetStateCall(env, fleetState, "/aot/hub/control", {
         method: "POST",
-        body: { protocol: "fleet-batch-v1", kind: "update_delta", target_device_ids: ids }
+        body: { protocol: "fleet-batch-v1", kind: "update_delta", target_device_ids: ids, selection }
       });
       if (!result?.response?.ok) throw new Error(result?.data?.error || "update_queue_failed");
+      const selText = selection !== "all" ? ` (Lựa chọn: ${selection})` : "";
       await telegram(env, "sendMessage", {
         chat_id: chatId,
-        text: `Đã xếp UPDATE_DELTA: ${ids.join(", ")}. Thiết bị sẽ nhận lệnh ở heartbeat kế tiếp.`
+        text: `Đã xếp UPDATE_DELTA: ${ids.join(", ")}${selText}. Thiết bị sẽ nhận lệnh ở heartbeat kế tiếp.`
       });
     } catch (error) {
       await telegram(env, "sendMessage", { chat_id: chatId, text: "Lỗi UPDATE_DELTA: " + String(error.message || error) });

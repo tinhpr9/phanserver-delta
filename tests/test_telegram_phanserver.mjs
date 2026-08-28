@@ -215,6 +215,22 @@ async function runTests() {
     throw new Error("update delta confirmation test failed: " + (sentMessages[0]?.text || ""));
   }
 
+  // 8. Selective UPDATE_DELTA dispatch
+  await triggerMessage("/update m1,m2 random");
+  const updateCall2 = fleetControlCalls.at(-1);
+  if (updateCall2?.kind !== "update_delta" || updateCall2?.selection !== "random") {
+    throw new Error("selective update delta dispatch test failed: " + JSON.stringify(updateCall2));
+  }
+  if (!sentMessages[0]?.text.includes("Lựa chọn: random")) {
+    throw new Error("selective update delta confirmation test failed: " + (sentMessages[0]?.text || ""));
+  }
+
+  // 9. APKs release list command
+  await triggerMessage("/apks");
+  if (!sentMessages[0]?.text.includes("DANH SÁCH APP TRONG RELEASE")) {
+    throw new Error("apks list test failed: " + (sentMessages[0]?.text || ""));
+  }
+
   console.log("TEST_TELEGRAM_PHANSERVER_EQUIVALENCE=OK");
 }
 
