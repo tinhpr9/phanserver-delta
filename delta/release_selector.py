@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build an install manifest from the latest dedicated Delta GitHub Release."""
+"""Build an install manifest from the newest stable installable GitHub Release."""
 
 from __future__ import annotations
 
@@ -11,7 +11,6 @@ import urllib.parse
 from typing import Any
 
 TRUSTED_REPO = "tinhpr9/phanserver-delta"
-DELTA_TAG_PREFIX = "delta-"
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -21,6 +20,13 @@ class ReleaseSelectionError(RuntimeError):
 
 def _release_time(release: dict[str, Any]) -> str:
     return str(release.get("published_at") or release.get("created_at") or "")
+
+
+def _is_excluded_release(release: dict[str, Any]) -> bool:
+    """Exclude known non-Delta runtime releases without requiring a naming convention."""
+    tag = str(release.get("tag_name") or "").strip().lower()
+    name = str(release.get("name") or "").strip().lower()
+    return tag.startswith("worker") or name.startswith("worker") or name.startswith("aot worker")
 
 
 def _asset_kind(name: str) -> str:
@@ -37,44 +43,40 @@ def _asset_kind(name: str) -> str:
     return ""
 
 
-def _candidate_assets(release: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    direct: list[dict[str, Any]] = []
-    archives: list[dict[str, Any]] = []
+def _candidate_assets(release: dict[str, Any]) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
     for asset in release.get("assets") or []:
         if not isinstance(asset, dict):
             continue
-        kind = _asset_kind(str(asset.get("name") or ""))
-        if kind == "apk":
-            direct.append(asset)
-        elif kind == "zip":
-            archives.append(asset)
-    return direct, archives
+        if _asset_kind(str(asset.get("name") or "")):
+            candidates.append(asset)
+    return candidates
 
 
 def _validate_asset(asset: dict[str, Any]) -> dict[str, Any]:
     name = str(asset.get("name") or "")
     kind = _asset_kind(name)
     if not kind:
-        raise ReleaseSelectionError(f"Invalid Delta asset name/type: {name!r}")
+        raise ReleaseSelectionError(f"Invalid installable asset name/type: {name!r}")
 
     size = asset.get("size")
     if not isinstance(size, int) or isinstance(size, bool) or size <= 0:
-        raise ReleaseSelectionError(f"Delta asset has invalid size: {name}")
+        raise ReleaseSelectionError(f"Installable asset has invalid size: {name}")
 
     digest_raw = str(asset.get("digest") or "").strip().lower()
     if not digest_raw.startswith("sha256:"):
-        raise ReleaseSelectionError(f"Delta asset has no GitHub SHA-256 digest: {name}")
+        raise ReleaseSelectionError(f"Installable asset has no GitHub SHA-256 digest: {name}")
     sha256 = digest_raw.split(":", 1)[1]
     if not _SHA256_RE.fullmatch(sha256):
-        raise ReleaseSelectionError(f"Delta asset SHA-256 is invalid: {name}")
+        raise ReleaseSelectionError(f"Installable asset SHA-256 is invalid: {name}")
 
     url = str(asset.get("browser_download_url") or "").strip()
     parsed = urllib.parse.urlparse(url)
     if parsed.scheme != "https" or parsed.netloc.lower() != "github.com":
-        raise ReleaseSelectionError(f"Delta asset download URL is invalid: {name}")
+        raise ReleaseSelectionError(f"Installable asset download URL is invalid: {name}")
     expected_prefix = f"/{TRUSTED_REPO}/releases/download/"
     if not parsed.path.startswith(expected_prefix):
-        raise ReleaseSelectionError(f"Delta asset is outside the trusted repo: {name}")
+        raise ReleaseSelectionError(f"Installable asset is outside the trusted repo: {name}")
 
     return {
         "name": name,
@@ -86,11 +88,11 @@ def _validate_asset(asset: dict[str, Any]) -> dict[str, Any]:
 
 
 def select_latest_stable_delta_release(releases: Any) -> dict[str, Any]:
-    """Return a manifest for every installable asset in the newest `delta-*` release.
+    """Return every APK/ZIP from the newest stable installable release.
 
-    There is intentionally no business-level fixed APK count and no fixed APK-name list.
-    If a release has one or more direct APKs, every APK is selected and ZIPs are ignored.
-    ZIP assets are used only when the release has no direct APKs.
+    There is no business-level fixed asset count, tag prefix, filename inventory,
+    or APK-vs-ZIP preference. Draft/prerelease and known worker releases are not
+    eligible. Every eligible APK/ZIP in the selected release is validated.
     """
     if not isinstance(releases, list):
         raise ReleaseSelectionError("GitHub releases payload must be a list")
@@ -99,38 +101,32 @@ def select_latest_stable_delta_release(releases: Any) -> dict[str, Any]:
     for release in releases:
         if not isinstance(release, dict):
             continue
-        if release.get("draft") or release.get("prerelease"):
+        if release.get("draft") or release.get("prerelease") or _is_excluded_release(release):
             continue
-        tag = str(release.get("tag_name") or "").strip()
-        if not tag.lower().startswith(DELTA_TAG_PREFIX):
-            continue
-        direct, archives = _candidate_assets(release)
-        if direct or archives:
+        if _candidate_assets(release):
             stable.append(release)
 
     if not stable:
-        raise ReleaseSelectionError("No stable delta-* release with APK/ZIP assets was found")
+        raise ReleaseSelectionError("No stable release with APK/ZIP assets was found")
 
     stable.sort(key=_release_time, reverse=True)
     latest = stable[0]
-    tag = str(latest.get("tag_name") or "").strip()
-    direct, archives = _candidate_assets(latest)
-    chosen = direct if direct else archives
+    validated = [_validate_asset(asset) for asset in _candidate_assets(latest)]
 
-    validated = [_validate_asset(asset) for asset in chosen]
     names = [asset["name"] for asset in validated]
     if len(names) != len(set(names)):
-        raise ReleaseSelectionError("Delta release contains duplicate asset names")
+        raise ReleaseSelectionError("Release contains duplicate installable asset names")
 
     release_url = str(latest.get("html_url") or "").strip()
     release_id = latest.get("id")
     expected_release_prefix = f"https://github.com/{TRUSTED_REPO}/releases/"
     if not release_url.startswith(expected_release_prefix):
-        raise ReleaseSelectionError("Delta release URL is outside the trusted repo")
+        raise ReleaseSelectionError("Release URL is outside the trusted repo")
     if not isinstance(release_id, int) or release_id <= 0:
-        raise ReleaseSelectionError("Delta release ID is invalid")
+        raise ReleaseSelectionError("Release ID is invalid")
 
-    version = tag[len(DELTA_TAG_PREFIX):].strip() or tag
+    tag = str(latest.get("tag_name") or "").strip()
+    version = tag or str(release_id)
     return {
         "channel": "delta",
         "version": version,

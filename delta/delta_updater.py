@@ -48,10 +48,7 @@ def root_available() -> bool:
         return False
     try:
         proc = subprocess.run(
-            [su_path, "-c", "id -u"],
-            capture_output=True,
-            text=True,
-            timeout=5,
+            [su_path, "-c", "id -u"], capture_output=True, text=True, timeout=5
         )
         return proc.returncode == 0 and (proc.stdout or "").strip() == "0"
     except (OSError, subprocess.TimeoutExpired):
@@ -154,7 +151,7 @@ def load_latest_release_manifest(releases_url: str = DEFAULT_RELEASES_URL) -> di
     req = urllib.request.Request(
         releases_url,
         headers={
-            "User-Agent": "phanserver-delta-updater/3.0",
+            "User-Agent": "phanserver-delta-updater/3.1",
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
         },
@@ -180,8 +177,7 @@ def load_manifest(source: str | pathlib.Path | dict) -> dict[str, Any]:
         if parsed_source.scheme != "https":
             raise DeltaUpdaterError("Remote manifest must use HTTPS")
         req = urllib.request.Request(
-            str(source),
-            headers={"User-Agent": "phanserver-delta-updater/3.0"},
+            str(source), headers={"User-Agent": "phanserver-delta-updater/3.1"}
         )
         with urllib.request.urlopen(req, timeout=20) as resp:
             raw = resp.read(MAX_RELEASE_JSON_BYTES + 1)
@@ -260,7 +256,7 @@ def download_asset(
     dest.parent.mkdir(parents=True, exist_ok=True)
     parsed = urllib.parse.urlparse(url)
     if parsed.scheme == "https":
-        req = urllib.request.Request(url, headers={"User-Agent": "phanserver-delta-updater/3.0"})
+        req = urllib.request.Request(url, headers={"User-Agent": "phanserver-delta-updater/3.1"})
         with urllib.request.urlopen(req, timeout=60) as response:
             content_length = response.headers.get("Content-Length")
             if content_length:
@@ -403,34 +399,26 @@ def extract_zip_apks(zip_path: str | pathlib.Path, output_dir: str | pathlib.Pat
 
 
 def _select_assets(assets: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    direct = [asset for asset in assets if asset.get("kind") == "apk"]
-    if direct:
-        return direct
-    archives = [asset for asset in assets if asset.get("kind") == "zip"]
-    if not archives:
+    selected = [asset for asset in assets if asset.get("kind") in {"apk", "zip"}]
+    if not selected:
         raise DeltaUpdaterError("Manifest has no installable Delta assets")
-    return archives
+    return selected
 
 
 def run_delta_update(
     manifest_source: Optional[str | pathlib.Path | dict] = None,
     download_dir: Optional[str | pathlib.Path] = None,
 ) -> dict[str, Any]:
-    """Verify the whole selected release first, then install its APK set."""
+    """Verify every selected APK/ZIP before the first Android install mutation."""
     dl_dir = pathlib.Path(download_dir or DEFAULT_DOWNLOAD_DIR)
     dl_dir.mkdir(parents=True, exist_ok=True)
-    manifest = (
-        load_latest_release_manifest()
-        if manifest_source is None
-        else load_manifest(manifest_source)
-    )
+    manifest = load_latest_release_manifest() if manifest_source is None else load_manifest(manifest_source)
     assets = _select_assets(manifest["assets"])
 
     with tempfile.TemporaryDirectory(prefix=".delta-txn-", dir=dl_dir) as transaction_dir:
         tx_root = pathlib.Path(transaction_dir)
         staged: list[tuple[dict[str, Any], pathlib.Path]] = []
 
-        # Phase 1: download + byte-verify every selected release asset.
         for index, asset in enumerate(assets, 1):
             target = tx_root / f"{index:04d}_{safe_asset_name(asset['name'])}"
             download_asset(
@@ -441,7 +429,6 @@ def run_delta_update(
             )
             staged.append((asset, target))
 
-        # Phase 2: validate/extract every archive and build the complete install queue.
         install_queue: list[pathlib.Path] = []
         for index, (asset, target) in enumerate(staged, 1):
             if asset["kind"] == "apk":
@@ -453,10 +440,8 @@ def run_delta_update(
         if not install_queue:
             raise DeltaUpdaterError("UPDATE_DELTA verified release but found zero APKs")
 
-        # Phase 3: only after the complete set is verified do Android mutations begin.
         for apk in install_queue:
             install_apk(apk)
-
         installed_count = len(install_queue)
 
     return {

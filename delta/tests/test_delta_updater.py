@@ -134,37 +134,40 @@ class TestDeltaUpdater(unittest.TestCase):
         with self.assertRaisesRegex(delta_updater.DeltaUpdaterError, "symlink"):
             delta_updater.extract_zip_apks(symlink, self.root_path / "extract-symlink")
 
-    def test_direct_apks_are_all_preferred_over_zip(self):
+    def test_mixed_direct_apk_and_zip_are_all_selected(self):
         one = self.root_path / "one.apk"
-        two = self.root_path / "two.apk"
         archive = self.root_path / "bundle.zip"
         one.write_bytes(b"one")
-        two.write_bytes(b"two")
         with zipfile.ZipFile(archive, "w") as bundle:
             bundle.writestr("inside.apk", b"inside")
-        loaded = delta_updater.load_manifest(self.manifest(self.asset(archive), self.asset(one), self.asset(two)))
+        loaded = delta_updater.load_manifest(self.manifest(self.asset(archive), self.asset(one)))
         selected = delta_updater._select_assets(loaded["assets"])
-        self.assertEqual([item["name"] for item in selected], ["one.apk", "two.apk"])
+        self.assertEqual([item["name"] for item in selected], ["bundle.zip", "one.apk"])
 
     @mock.patch("delta.delta_updater.install_apk")
-    def test_run_delta_update_installs_arbitrary_number_after_full_verification(self, mock_install):
-        assets = []
-        for index in range(7):
-            apk = self.root_path / f"source-{index}.apk"
-            apk.write_bytes(f"apk-{index}".encode())
-            assets.append(self.asset(apk, name=f"App tùy ý {index}.apk"))
+    def test_run_delta_update_installs_direct_and_zip_apks_after_full_verification(self, mock_install):
+        direct = self.root_path / "direct.apk"
+        direct.write_bytes(b"direct")
+        archive = self.root_path / "bundle.zip"
+        with zipfile.ZipFile(archive, "w") as bundle:
+            bundle.writestr("inside-one.apk", b"one")
+            bundle.writestr("inside-two.apk", b"two")
         download_root = self.root_path / "downloads"
-        result = delta_updater.run_delta_update(self.manifest(*assets), download_dir=download_root)
-        self.assertEqual(result["installed_count"], 7)
-        self.assertEqual(mock_install.call_count, 7)
+        result = delta_updater.run_delta_update(
+            self.manifest(self.asset(direct), self.asset(archive)),
+            download_dir=download_root,
+        )
+        self.assertEqual(result["installed_count"], 3)
+        self.assertEqual(mock_install.call_count, 3)
         self.assertEqual(list(download_root.iterdir()), [])
 
     @mock.patch("delta.delta_updater.install_apk")
     def test_failure_in_later_download_installs_nothing(self, mock_install):
         first = self.root_path / "first.apk"
-        second = self.root_path / "second.apk"
+        second = self.root_path / "second.zip"
         first.write_bytes(b"first-good")
-        second.write_bytes(b"second-bad")
+        with zipfile.ZipFile(second, "w") as bundle:
+            bundle.writestr("inside.apk", b"inside")
         first_asset = self.asset(first)
         second_asset = self.asset(second)
         second_asset["sha256"] = "0" * 64

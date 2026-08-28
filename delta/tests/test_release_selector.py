@@ -11,17 +11,17 @@ SHA_B = "b" * 64
 REPO = "tinhpr9/phanserver-delta"
 
 
-def asset(name, *, size=123, sha=SHA_A, url=None):
+def asset(name, *, size=123, sha=SHA_A, tag="Backup", url=None):
     return {
         "name": name,
         "size": size,
         "digest": f"sha256:{sha}",
         "browser_download_url": url
-        or f"https://github.com/{REPO}/releases/download/delta-test/{name}",
+        or f"https://github.com/{REPO}/releases/download/{tag}/{name}",
     }
 
 
-def release(release_id, published, assets, *, tag="delta-test", name="Delta", draft=False, prerelease=False):
+def release(release_id, published, assets, *, tag="Backup", name="", draft=False, prerelease=False):
     return {
         "id": release_id,
         "tag_name": tag,
@@ -36,81 +36,65 @@ def release(release_id, published, assets, *, tag="delta-test", name="Delta", dr
 
 
 class TestReleaseSelector(unittest.TestCase):
-    def test_latest_delta_channel_wins_without_fixed_asset_names(self):
+    def test_latest_stable_installable_release_wins_without_tag_prefix(self):
         releases = [
-            release(1, "2026-08-20T00:00:00Z", [asset("Anything.apk")], tag="delta-old"),
+            release(1, "2026-08-20T00:00:00Z", [asset("old.apk", tag="old")], tag="old"),
             release(
                 2,
-                "2026-08-25T00:00:00Z",
-                [asset("Swift Backup.apk", sha=SHA_B), asset("ứng dụng tùy ý.apk")],
-                tag="delta-current",
+                "2026-08-28T00:00:00Z",
+                [asset("Delta.apk"), asset("delta2.zip"), asset("delta3.zip")],
+                tag="Backup",
             ),
         ]
         selected = select_latest_stable_delta_release(releases)
-        self.assertEqual(selected["version"], "current")
-        self.assertEqual(selected["release_tag"], "delta-current")
-        self.assertEqual([item["name"] for item in selected["assets"]], ["Swift Backup.apk", "ứng dụng tùy ý.apk"])
-        self.assertEqual(selected["assets"][0]["sha256"], SHA_B)
+        self.assertEqual(selected["release_tag"], "Backup")
+        self.assertEqual([item["name"] for item in selected["assets"]], ["Delta.apk", "delta2.zip", "delta3.zip"])
+        self.assertEqual([item["kind"] for item in selected["assets"]], ["apk", "zip", "zip"])
 
-    def test_non_delta_draft_and_prerelease_are_excluded(self):
+    def test_mixed_apk_zip_release_selects_all_installable_assets(self):
+        latest = release(
+            10,
+            "2026-08-28T00:00:00Z",
+            [asset("one.apk"), asset("bundle.zip", sha=SHA_B), asset("notes.txt")],
+        )
+        selected = select_latest_stable_delta_release([latest])
+        self.assertEqual([item["name"] for item in selected["assets"]], ["one.apk", "bundle.zip"])
+        self.assertEqual(selected["assets"][1]["sha256"], SHA_B)
+
+    def test_worker_draft_and_prerelease_are_excluded(self):
         releases = [
-            release(5, "2026-08-30T00:00:00Z", [asset("wrong.apk")], tag="worker-v9"),
-            release(4, "2026-08-29T00:00:00Z", [asset("draft.apk")], tag="delta-draft", draft=True),
-            release(3, "2026-08-28T00:00:00Z", [asset("pre.apk")], tag="delta-pre", prerelease=True),
-            release(2, "2026-08-25T00:00:00Z", [asset("good.apk")], tag="delta-good"),
+            release(5, "2026-08-30T00:00:00Z", [asset("worker.apk", tag="worker-v9")], tag="worker-v9", name="AOT Worker 9"),
+            release(4, "2026-08-29T00:00:00Z", [asset("draft.apk", tag="draft")], tag="draft", draft=True),
+            release(3, "2026-08-28T00:00:00Z", [asset("pre.apk", tag="pre")], tag="pre", prerelease=True),
+            release(2, "2026-08-25T00:00:00Z", [asset("good.apk", tag="Backup")], tag="Backup"),
         ]
         selected = select_latest_stable_delta_release(releases)
-        self.assertEqual(selected["release_tag"], "delta-good")
+        self.assertEqual(selected["release_tag"], "Backup")
 
-    def test_every_direct_apk_is_selected_and_zip_is_ignored_when_apk_exists(self):
-        latest = release(
-            10,
-            "2026-08-25T00:00:00Z",
-            [asset("bundle.zip"), asset("one.apk"), asset("two.apk", sha=SHA_B), asset("notes.txt")],
-            tag="delta-latest",
-        )
-        selected = select_latest_stable_delta_release([latest])
-        self.assertEqual([item["name"] for item in selected["assets"]], ["one.apk", "two.apk"])
-        self.assertTrue(all(item["kind"] == "apk" for item in selected["assets"]))
-
-    def test_all_zip_assets_are_used_only_when_direct_apk_is_absent(self):
-        latest = release(
-            10,
-            "2026-08-25T00:00:00Z",
-            [asset("first.zip"), asset("second.zip")],
-            tag="delta-latest",
-        )
-        selected = select_latest_stable_delta_release([latest])
-        self.assertEqual([item["name"] for item in selected["assets"]], ["first.zip", "second.zip"])
-
-    def test_missing_digest_or_zero_size_fails_closed_for_any_selected_asset(self):
+    def test_missing_digest_or_zero_size_fails_closed_for_any_installable_asset(self):
         missing_digest = asset("one.apk")
         missing_digest["digest"] = None
-        for broken in (missing_digest, asset("two.apk", size=0)):
-            latest = release(10, "2026-08-25T00:00:00Z", [asset("good.apk"), broken], tag="delta-latest")
+        for broken in (missing_digest, asset("two.zip", size=0)):
+            latest = release(10, "2026-08-28T00:00:00Z", [asset("good.apk"), broken])
             with self.assertRaises(ReleaseSelectionError):
                 select_latest_stable_delta_release([latest])
 
     def test_untrusted_download_host_or_repo_fails_closed(self):
         bad_host = asset("one.apk", url="https://example.com/one.apk")
-        bad_repo = asset("two.apk", url="https://github.com/other/repo/releases/download/x/two.apk")
+        bad_repo = asset("two.zip", url="https://github.com/other/repo/releases/download/x/two.zip")
         for broken in (bad_host, bad_repo):
             with self.assertRaises(ReleaseSelectionError):
-                select_latest_stable_delta_release([
-                    release(10, "2026-08-25T00:00:00Z", [broken], tag="delta-latest")
-                ])
+                select_latest_stable_delta_release([release(10, "2026-08-28T00:00:00Z", [broken])])
 
-    def test_asset_path_components_are_rejected_but_spaces_and_unicode_are_allowed(self):
+    def test_asset_path_components_rejected_but_spaces_unicode_allowed(self):
         selected = select_latest_stable_delta_release([
-            release(10, "2026-08-25T00:00:00Z", [asset("Tên app tự do 01.apk")], tag="delta-latest")
+            release(10, "2026-08-28T00:00:00Z", [asset("Tên app tự do 01.apk")])
         ])
         self.assertEqual(selected["assets"][0]["name"], "Tên app tự do 01.apk")
 
         bad = asset("folder/app.apk")
         with self.assertRaisesRegex(ReleaseSelectionError, "No stable"):
-            select_latest_stable_delta_release([
-                release(11, "2026-08-26T00:00:00Z", [bad], tag="delta-bad")
-            ])
+            select_latest_stable_delta_release([release(11, "2026-08-28T01:00:00Z", [bad])])
 
 
 if __name__ == "__main__":
