@@ -77,7 +77,7 @@ def collect_metrics() -> dict[str, Any]:
     return metrics
 
 
-def send_report(report_url: str, secret: str, payload: dict[str, Any]) -> bool:
+def send_report_response(report_url: str, secret: str, payload: dict[str, Any]) -> Optional[dict[str, Any]]:
     try:
         data = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(
@@ -90,9 +90,16 @@ def send_report(report_url: str, secret: str, payload: dict[str, Any]) -> bool:
             },
         )
         with urllib.request.urlopen(req, timeout=10) as resp:
-            return resp.status in (200, 201)
-    except Exception as e:
-        return False
+            if resp.status not in (200, 201):
+                return None
+            data = json.loads(resp.read().decode("utf-8"))
+            return data if isinstance(data, dict) else None
+    except (OSError, urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError):
+        return None
+
+
+def send_report(report_url: str, secret: str, payload: dict[str, Any]) -> bool:
+    return send_report_response(report_url, secret, payload) is not None
 
 
 def send_ack(
@@ -103,12 +110,13 @@ def send_ack(
     status: str,
     reason: Optional[str] = None,
     executed: bool = False,
+    batch_action: str = "ALLOCATE_SERVER",
 ) -> bool:
     parsed = urllib.parse.urlparse(report_url)
     ack_url = urllib.parse.urlunparse((parsed.scheme, parsed.netloc, "/aot/ack", "", "", ""))
     payload = {
         "protocol": PROTOCOL_VERSION,
-        "batch_action": "ALLOCATE_SERVER",
+        "batch_action": batch_action,
         "device_id": device_id,
         "action_id": action_id,
         "status": status,
@@ -157,11 +165,30 @@ def handle_incoming_batch_action(
         return True
 
     if action == "UPDATE_DELTA":
+        completed = state.setdefault("update_action_results", {})
+        cached = completed.get(action_id)
+        if isinstance(cached, dict):
+            send_ack(
+                report_url, secret, device_id, action_id,
+                status=str(cached.get("status", "FAILED")),
+                reason=cached.get("reason"),
+                executed=cached.get("executed") is True,
+                batch_action="UPDATE_DELTA",
+            )
+            return True
         try:
-            res = delta_updater.run_delta_update()
-            send_ack(report_url, secret, device_id, action_id, status="OPENED", executed=True)
+            delta_updater.run_delta_update()
+            result = {"status": "OPENED", "executed": True}
         except Exception as e:
-            send_ack(report_url, secret, device_id, action_id, status="FAILED", reason=str(e), executed=False)
+            result = {"status": "FAILED", "executed": False, "reason": str(e)[:160]}
+        completed[action_id] = result
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+        send_ack(
+            report_url, secret, device_id, action_id,
+            status=result["status"], reason=result.get("reason"),
+            executed=result["executed"], batch_action="UPDATE_DELTA",
+        )
         return True
 
     return False
@@ -201,7 +228,12 @@ def run_agent_loop(
             "capabilities": CAPABILITIES,
             "metrics": metrics,
         }
-        send_report(report_url, secret, heartbeat_payload)
+        response = send_report_response(report_url, secret, heartbeat_payload)
+        command = response.get("command") if isinstance(response, dict) else None
+        if isinstance(command, dict):
+            handle_incoming_batch_action(
+                command, device_id, report_url, secret, state, state_path, links_path
+            )
 
         if single_tick:
             break
