@@ -189,6 +189,12 @@ async function runTests() {
   }
   gitHubFileAbort = false;
 
+  // 7. Worker-owned STATUS command
+  await triggerMessage("STATUS");
+  if (!sentMessages[0]?.text.includes("FLEET_STATUS=ONLINE") || !sentMessages[0].text.includes("m1: ONLINE")) {
+    throw new Error("worker status test failed: " + (sentMessages[0]?.text || ""));
+  }
+
   // 7. Fleet device list and typed UPDATE_DELTA dispatch
   await triggerMessage("/devices");
   if (!sentMessages[0]?.text.includes("m1: ONLINE")) {
