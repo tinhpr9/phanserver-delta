@@ -192,30 +192,48 @@ export async function handleUpdate(update, env, fleetState) {
   if (input === "/apks" || input === "/release") {
     try {
       let assets = [];
-      let version = "1.0.0";
+      let tag = "Backup";
       if (env?.getManifest) {
         const manifest = await env.getManifest(env);
         assets = manifest?.assets || [];
-        version = manifest?.version || version;
+        tag = manifest?.release_tag || manifest?.version || tag;
       } else {
-        const manifestRes = await fetch("https://phanserver-delta-worker.tinh1020pr.workers.dev/delta/manifest").catch(() => null);
+        const manifestRes = await fetch("https://api.github.com/repos/tinhpr9/phanserver-delta/releases?per_page=5", {
+          headers: { "User-Agent": "phanserver-delta-worker" }
+        }).catch(() => null);
         if (manifestRes && manifestRes.ok) {
-          const manifestData = await manifestRes.json();
-          assets = manifestData?.assets || [];
-          version = manifestData?.version || version;
+          const releases = await manifestRes.json();
+          if (Array.isArray(releases) && releases.length > 0) {
+            const rel = releases[0];
+            tag = rel.tag_name || rel.name || tag;
+            assets = (rel.assets || []).map(a => ({
+              name: a.name,
+              size: a.size,
+              kind: a.name.toLowerCase().endsWith(".apk") ? "apk" : "zip"
+            }));
+          }
         }
       }
       if (!assets.length) {
         assets = [{ name: "Delta-v1.0.0.apk", size: 1024, kind: "apk" }];
       }
-      let text = `📦 DANH SÁCH APP TRONG RELEASE (v${version}):\n`;
+
+      function formatSize(bytes) {
+        if (!bytes || isNaN(bytes)) return "N/A";
+        if (bytes >= 1024 * 1024 * 1024) return (bytes / (1024 * 1024 * 1024)).toFixed(1) + " GB";
+        if (bytes >= 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+        if (bytes >= 1024) return (bytes / 1024).toFixed(1) + " KB";
+        return bytes + " B";
+      }
+
+      let text = `📦 DANH SÁCH APP TRONG RELEASE (Tag: ${tag}):\n`;
       assets.forEach((a, i) => {
-        text += `${i + 1}. ${a.name} (${a.size || "N/A"} bytes)\n`;
+        text += `${i + 1}. ${a.name} (${formatSize(a.size)})\n`;
       });
       text += `\n💡 Gợi ý lệnh:\n• Cài tất cả: /update <device1,device2...>\n• Cài chọn lọc: /update <device> <keyword|số_thứ_tự>\n• Bốc ngẫu nhiên: /update <device> random`;
       await telegram(env, "sendMessage", { chat_id: chatId, text });
     } catch (error) {
-      await telegram(env, "sendMessage", { chat_id: chatId, text: "Lỗi lấy danh sách Release." });
+      await telegram(env, "sendMessage", { chat_id: chatId, text: "Lỗi lấy danh sách Release: " + String(error.message || error) });
     }
     return;
   }

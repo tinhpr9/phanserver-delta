@@ -15,6 +15,33 @@ export default {
     }
 
     if (path === "/delta/manifest") {
+      try {
+        const ghRes = await fetch("https://api.github.com/repos/tinhpr9/phanserver-delta/releases?per_page=5", {
+          headers: { "User-Agent": "phanserver-delta-worker" }
+        });
+        if (ghRes.ok) {
+          const releases = await ghRes.json();
+          if (Array.isArray(releases) && releases.length > 0) {
+            const rel = releases[0];
+            const assets = (rel.assets || []).map(a => ({
+              name: a.name,
+              url: a.browser_download_url,
+              kind: a.name.toLowerCase().endsWith(".apk") ? "apk" : "zip",
+              size: a.size
+            }));
+            return new Response(JSON.stringify({
+              channel: "delta",
+              version: rel.tag_name || "1.0.0",
+              release_tag: rel.tag_name,
+              release_name: rel.name || rel.tag_name,
+              assets
+            }), {
+              headers: { "Content-Type": "application/json" }
+            });
+          }
+        }
+      } catch (e) {}
+
       return new Response(JSON.stringify({
         channel: "delta",
         version: "1.0.0",
