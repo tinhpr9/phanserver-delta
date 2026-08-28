@@ -164,6 +164,7 @@ def main():
                     "name": "Delta-1.0.1.apk",
                     "url": f"file://{fake_apk}",
                     "sha256": expected_sha,
+                    "size": fake_apk.stat().st_size,
                 }
             ]
         }
@@ -186,6 +187,7 @@ def main():
                     "name": "Delta-1.0.2.apk",
                     "url": f"file://{fake_apk}",
                     "sha256": "badc0ffee0000000000000000000000000000000000000000000000000000000",
+                    "size": fake_apk.stat().st_size,
                 }
             ]
         }
