@@ -139,6 +139,23 @@ export async function handleUpdate(update, env, fleetState) {
 
   const input = (message.text || message.caption || "").trim();
 
+  if (input.toUpperCase() === "STATUS" || input === "/status") {
+    try {
+      const stateResult = await fleetStateCall(env, fleetState, "/aot/hub/state");
+      const devices = stateResult.data?.state?.devices || [];
+      const online = devices.filter(d => d.online).length;
+      const text = devices.length
+        ? `FLEET_STATUS=ONLINE\nDEVICES=${devices.length}\nONLINE=${online}\n` + devices
+          .sort((a, b) => String(a.device_id).localeCompare(String(b.device_id), undefined, { numeric: true }))
+          .map(d => `${d.device_id}: ${d.online ? "ONLINE" : "OFFLINE"}`).join("\n")
+        : "FLEET_STATUS=EMPTY\nDEVICES=0\nONLINE=0";
+      await telegram(env, "sendMessage", { chat_id: chatId, text });
+    } catch (error) {
+      await telegram(env, "sendMessage", { chat_id: chatId, text: "FLEET_STATUS=UNAVAILABLE" });
+    }
+    return;
+  }
+
   if (input === "/devices") {
     try {
       const stateResult = await fleetStateCall(env, fleetState, "/aot/hub/state");
