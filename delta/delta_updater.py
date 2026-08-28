@@ -33,6 +33,7 @@ MAX_ZIP_ENTRIES = 4096
 MAX_ZIP_UNCOMPRESSED_BYTES = 16 * 1024 * 1024 * 1024
 MAX_ZIP_DEPTH = 16
 MAX_COMPRESSION_RATIO = 200
+PROGRESS_REPORT_PERCENT = 5
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -213,12 +214,16 @@ def _stream_to_verified_file(
     expected_size: int,
     expected_sha256: str,
     max_bytes: int,
+    progress_label: Optional[str] = None,
 ) -> None:
     part = destination.with_name(destination.name + ".part")
     try:
         part.unlink(missing_ok=True)
         hasher = hashlib.sha256()
         written = 0
+        last_reported_percent = -1
+        if progress_label:
+            print(f"[DOWNLOAD] {progress_label}: 0% (0/{expected_size} bytes)", flush=True)
         with open(part, "xb") as output:
             while True:
                 chunk = source.read(CHUNK_SIZE)
@@ -229,6 +234,15 @@ def _stream_to_verified_file(
                     raise DeltaUpdaterError("Downloaded asset exceeded declared size or safety limit")
                 output.write(chunk)
                 hasher.update(chunk)
+                if progress_label:
+                    percent = min(100, written * 100 // expected_size)
+                    if percent == 100 or percent >= last_reported_percent + PROGRESS_REPORT_PERCENT:
+                        print(
+                            f"[DOWNLOAD] {progress_label}: {percent}% "
+                            f"({written}/{expected_size} bytes)",
+                            flush=True,
+                        )
+                        last_reported_percent = percent
             output.flush()
             os.fsync(output.fileno())
         if written <= 0:
@@ -258,6 +272,7 @@ def download_asset(
     expected_size: int,
     expected_sha256: str,
     max_bytes: int = MAX_ASSET_BYTES,
+    progress_label: Optional[str] = None,
 ) -> None:
     if expected_size <= 0 or expected_size > max_bytes:
         raise DeltaUpdaterError("Expected asset size is outside safety limits")
@@ -287,6 +302,7 @@ def download_asset(
                 expected_size=expected_size,
                 expected_sha256=expected_sha256,
                 max_bytes=max_bytes,
+                progress_label=progress_label,
             )
         return
     if parsed.scheme == "file":
@@ -305,6 +321,7 @@ def download_asset(
                 expected_size=expected_size,
                 expected_sha256=expected_sha256,
                 max_bytes=max_bytes,
+                progress_label=progress_label,
             )
         return
     raise DeltaUpdaterError(f"Unsupported asset URL scheme: {url}")
@@ -427,6 +444,11 @@ def run_delta_update(
     dl_dir.mkdir(parents=True, exist_ok=True)
     manifest = load_latest_release_manifest() if manifest_source is None else load_manifest(manifest_source)
     assets = _select_assets(manifest["assets"])
+    print(
+        f"[RELEASE] tag={manifest.get('release_tag') or manifest.get('version')} "
+        f"assets={len(assets)}",
+        flush=True,
+    )
 
     with tempfile.TemporaryDirectory(prefix=".delta-txn-", dir=dl_dir) as transaction_dir:
         tx_root = pathlib.Path(transaction_dir)
@@ -439,7 +461,9 @@ def run_delta_update(
                 target,
                 expected_size=asset["size"],
                 expected_sha256=asset["sha256"],
+                progress_label=f"asset {index}/{len(assets)} {asset['name']}",
             )
+            print(f"[VERIFY] asset {index}/{len(assets)} {asset['name']}: SHA-256 OK", flush=True)
             staged.append((asset, target))
 
         install_queue: list[pathlib.Path] = []
@@ -448,12 +472,19 @@ def run_delta_update(
                 install_queue.append(target)
             else:
                 extract_dir = tx_root / f"extract_{index:04d}"
-                install_queue.extend(extract_zip_apks(target, extract_dir))
+                extracted = extract_zip_apks(target, extract_dir)
+                install_queue.extend(extracted)
+                print(
+                    f"[EXTRACT] {asset['name']}: {len(extracted)} APK(s) verified",
+                    flush=True,
+                )
 
         if not install_queue:
             raise DeltaUpdaterError("UPDATE_DELTA verified release but found zero APKs")
 
-        for apk in install_queue:
+        print(f"[INSTALL] all assets verified; installing {len(install_queue)} APK(s)", flush=True)
+        for index, apk in enumerate(install_queue, 1):
+            print(f"[INSTALL] {index}/{len(install_queue)} {apk.name}", flush=True)
             install_apk(apk)
         installed_count = len(install_queue)
 
