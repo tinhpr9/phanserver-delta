@@ -40,6 +40,16 @@ class DeltaUpdaterError(RuntimeError):
     pass
 
 
+def _require_https_final_url(response: Any, context: str) -> None:
+    getter = getattr(response, "geturl", None)
+    if not callable(getter):
+        raise DeltaUpdaterError(f"{context} response URL is unavailable")
+    final_url = str(getter() or "")
+    parsed = urllib.parse.urlparse(final_url)
+    if parsed.scheme.lower() != "https":
+        raise DeltaUpdaterError(f"{context} redirected outside HTTPS: {final_url}")
+
+
 def root_available() -> bool:
     if hasattr(os, "geteuid") and os.geteuid() == 0:
         return True
@@ -151,12 +161,13 @@ def load_latest_release_manifest(releases_url: str = DEFAULT_RELEASES_URL) -> di
     req = urllib.request.Request(
         releases_url,
         headers={
-            "User-Agent": "phanserver-delta-updater/3.1",
+            "User-Agent": "phanserver-delta-updater/3.2",
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
         },
     )
     with urllib.request.urlopen(req, timeout=20) as resp:
+        _require_https_final_url(resp, "GitHub releases API")
         raw = resp.read(MAX_RELEASE_JSON_BYTES + 1)
     if len(raw) > MAX_RELEASE_JSON_BYTES:
         raise DeltaUpdaterError("GitHub releases payload exceeds safety limit")
@@ -177,9 +188,10 @@ def load_manifest(source: str | pathlib.Path | dict) -> dict[str, Any]:
         if parsed_source.scheme != "https":
             raise DeltaUpdaterError("Remote manifest must use HTTPS")
         req = urllib.request.Request(
-            str(source), headers={"User-Agent": "phanserver-delta-updater/3.1"}
+            str(source), headers={"User-Agent": "phanserver-delta-updater/3.2"}
         )
         with urllib.request.urlopen(req, timeout=20) as resp:
+            _require_https_final_url(resp, "Remote manifest")
             raw = resp.read(MAX_RELEASE_JSON_BYTES + 1)
         if len(raw) > MAX_RELEASE_JSON_BYTES:
             raise DeltaUpdaterError("Manifest exceeds safety limit")
@@ -256,8 +268,9 @@ def download_asset(
     dest.parent.mkdir(parents=True, exist_ok=True)
     parsed = urllib.parse.urlparse(url)
     if parsed.scheme == "https":
-        req = urllib.request.Request(url, headers={"User-Agent": "phanserver-delta-updater/3.1"})
+        req = urllib.request.Request(url, headers={"User-Agent": "phanserver-delta-updater/3.2"})
         with urllib.request.urlopen(req, timeout=60) as response:
+            _require_https_final_url(response, "Asset download")
             content_length = response.headers.get("Content-Length")
             if content_length:
                 try:
