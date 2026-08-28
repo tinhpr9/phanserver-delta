@@ -139,6 +139,44 @@ export async function handleUpdate(update, env, fleetState) {
 
   const input = (message.text || message.caption || "").trim();
 
+  if (input === "/devices") {
+    try {
+      const stateResult = await fleetStateCall(env, fleetState, "/aot/hub/state");
+      const devices = stateResult.data?.state?.devices || [];
+      const text = devices.length
+        ? devices.sort((a, b) => String(a.device_id).localeCompare(String(b.device_id), undefined, { numeric: true }))
+          .map(d => `${d.device_id}: ${d.online ? "ONLINE" : "OFFLINE"}`).join("\n")
+        : "Chưa có thiết bị nào đăng ký.";
+      await telegram(env, "sendMessage", { chat_id: chatId, text });
+    } catch (error) {
+      await telegram(env, "sendMessage", { chat_id: chatId, text: "Lỗi lấy danh sách thiết bị." });
+    }
+    return;
+  }
+
+  if (input.match(/^\/update(?:\s|$)/)) {
+    const parts = input.split(/\s+/);
+    if (parts.length !== 2) {
+      await telegram(env, "sendMessage", { chat_id: chatId, text: "Cú pháp: /update <device1,device2...>" });
+      return;
+    }
+    try {
+      const ids = await resolveAndValidateTelegramTargets(parts[1], env, fleetState);
+      const result = await fleetStateCall(env, fleetState, "/aot/hub/control", {
+        method: "POST",
+        body: { protocol: "fleet-batch-v1", kind: "update_delta", target_device_ids: ids }
+      });
+      if (!result?.response?.ok) throw new Error(result?.data?.error || "update_queue_failed");
+      await telegram(env, "sendMessage", {
+        chat_id: chatId,
+        text: `Đã xếp UPDATE_DELTA: ${ids.join(", ")}. Thiết bị sẽ nhận lệnh ở heartbeat kế tiếp.`
+      });
+    } catch (error) {
+      await telegram(env, "sendMessage", { chat_id: chatId, text: "Lỗi UPDATE_DELTA: " + String(error.message || error) });
+    }
+    return;
+  }
+
   if (input.match(/^\/phanserver(?:\s|$)/)) {
     const parts = input.split(/\s+/);
     if (parts.length !== 3) {
