@@ -1,10 +1,12 @@
 import hashlib
+import io
 import pathlib
 import stat
 import sys
 import tempfile
 import unittest
 import zipfile
+from contextlib import redirect_stdout
 from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent))
@@ -90,6 +92,22 @@ class TestDeltaUpdater(unittest.TestCase):
                 expected_sha256=hashlib.sha256(b"123456").hexdigest(),
             )
         self.assertEqual(destination.read_bytes(), b"old")
+
+    def test_download_reports_progress_when_label_is_provided(self):
+        source = self.root_path / "progress.apk"
+        source.write_bytes(b"progress-payload")
+        destination = self.root_path / "downloaded.apk"
+        output = io.StringIO()
+        with redirect_stdout(output):
+            delta_updater.download_asset(
+                source.as_uri(),
+                destination,
+                expected_size=source.stat().st_size,
+                expected_sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
+                progress_label="asset 1/1 progress.apk",
+            )
+        self.assertIn("[DOWNLOAD] asset 1/1 progress.apk: 0%", output.getvalue())
+        self.assertIn("[DOWNLOAD] asset 1/1 progress.apk: 100%", output.getvalue())
 
     @mock.patch("delta.delta_updater.root_available", return_value=False)
     def test_install_apk_non_root_fails_accurately(self, _mock_root):
