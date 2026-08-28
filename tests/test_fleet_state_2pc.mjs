@@ -246,7 +246,10 @@ async function runTests() {
   }
 
   // 5. Offline Target fail-closed test
-  ctx.sockets.delete("m2"); // m2 goes offline
+  ctx.sockets.delete("m2"); // m2 WebSocket closes
+  const staleRecord = await fleet.readFleet();
+  staleRecord.devices.m2.last_seen = Date.now() - 181000; // heartbeat expired
+  await fleet.writeFleet(staleRecord);
   const offlineDispatch = await fleet.controlFleetHub(new Request("https://localhost/aot/hub/control", {
     method: "POST",
     body: JSON.stringify({
@@ -260,6 +263,31 @@ async function runTests() {
   if (offlineDispatch.status !== 400 || offlineBody.error !== "offline_devices_in_allocate_batch") {
     throw new Error("offline fail-closed test failed: " + JSON.stringify(offlineBody));
   }
+
+  // 6. UPDATE_DELTA is queued per device and delivered through heartbeat.
+  const updateRes = await (await fleet.controlFleetHub(new Request("https://localhost/aot/hub/control", {
+    method: "POST",
+    body: JSON.stringify({ protocol: "fleet-batch-v1", kind: "update_delta", target_device_ids: ["m1"] })
+  }))).json();
+  if (!updateRes.ok || !updateRes.update.action_id) throw new Error("UPDATE_DELTA queue failed");
+  const deltaActionId = updateRes.update.action_id;
+  const commandRes = await (await fleet.handleHeartbeat(new Request("https://localhost/report", {
+    method: "POST",
+    body: JSON.stringify({ device_id: "m1", device_group: "NOVA", capabilities: ["allocate_server_2pc", "update_delta"] })
+  }))).json();
+  if (commandRes.command?.action !== "UPDATE_DELTA" || commandRes.command?.action_id !== deltaActionId) {
+    throw new Error("UPDATE_DELTA was not delivered by heartbeat");
+  }
+  const deltaAck = await (await fleet.dispatchFleetAck(new Request("https://localhost/aot/ack", {
+    method: "POST",
+    body: JSON.stringify({ protocol: "fleet-batch-v1", batch_action: "UPDATE_DELTA", device_id: "m1", action_id: deltaActionId, status: "OPENED", executed: true })
+  }))).json();
+  if (!deltaAck.ok || deltaAck.status !== "OPENED") throw new Error("UPDATE_DELTA ack failed");
+  const afterAck = await (await fleet.handleHeartbeat(new Request("https://localhost/report", {
+    method: "POST",
+    body: JSON.stringify({ device_id: "m1", device_group: "NOVA", capabilities: ["allocate_server_2pc", "update_delta"] })
+  }))).json();
+  if (afterAck.command !== null) throw new Error("acknowledged UPDATE_DELTA was delivered again");
 
   console.log("TEST_FLEET_STATE_2PC_EQUIVALENCE=OK");
 }
