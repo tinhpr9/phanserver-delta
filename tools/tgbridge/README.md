@@ -1,24 +1,19 @@
 # Telegram bridge cho Delta
 
-Mã bridge nằm trong Git; token và `chat_id` luôn nằm ngoài repo.
+Mã bridge nằm trong Git; token và `chat_id` luôn nằm ngoài repo, theo đường dẫn mặc định `$HOME/tgbridge/token` và `$HOME/tgbridge/chat_id` (hoặc biến môi trường tương ứng).
 
 Bridge chỉ nhận hai lệnh từ đúng `chat_id` đã cấu hình:
 
 - `STATUS`: báo root, branch và HEAD hiện tại.
 - `UPDATE`: chạy đúng `python3 delta/delta_updater.py`; không nhận tham số hay lệnh shell từ Telegram.
 
-## Chạy trên Termux
+## Chạy
 
-Lưu token và chat ID ở ngoài repo:
+Khi secret đã được cấu hình ngoài repo bởi luồng triển khai, khởi động từ bản mã đang checkout:
 
 ```sh
-mkdir -p "$HOME/tgbridge"
-chmod 700 "$HOME/tgbridge"
-printf '%s\n' 'TOKEN_CỦA_BOT' > "$HOME/tgbridge/token"
-printf '%s\n' 'CHAT_ID_ĐƯỢC_PHÉP' > "$HOME/tgbridge/chat_id"
-chmod 600 "$HOME/tgbridge/token" "$HOME/tgbridge/chat_id"
 cd /storage/emulated/0/Download/phanserver-delta
-tools/tgbridge/start-bridge.sh
+sh tools/tgbridge/start-bridge.sh
 ```
 
-Chỉ chạy một tiến trình bridge cho mỗi token. Nếu Telegram trả HTTP 409, dừng tiến trình bridge khác đang dùng cùng token trước khi khởi động lại.
+Chỉ chạy một tiến trình bridge cho mỗi token. Nếu Telegram trả HTTP 409, còn một tiến trình khác đang dùng cùng token; dừng tiến trình đó trước khi khởi động lại.
