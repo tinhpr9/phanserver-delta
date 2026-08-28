@@ -123,9 +123,41 @@ class TestDeltaUpdater(unittest.TestCase):
         mock_run.return_value = mock.MagicMock(returncode=0, stdout="Success\n", stderr="")
         apk = self.root_path / "name with ; shell.apk"
         apk.write_bytes(b"fake-apk")
+        captured = {}
+
+        def capture_stdin(*args, **kwargs):
+            captured["payload"] = kwargs["stdin"].read()
+            return mock.MagicMock(returncode=0, stdout="Success\n", stderr="")
+
+        mock_run.side_effect = capture_stdin
         delta_updater.install_apk(apk)
-        self.assertEqual(mock_run.call_args.args[0], ["pm", "install", "-r", "-d", str(apk)])
+        self.assertEqual(mock_run.call_args.args[0], ["pm", "install", "-r", "-d", "-S", "8", "-"])
+        self.assertEqual(captured["payload"], b"fake-apk")
         self.assertNotIn("shell", mock_run.call_args.kwargs)
+
+    @mock.patch("delta.delta_updater.shutil.which", return_value="/system/xbin/su")
+    @mock.patch("delta.delta_updater.os.geteuid", return_value=2000)
+    @mock.patch("delta.delta_updater.root_available", return_value=True)
+    @mock.patch("delta.delta_updater.subprocess.run")
+    def test_install_apk_via_su_streams_payload_and_size(self, mock_run, _mock_root, _mock_euid, _mock_which):
+        apk = self.root_path / "phone.apk"
+        apk.write_bytes(b"fake-apk")
+        captured = {}
+
+        def capture_stdin(*args, **kwargs):
+            captured["payload"] = kwargs["stdin"].read()
+            captured["env"] = kwargs["env"]
+            return mock.MagicMock(returncode=0, stdout="Success\n", stderr="")
+
+        mock_run.side_effect = capture_stdin
+        delta_updater.install_apk(apk)
+
+        self.assertEqual(
+            mock_run.call_args.args[0],
+            ["/system/xbin/su", "-c", 'exec pm install -r -d -S "$DELTA_APK_SIZE" -'],
+        )
+        self.assertEqual(captured["payload"], b"fake-apk")
+        self.assertEqual(captured["env"]["DELTA_APK_SIZE"], "8")
 
     def test_extract_zip_apks_crc_and_normal_content(self):
         archive = self.root_path / "download.zip"

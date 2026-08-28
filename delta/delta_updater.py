@@ -331,24 +331,28 @@ def install_apk(apk_path: str | pathlib.Path) -> None:
     apk = pathlib.Path(apk_path)
     if not apk.is_file() or apk.stat().st_size <= 0:
         raise DeltaUpdaterError(f"APK is missing or empty: {apk}")
+    apk_size = apk.stat().st_size
+    install_args = ["pm", "install", "-r", "-d", "-S", str(apk_size), "-"]
     if not root_available():
         raise DeltaUpdaterError(
             "Root access required for pm install. Non-root environment is unsupported for Delta APK installation."
         )
     common_kwargs = {"capture_output": True, "text": True, "timeout": 180}
-    if hasattr(os, "geteuid") and os.geteuid() == 0:
-        result = subprocess.run(["pm", "install", "-r", "-d", str(apk)], **common_kwargs)
-    else:
-        su_path = shutil.which("su")
-        if not su_path:
-            raise DeltaUpdaterError("Root access disappeared before APK installation")
-        env = os.environ.copy()
-        env["DELTA_APK_PATH"] = str(apk)
-        result = subprocess.run(
-            [su_path, "-c", 'exec pm install -r -d "$DELTA_APK_PATH"'],
-            env=env,
-            **common_kwargs,
-        )
+    with apk.open("rb") as source:
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            result = subprocess.run(install_args, stdin=source, **common_kwargs)
+        else:
+            su_path = shutil.which("su")
+            if not su_path:
+                raise DeltaUpdaterError("Root access disappeared before APK installation")
+            env = os.environ.copy()
+            env["DELTA_APK_SIZE"] = str(apk_size)
+            result = subprocess.run(
+                [su_path, "-c", 'exec pm install -r -d -S "$DELTA_APK_SIZE" -'],
+                stdin=source,
+                env=env,
+                **common_kwargs,
+            )
     output = ((result.stdout or "") + "\n" + (result.stderr or "")).strip()
     if result.returncode != 0 or "Success" not in output:
         raise DeltaUpdaterError(
