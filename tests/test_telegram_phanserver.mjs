@@ -189,6 +189,21 @@ async function runTests() {
   }
   gitHubFileAbort = false;
 
+  // 7. Fleet device list and typed UPDATE_DELTA dispatch
+  await triggerMessage("/devices");
+  if (!sentMessages[0]?.text.includes("m1: ONLINE")) {
+    throw new Error("devices test failed: " + (sentMessages[0]?.text || ""));
+  }
+
+  await triggerMessage("/update m1,m2");
+  const updateCall = fleetControlCalls.at(-1);
+  if (updateCall?.kind !== "update_delta" || updateCall?.protocol !== "fleet-batch-v1") {
+    throw new Error("update delta dispatch test failed: " + JSON.stringify(updateCall));
+  }
+  if (!sentMessages[0]?.text.includes("Đã xếp UPDATE_DELTA")) {
+    throw new Error("update delta confirmation test failed: " + (sentMessages[0]?.text || ""));
+  }
+
   console.log("TEST_TELEGRAM_PHANSERVER_EQUIVALENCE=OK");
 }
 
