@@ -296,6 +296,9 @@ class TestDeltaUpdater(unittest.TestCase):
         res_kw_rnd = delta_updater.filter_apks(apks, "delta:random")
         self.assertEqual(len(res_kw_rnd), 1)
         self.assertIn("delta", res_kw_rnd[0].name)
+        # Multi-keyword
+        res_multi = delta_updater.filter_apks(apks, "1.1.1,opera,swift")
+        self.assertEqual(len(res_multi), 3)
 
 
 if __name__ == "__main__":

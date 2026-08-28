@@ -553,7 +553,21 @@ def filter_apks(
             raise DeltaUpdaterError(f"Chỉ số lựa chọn '{selection}' vượt quá số lượng APK ({len(install_queue)})")
         return [install_queue[i] for i in indices]
 
-    # Keyword / App name filter (e.g. "opera", "1.1.1.1", "delta", "roblox")
+    # Multi-keyword / Comma or plus separated filters (e.g. "1.1.1,apk,mt" or "warp+mt")
+    delimiters = [",", "+", ";"]
+    for delim in delimiters:
+        if delim in sel:
+            keywords = [k.strip() for k in sel.split(delim) if k.strip()]
+            matched_map: dict[str, pathlib.Path] = {}
+            for kw in keywords:
+                for apk in install_queue:
+                    if kw in apk.name.lower():
+                        matched_map[apk.name] = apk
+            if not matched_map:
+                raise DeltaUpdaterError(f"Không tìm thấy APK nào khớp với '{selection}' trong Release")
+            return list(matched_map.values())
+
+    # Single keyword / App name filter (e.g. "opera", "1.1.1.1", "delta", "roblox")
     matched = [apk for apk in install_queue if sel in apk.name.lower()]
     if not matched:
         raise DeltaUpdaterError(f"Không tìm thấy APK nào khớp với '{selection}' trong Release")
