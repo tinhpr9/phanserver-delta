@@ -63,11 +63,15 @@ export class FleetState {
       record = {
         devices: {},
         last_batch: null,
-        pending_allocates: {}
+        pending_allocates: {},
+        delta_updates: {},
+        pending_actions: {}
       };
     }
     if (!record.devices) record.devices = {};
     if (!record.pending_allocates) record.pending_allocates = {};
+    if (!record.delta_updates) record.delta_updates = {};
+    if (!record.pending_actions) record.pending_actions = {};
     return record;
   }
 
@@ -187,8 +191,10 @@ export class FleetState {
     existing.capabilities = Array.isArray(body?.capabilities) ? body.capabilities : [AOT_ALLOCATE_SERVER_CAPABILITY, "update_delta"];
     record.devices[deviceId] = existing;
 
+    const command = (record.pending_actions[deviceId] || []).find(item => !item.acknowledged_at) || null;
+    if (command) command.delivered_at = Date.now();
     await this.writeFleet(record);
-    return json({ ok: true, device_id: deviceId });
+    return json({ ok: true, device_id: deviceId, command });
   }
 
   async getHubState() {
@@ -213,14 +219,9 @@ export class FleetState {
   }
 
   isDeviceOnline(id, recordDevice) {
-    if (this.ctx?.getWebSockets) {
-      return this.ctx.getWebSockets(`device:fleet:${id}`).length > 0;
-    }
+    if (this.ctx?.getWebSockets && this.ctx.getWebSockets(`device:fleet:${id}`).length > 0) return true;
     if (this.aotLive.has(id)) return true;
-    if (recordDevice && recordDevice.online && (Date.now() - (recordDevice.last_seen || 0) < 180000)) {
-      return true;
-    }
-    return false;
+    return Boolean(recordDevice && recordDevice.online && (Date.now() - (recordDevice.last_seen || 0) < 180000));
   }
 
   sendPayload(deviceId, payload) {
@@ -300,7 +301,68 @@ export class FleetState {
       );
     }
 
+    if (body.kind === "update_delta") {
+      return this.queueDeltaUpdate(record, Array.isArray(body.target_device_ids) ? body.target_device_ids : []);
+    }
+
     return json({ ok: false, error: "unsupported_fleet_control" }, 400);
+  }
+
+  async queueDeltaUpdate(record, requestedTargetIds) {
+    const fresh = await this.readFleet();
+    const targets = [];
+    const seen = new Set();
+    for (const raw of requestedTargetIds) {
+      const id = normalizeDeviceId(raw);
+      const device = id && fresh.devices[id];
+      if (!id || seen.has(id) || !device) return json({ ok: false, error: "invalid_batch_target" }, 400);
+      if (!this.isDeviceOnline(id, device)) return json({ ok: false, error: "offline_device", device_id: id }, 409);
+      if (!(device.capabilities || []).includes("update_delta")) {
+        return json({ ok: false, error: "missing_update_delta_capability", device_id: id }, 409);
+      }
+      seen.add(id);
+      targets.push(id);
+    }
+    if (!targets.length) return json({ ok: false, error: "invalid_batch_targets" }, 400);
+
+    const actionId = `delta-${Date.now()}-${crypto.randomUUID().replace(/-/g, "").slice(0, 8)}`;
+    const command = {
+      type: "aot_batch_action",
+      protocol: AOT_HUB_PROTOCOL_VERSION,
+      action_id: actionId,
+      action: "UPDATE_DELTA",
+      target_device_ids: targets,
+      created_at: Date.now()
+    };
+    const devices = {};
+    for (const id of targets) {
+      fresh.pending_actions[id] = fresh.pending_actions[id] || [];
+      fresh.pending_actions[id].push({ ...command, target_device_ids: [id] });
+      devices[id] = { device_id: id, status: "QUEUED", updated_at: Date.now() };
+    }
+    fresh.delta_updates[actionId] = { action_id: actionId, action: "UPDATE_DELTA", created_at: Date.now(), devices };
+    await this.writeFleet(fresh);
+    return json({ ok: true, update: { action_id: actionId, devices: Object.values(devices) } });
+  }
+
+  async acknowledgeDeltaUpdate(record, body, deviceId, actionId) {
+    const update = record.delta_updates?.[actionId];
+    const device = update?.devices?.[deviceId];
+    const status = String(body.status || "");
+    if (!update || !device || !["OPENED", "FAILED"].includes(status)) {
+      return json({ ok: false, error: "invalid_delta_ack" }, 400);
+    }
+    if (device.status === "QUEUED") {
+      device.status = status;
+      device.executed = body.executed === true;
+      device.reason = status === "FAILED" ? String(body.reason || "device_failed").slice(0, 160) : null;
+      device.updated_at = Date.now();
+      for (const command of record.pending_actions?.[deviceId] || []) {
+        if (command.action_id === actionId) command.acknowledged_at = Date.now();
+      }
+      await this.writeFleet(record);
+    }
+    return json({ ok: true, action_id: actionId, device_id: deviceId, status: device.status });
   }
 
   async dispatchFleetBatch(record, action, requestedTargetIds, options = {}) {
@@ -432,11 +494,13 @@ export class FleetState {
     const actionId = String(body?.action_id || "");
     const action = String(body?.batch_action || "");
 
-    if (!id || !/^[A-Za-z0-9_-]{1,128}$/.test(actionId) || action !== AOT_ALLOCATE_SERVER_ACTION) {
+    if (!id || !/^[A-Za-z0-9_-]{1,128}$/.test(actionId)) {
       return json({ ok: false, error: "invalid_aot_ack" }, 400);
     }
 
     const record = await this.readFleet();
+    if (action === "UPDATE_DELTA") return this.acknowledgeDeltaUpdate(record, body, id, actionId);
+    if (action !== AOT_ALLOCATE_SERVER_ACTION) return json({ ok: false, error: "invalid_aot_ack" }, 400);
     const batch = record.last_batch;
     const device = batch?.devices?.[id];
 
