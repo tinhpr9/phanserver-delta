@@ -63,4 +63,9 @@ always_on: true
 - **Lọc Dữ Liệu Trước Khi Tải (Pre-Download Filtering)**: Bắt buộc lọc chính xác file mục tiêu trước khi tải (Target Asset Selection), cấm tải trọn gói hàng loạt (All Assets Dump) gây lãng phí dung lượng mạng và chạm trần GitHub API Rate Limit.
 - **Cấm Polling Trạng Thái Trong AI Prompt (Zero AI-Level Task Polling)**: Antigravity tuyệt đối không gọi vòng lặp kiểm tra trạng thái tác vụ nền (`manage_task status`); phải tận dụng cơ chế đánh thức tự động (`Reactive Wakeup / Event-driven completion`) để bảo toàn Token và Context Window.
 
+## 11. QUY TẮC XÁC THỰC KẾT QUẢ CUỐI CÙNG & CẤM BÁO CÁO VỘI VÀNG (STRICT_END_TO_END_VERIFICATION_RULE - Hard Rule)
+- **Cấm Nhầm Lẫn Giữa Xếp Hàng Và Thực Thi (No Premature Success Declaration)**: Tuyệt đối cấm kết luận hoặc báo cáo tác vụ thành công khi lệnh mới chỉ được máy chủ tiếp nhận hoặc xếp hàng (Enqueued / HTTP 200).
+- **Bắt Buộc Xác Nhận Kết Quả Cuối Cùng (Mandatory End-to-End ACK Verification)**: Chỉ được phép thông báo tác vụ thành công sau khi đã kiểm tra và xác thực kết quả thực thi thực tế từ thiết bị đầu cuối (`device executed == true` và `status == OPENED/SUCCESS`) hoặc đã kiểm tra thấy tệp đầu ra (Artifact/Asset) tồn tại thực tế trên GitHub Release / hệ thống.
+- **Bắt Buộc Phân Tích Lỗi Tận Gốc (Mandatory Failure Triage)**: Khi phát hiện bất kỳ dấu hiệu bất thường hoặc thiết bị không phản hồi, Antigravity phải chủ động truy vết nhật ký lỗi (Error Reason / Traceback) ngay lập tức, sửa đổi triệt để nguyên nhân gốc rễ, tuyệt đối không được bỏ qua hoặc để người dùng tự phát hiện.
+
 
