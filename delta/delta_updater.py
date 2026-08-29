@@ -549,7 +549,7 @@ def extract_zip_apks(zip_path: str | pathlib.Path, output_dir: str | pathlib.Pat
 def restore_zip_data(zip_path: str | pathlib.Path, target_pkg: Optional[str] = None) -> bool:
     """Extract and restore data.tar.gz from bundle ZIP into /data/data/ with optional target package remap."""
     if not root_available():
-        return False
+        raise DeltaUpdaterError("Yêu cầu quyền Root (su) để khôi phục dữ liệu ứng dụng /data/data/")
     try:
         with zipfile.ZipFile(zip_path, "r") as archive:
             if "data.tar.gz" not in archive.namelist():
@@ -558,65 +558,73 @@ def restore_zip_data(zip_path: str | pathlib.Path, target_pkg: Optional[str] = N
             if len(data_bytes) < 100:
                 return False
 
+        alias_map = {
+            "hi": "com.tinh.vv.hi", "hj": "com.tinh.vv.hj", "hk": "com.tinh.vv.hk",
+            "hl": "com.tinh.vv.hl", "hm": "com.tinh.vv.hm", "hn": "com.tinh.vv.hn",
+            "ho": "com.tinh.vv.ho", "hp": "com.tinh.vv.hp", "hq": "com.tinh.vv.hq",
+            "hr": "com.tinh.vv.hr", "roblox": "com.roblox.client", "taskbar": "com.farmerbb.taskbar"
+        }
+        if target_pkg:
+            target_pkg = alias_map.get(target_pkg.lower(), target_pkg)
+
+        # Write data.tar.gz to temporary file
+        try:
+            tar_cache_path = "/data/local/tmp/delta_restore_data.tar.gz"
+            with open(tar_cache_path, "wb") as f:
+                f.write(data_bytes)
+            os.chmod(tar_cache_path, 0o666)
+        except Exception:
             with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp_tar:
                 tmp_tar.write(data_bytes)
-                tmp_tar_path = tmp_tar.name
+                tar_cache_path = tmp_tar.name
 
-            common_kwargs = {"capture_output": True, "text": True, "timeout": 30}
-            su_path = shutil.which("su")
-            is_root = hasattr(os, "geteuid") and os.geteuid() == 0
+        is_root = hasattr(os, "geteuid") and os.geteuid() == 0
+        su_path = shutil.which("su")
 
-            # Normalize target package if alias given (e.g. "ho" -> "com.tinh.vv.ho")
-            alias_map = {
-                "hi": "com.tinh.vv.hi", "hj": "com.tinh.vv.hj", "hk": "com.tinh.vv.hk",
-                "hl": "com.tinh.vv.hl", "hm": "com.tinh.vv.hm", "hn": "com.tinh.vv.hn",
-                "ho": "com.tinh.vv.ho", "hp": "com.tinh.vv.hp", "hq": "com.tinh.vv.hq",
-                "hr": "com.tinh.vv.hr", "roblox": "com.roblox.client", "taskbar": "com.farmerbb.taskbar"
-            }
-            if target_pkg:
-                target_pkg = alias_map.get(target_pkg.lower(), target_pkg)
+        if target_pkg:
+            restore_script = f"""
+            set -e
+            TMP_EXT="/data/local/tmp/restore_ext_$$"
+            rm -rf "$TMP_EXT"
+            mkdir -p "$TMP_EXT"
+            tar -xzf {shlex.quote(tar_cache_path)} -C "$TMP_EXT"
+            
+            SRC_DIR=$(find "$TMP_EXT" -mindepth 1 -maxdepth 1 -type d | head -n 1)
+            if [ -n "$SRC_DIR" ]; then
+                DEST_DIR="/data/data/{target_pkg}"
+                mkdir -p "$DEST_DIR"
+                cp -rf "$SRC_DIR"/* "$DEST_DIR"/ 2>/dev/null || true
+                
+                OWNER=$(stat -c "%u:%g" "$DEST_DIR" 2>/dev/null || stat -c "%u:%g" /data/data)
+                if [ -n "$OWNER" ]; then
+                    chown -R "$OWNER" "$DEST_DIR"
+                fi
+                chmod -R 771 "$DEST_DIR"
+                restorecon -R "$DEST_DIR" 2>/dev/null || true
+            fi
+            rm -rf "$TMP_EXT" {shlex.quote(tar_cache_path)}
+            """
+        else:
+            restore_script = f"""
+            set -e
+            tar -xzf {shlex.quote(tar_cache_path)} -C /data/data/
+            rm -f {shlex.quote(tar_cache_path)}
+            """
 
-            if target_pkg:
-                # Cross-clone target restore: extract to temp directory, then sync into target_pkg
-                with tempfile.TemporaryDirectory() as tmp_ext_dir:
-                    extract_cmd = f"tar -xzf {shlex.quote(tmp_tar_path)} -C {shlex.quote(tmp_ext_dir)}"
-                    if is_root:
-                        subprocess.run(shlex.split(extract_cmd), **common_kwargs)
-                    elif su_path:
-                        subprocess.run([su_path, "-c", extract_cmd], **common_kwargs)
+        common_kwargs = {"capture_output": True, "text": True, "timeout": 60}
+        if is_root:
+            proc = subprocess.run(["sh", "-c", restore_script], **common_kwargs)
+        else:
+            proc = subprocess.run([su_path, "-c", restore_script], **common_kwargs)
 
-                    extracted_subdirs = [p for p in pathlib.Path(tmp_ext_dir).iterdir() if p.is_dir()]
-                    if extracted_subdirs:
-                        src_pkg_dir = extracted_subdirs[0]
-                        dest_pkg_dir = f"/data/data/{target_pkg}"
-                        sync_script = f"""
-                        mkdir -p {shlex.quote(dest_pkg_dir)}
-                        cp -rf {shlex.quote(str(src_pkg_dir))}/* {shlex.quote(dest_pkg_dir)}/ 2>/dev/null || true
-                        OWNER=$(stat -c "%u:%g" {shlex.quote(dest_pkg_dir)} 2>/dev/null || stat -c "%u:%g" /data/data)
-                        if [ -n "$OWNER" ]; then
-                            chown -R $OWNER {shlex.quote(dest_pkg_dir)}
-                        fi
-                        chmod -R 771 {shlex.quote(dest_pkg_dir)}
-                        restorecon -R {shlex.quote(dest_pkg_dir)} 2>/dev/null || true
-                        """
-                        if is_root:
-                            subprocess.run(["sh", "-c", sync_script], **common_kwargs)
-                        elif su_path:
-                            subprocess.run([su_path, "-c", sync_script], **common_kwargs)
-            else:
-                # Standard restore
-                extract_cmd = f"tar -xzf {shlex.quote(tmp_tar_path)} -C /data/data/"
-                if is_root:
-                    subprocess.run(shlex.split(extract_cmd), **common_kwargs)
-                elif su_path:
-                    subprocess.run([su_path, "-c", extract_cmd], **common_kwargs)
+        if proc.returncode != 0:
+            err = (proc.stderr or proc.stdout).strip()[:140]
+            print(f"[RESTORE] Lỗi thực thi script phục hồi: {err}", flush=True)
+            return False
 
-            try:
-                os.unlink(tmp_tar_path)
-            except Exception:
-                pass
-            return True
-    except Exception:
+        return True
+    except Exception as ex:
+        print(f"[RESTORE] Ngoại lệ phục hồi: {ex}", flush=True)
         return False
 
 
