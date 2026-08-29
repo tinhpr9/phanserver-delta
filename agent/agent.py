@@ -253,6 +253,13 @@ def handle_incoming_batch_action(
             completed[action_id] = {"status": status, "executed": upgraded, "reason": err_msg}
             state_path.parent.mkdir(parents=True, exist_ok=True)
             state_path.write_text(json.dumps(state), encoding="utf-8")
+
+            if upgraded:
+                print("[UPGRADE] Nạp code mới thành công! Đang tự khởi động lại Agent...", flush=True)
+                time.sleep(1)
+                script_file = pathlib.Path(__file__).resolve()
+                args = [sys.executable, str(script_file)] + [a for a in sys.argv[1:] if a != str(script_file)]
+                os.execv(sys.executable, args)
             return True
         except Exception as e:
             send_ack(
@@ -266,7 +273,7 @@ def handle_incoming_batch_action(
 
 
 def check_and_apply_auto_update(branch: str = "fix/delta-stability", force: bool = False) -> tuple[bool, Optional[str]]:
-    """Check GitHub remote branch and update / restart process in-place."""
+    """Check GitHub remote branch and update code on disk."""
     import shutil
     root = ROOT
     git_bin = shutil.which("git") or "/data/data/com.termux/files/usr/bin/git" or "git"
@@ -296,11 +303,6 @@ def check_and_apply_auto_update(branch: str = "fix/delta-stability", force: bool
             print(f"[UPGRADE] git reset thất bại: {err}", flush=True)
             return False, f"reset_err: {err}"
 
-        print("[UPGRADE] Nạp code mới thành công! Đang tự khởi động lại Agent...", flush=True)
-        script_file = pathlib.Path(__file__).resolve()
-        args = [sys.executable, str(script_file)] + [a for a in sys.argv[1:] if a != str(script_file)]
-        time.sleep(1)
-        os.execv(sys.executable, args)
         return True, None
     except Exception as e:
         print(f"[UPGRADE] Thất bại: {e}", flush=True)
