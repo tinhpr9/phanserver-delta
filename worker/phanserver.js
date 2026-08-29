@@ -34,13 +34,25 @@ export async function resolveAndValidateTelegramTargets(targetStr, env, fleetSta
     throw new Error("Target không được để trống.");
   }
   const rawTarget = targetStr.trim();
-  const wantedGroup = normalizeDeviceGroup(rawTarget);
-
   const stateResult = await fleetStateCall(env, fleetState, "/aot/hub/state");
   if (!stateResult?.response?.ok && !stateResult?.data?.state) {
     throw new Error("Không thể lấy trạng thái thiết bị.");
   }
   const durableRecords = stateResult.data?.state?.devices || [];
+
+  // Support "all" or "*" keyword to target all online devices
+  if (rawTarget.toLowerCase() === "all" || rawTarget === "*") {
+    const onlineDevices = durableRecords
+      .filter(record => record.online)
+      .map(record => normalizeDeviceId(record.device_id))
+      .filter(Boolean);
+    if (onlineDevices.length === 0) {
+      throw new Error("Không có thiết bị nào đang ONLINE để thực hiện.");
+    }
+    return onlineDevices.sort(compareDeviceIds);
+  }
+
+  const wantedGroup = normalizeDeviceGroup(rawTarget);
 
   if (wantedGroup) {
     const ids = [];
