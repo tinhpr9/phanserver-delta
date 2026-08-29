@@ -146,4 +146,12 @@ always_on: true
 - **Tự Động Nâng Quyền Root Khi Quét Và Trích Xuất Gói (Automatic Root Elevation for System Introspection)**: Tất cả các thao tác tra cứu danh sách gói (`pm list packages`), trích xuất đường dẫn APK (`pm path`), và đóng gói thư mục dữ liệu (`/data/data/`) BẮT BUỘC phải tự động kích hoạt đường dẫn dự phòng nâng quyền Root (`su`) nếu tiến trình người dùng gặp hạn chế quyền (Permission Denied). CẤM TUYỆT ĐỐI việc báo lỗi "không tìm thấy ứng dụng" khi chưa chạy qua kênh Root `su`.
 - **Đồng Bộ Song Song Cả Repo Và Hệ Thống Luật (Dual-Channel Sync)**: Bắt buộc áp dụng ngay và đồng bộ điều luật này vào tất cả các kênh lưu trữ SSOT.
 
+## 23. QUY TẮC BẮT BUỘC ĐỌC VÀ ĐỐI CHIẾU LUẬT SSOT TRƯỚC KHI RÀ SOÁT MÃ NGUỒN (STRICT_MANDATORY_RULES_READ_BEFORE_DEEP_AUDIT_RULE - Hard Rule)
+- **Cấm Tuyệt Đối Bắt Đầu Rà Soát Khi Chưa Đọc Luật (Zero Audit Without Pre-Reading Full SSOT Rules)**: Trước khi tiến hành bất kỳ đợt rà soát chuyên sâu (Deep Audit), chẩn đoán lỗi hay kiểm tra chất lượng mã nguồn nào, Antigravity BẮT BUỘC phải sử dụng công cụ `view_file` để mở và đọc trực tiếp toàn bộ tệp luật SSOT (`rule.txt` / `system_rules.md`). NGHIÊM CẤM tiến hành rà soát dựa trên trí nhớ ngắn hạn hoặc giả định chủ quan mà chưa nạp đầy đủ toàn bộ các điều luật hiện hành vào ngữ cảnh làm việc.
+- **Quy Trình 3 Bước Rà Soát Chuẩn Hóa Theo Luật (3-Step Rule-Guided Audit Flow)**:
+  1. *Bước 1 (Đọc luật)*: Dùng `view_file` đọc toàn bộ các điều luật từ Mục 1 đến Mục mới nhất.
+  2. *Bước 2 (Đối chiếu từng điều)*: Lấy từng điều luật làm "thước đo" để soi vào từng dòng mã nguồn, từng hàm, từng điều kiện biên bằng `grep_search` và `view_file`.
+  3. *Bước 3 (Thực nghiệm & Báo cáo)*: Kiểm chứng trên 6/6 test suites và báo cáo chi tiết kèm dẫn chứng cụ thể cho người dùng.
+- **Đồng Bộ Song Song Cả Repo Và Hệ Thống Luật (Dual-Channel Sync)**: Bắt buộc áp dụng ngay và đồng bộ điều luật này vào tất cả các kênh lưu trữ SSOT.
+
 
