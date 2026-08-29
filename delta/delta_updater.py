@@ -395,6 +395,14 @@ def download_asset(
     raise DeltaUpdaterError(f"Unsupported asset URL scheme: {url}")
 
 
+def is_split_apk_bundle(apks: list[pathlib.Path]) -> bool:
+    """Detect if a collection of APK files represents split slices of a single App Bundle."""
+    if len(apks) <= 1:
+        return False
+    names = [a.name.lower() for a in apks]
+    return any("split" in n or "config." in n for n in names)
+
+
 def install_apks(apks: list[pathlib.Path] | pathlib.Path) -> None:
     """Install one or more APKs, with automatic support for Split APK bundles."""
     if isinstance(apks, (str, pathlib.Path)):
@@ -435,13 +443,18 @@ def install_apks(apks: list[pathlib.Path] | pathlib.Path) -> None:
                 tmp_cleanups.append(tmp_dest)
             staged_paths.append(target_path)
 
-        if len(staged_paths) == 1:
-            # Single standalone APK install
-            single_path = staged_paths[0]
-            if is_root_process:
-                result = subprocess.run(["pm", "install", "-r", "-d", single_path], **common_kwargs)
-            else:
-                result = subprocess.run([su_path, "-c", f"exec pm install -r -d {shlex.quote(single_path)}"], **common_kwargs)
+        if len(staged_paths) == 1 or not is_split_apk_bundle(apks):
+            # Install individual standalone APKs one by one
+            for single_path in staged_paths:
+                if is_root_process:
+                    result = subprocess.run(["pm", "install", "-r", "-d", single_path], **common_kwargs)
+                else:
+                    result = subprocess.run([su_path, "-c", f"exec pm install -r -d {shlex.quote(single_path)}"], **common_kwargs)
+                output = ((result.stdout or "") + "\n" + (result.stderr or "")).strip()
+                if result.returncode != 0 or "Success" not in output:
+                    raise DeltaUpdaterError(
+                        f"pm install failed for {pathlib.Path(single_path).name} (rc={result.returncode}): {output[:400]}"
+                    )
         else:
             # Multiple Split APK install (App Bundle) via Android PM Session Install
             install_script = f"""
@@ -463,11 +476,11 @@ def install_apks(apks: list[pathlib.Path] | pathlib.Path) -> None:
             else:
                 result = subprocess.run([su_path, "-c", install_script], **common_kwargs)
 
-        output = ((result.stdout or "") + "\n" + (result.stderr or "")).strip()
-        if result.returncode != 0 or "Success" not in output:
-            raise DeltaUpdaterError(
-                f"pm install failed for {', '.join(a.name for a in apks)} (rc={result.returncode}): {output[:400]}"
-            )
+            output = ((result.stdout or "") + "\n" + (result.stderr or "")).strip()
+            if result.returncode != 0 or "Success" not in output:
+                raise DeltaUpdaterError(
+                    f"pm install failed for {', '.join(a.name for a in apks)} (rc={result.returncode}): {output[:400]}"
+                )
     finally:
         for tmp_dest in tmp_cleanups:
             try:
