@@ -89,4 +89,4 @@ bash "$REPO/deploy/install_service.sh"
 echo "=========================================="
 echo "  ✅ CÀI ĐẶT THÀNH CÔNG CHO THIẾT BỊ: $DEVICE_ID"
 echo "=========================================="
-phan start
+phan restart
