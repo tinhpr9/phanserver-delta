@@ -405,71 +405,22 @@ def install_apk(apk_path: str | pathlib.Path) -> None:
         )
 
     common_kwargs = {"capture_output": True, "text": True, "timeout": 180}
-    is_root_process = hasattr(os, "geteuid") and os.geteuid() == 0
-    pm_bin = "/system/bin/pm" if os.path.exists("/system/bin/pm") else "pm"
-    su_path = None if is_root_process else shutil.which("su")
-    if not is_root_process and not su_path:
-        raise DeltaUpdaterError("Root access disappeared before APK installation")
-
-    target_install_path = str(apk)
-    tmp_dest = pathlib.Path(f"/data/local/tmp/{apk.name}")
-    copied_to_tmp = False
-
-    try:
-        # Package Manager cannot always read shared-storage paths, so stage them
-        # through a root-visible location before installation.
-        if "/storage/" in str(apk) or "/sdcard/" in str(apk):
-            if is_root_process:
-                shutil.copyfile(apk, tmp_dest)
-                os.chmod(tmp_dest, 0o644)
-            else:
-                stage_cmd = (
-                    f"cp {shlex.quote(str(apk))} {shlex.quote(str(tmp_dest))} "
-                    f"&& chmod 644 {shlex.quote(str(tmp_dest))}"
-                )
-                stage_result = subprocess.run([su_path, "-c", stage_cmd], **common_kwargs)
-                stage_output = (
-                    (stage_result.stdout or "") + "\n" + (stage_result.stderr or "")
-                ).strip()
-                if stage_result.returncode != 0:
-                    raise DeltaUpdaterError(
-                        f"Failed to stage {apk.name} for pm install "
-                        f"(rc={stage_result.returncode}): {stage_output[:400]}"
-                    )
-            target_install_path = str(tmp_dest)
-            copied_to_tmp = True
-
-        if is_root_process:
-            result = subprocess.run(
-                [pm_bin, "install", "-r", "-d", target_install_path],
-                **common_kwargs,
-            )
-        else:
-            install_cmd = (
-                f"exec {shlex.quote(pm_bin)} install -r -d "
-                f"{shlex.quote(target_install_path)}"
-            )
-            result = subprocess.run([su_path, "-c", install_cmd], **common_kwargs)
-
-        output = ((result.stdout or "") + "\n" + (result.stderr or "")).strip()
-        if result.returncode != 0 or "Success" not in output:
-            raise DeltaUpdaterError(
-                f"pm install failed for {apk.name} (rc={result.returncode}): {output[:400]}"
-            )
-    finally:
-        if copied_to_tmp:
-            try:
-                if is_root_process:
-                    tmp_dest.unlink(missing_ok=True)
-                else:
-                    subprocess.run(
-                        [su_path, "-c", f"rm -f {shlex.quote(str(tmp_dest))}"],
-                        capture_output=True,
-                        text=True,
-                        timeout=30,
-                    )
-            except Exception:
-                pass
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        result = subprocess.run(["pm", "install", "-r", "-d", str(apk)], **common_kwargs)
+    else:
+        su_path = shutil.which("su")
+        if not su_path:
+            raise DeltaUpdaterError("Root access disappeared before APK installation")
+        su_cmd = f"exec pm install -r -d {shlex.quote(str(apk))}"
+        result = subprocess.run(
+            [su_path, "-c", su_cmd],
+            **common_kwargs,
+        )
+    output = ((result.stdout or "") + "\n" + (result.stderr or "")).strip()
+    if result.returncode != 0 or "Success" not in output:
+        raise DeltaUpdaterError(
+            f"pm install failed for {apk.name} (rc={result.returncode}): {output[:400]}"
+        )
 
 
 def _validate_zip_member(member: zipfile.ZipInfo) -> None:
@@ -542,6 +493,41 @@ def extract_zip_apks(zip_path: str | pathlib.Path, output_dir: str | pathlib.Pat
                 pass
         raise
     return extracted
+
+
+def restore_zip_data(zip_path: str | pathlib.Path) -> bool:
+    """Extract and restore data.tar.gz from bundle ZIP into /data/data/ if root is available."""
+    if not root_available():
+        return False
+    try:
+        with zipfile.ZipFile(zip_path, "r") as archive:
+            if "data.tar.gz" not in archive.namelist():
+                return False
+            data_bytes = archive.read("data.tar.gz")
+            if len(data_bytes) < 100:
+                return False
+
+            with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp_tar:
+                tmp_tar.write(data_bytes)
+                tmp_tar_path = tmp_tar.name
+
+            common_kwargs = {"capture_output": True, "text": True, "timeout": 30}
+            su_path = shutil.which("su")
+            is_root = hasattr(os, "geteuid") and os.geteuid() == 0
+
+            extract_cmd = f"tar -xzf {shlex.quote(tmp_tar_path)} -C /data/data/"
+            if is_root:
+                subprocess.run(shlex.split(extract_cmd), **common_kwargs)
+            elif su_path:
+                subprocess.run([su_path, "-c", extract_cmd], **common_kwargs)
+
+            try:
+                os.unlink(tmp_tar_path)
+            except Exception:
+                pass
+            return True
+    except Exception:
+        return False
 
 
 def parse_indices(spec: str, total: int) -> list[int]:
@@ -740,11 +726,19 @@ def run_delta_update(
         if not install_queue:
             raise DeltaUpdaterError("UPDATE_DELTA verified release but found zero APKs")
 
-        print(f"[INSTALL] all assets verified; installing {len(install_queue)} APK(s)", flush=True)
         for index, apk in enumerate(install_queue, 1):
             print(f"[INSTALL] {index}/{len(install_queue)} {apk.name}", flush=True)
             install_apk(apk)
         installed_count = len(install_queue)
+
+        # Restore application data from ZIP bundles if present
+        for _, target in staged:
+            if target.name.lower().endswith(".zip"):
+                try:
+                    if restore_zip_data(target):
+                        print(f"[RESTORE] App data restored successfully from {target.name}", flush=True)
+                except Exception as ex:
+                    print(f"[WARN] Failed to restore data from {target.name}: {ex}", flush=True)
 
     return {
         "ok": True,

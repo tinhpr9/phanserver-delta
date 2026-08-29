@@ -99,13 +99,17 @@ def create_app_backup(package_name: str, output_dir: pathlib.Path) -> pathlib.Pa
                 zf.write(apk, arcname=f"apks/{apk.name}")
 
         # Add Data directory if accessible (via su / root)
-        data_dir = pathlib.Path(f"/data/data/{package_name}")
         temp_data_tar = output_dir / "data.tar.gz"
-        
-        su_cmd = f"tar -czf {temp_data_tar} -C /data/data/ {package_name} 2>/dev/null || true"
-        subprocess.run(["su", "-c", su_cmd], capture_output=True, timeout=10)
-        
-        if temp_data_tar.exists() and temp_data_tar.stat().st_size > 0:
+        su_cmd = f"cd /data/data && tar -czf {shlex.quote(str(temp_data_tar))} {shlex.quote(package_name)}"
+        is_root = hasattr(os, "geteuid") and os.geteuid() == 0
+        if is_root:
+            subprocess.run(shlex.split(su_cmd), capture_output=True, timeout=30)
+        else:
+            su_path = shutil.which("su")
+            if su_path:
+                subprocess.run([su_path, "-c", su_cmd], capture_output=True, timeout=30)
+
+        if temp_data_tar.exists() and temp_data_tar.stat().st_size > 100:
             zf.write(temp_data_tar, arcname="data.tar.gz")
             temp_data_tar.unlink(missing_ok=True)
 
