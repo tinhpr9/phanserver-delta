@@ -127,7 +127,19 @@ class TestDeviceAgent(unittest.TestCase):
         payload = mock_report.call_args[0][2]
         self.assertEqual(payload["device_id"], "m72")
         self.assertEqual(payload["device_group"], "NOVA")
-        self.assertIn("allocate_server_2pc", payload["capabilities"])
+    @mock.patch("agent.agent.subprocess.run")
+    @mock.patch("agent.agent.os.execv")
+    def test_check_and_apply_auto_update(self, mock_execv, mock_subproc):
+        mock_subproc.return_value.returncode = 0
+        mock_subproc.return_value.stdout = "ok"
+        mock_subproc.return_value.stderr = ""
+        with mock.patch("agent.agent.ROOT", self.root_path):
+            (self.root_path / ".git").mkdir()
+            success, err = agent.check_and_apply_auto_update(branch="fix/delta-stability")
+            self.assertTrue(success)
+            self.assertIsNone(err)
+            self.assertEqual(mock_subproc.call_count, 2)
+            mock_execv.assert_called_once()
 
 
 if __name__ == "__main__":
