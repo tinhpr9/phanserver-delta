@@ -92,4 +92,12 @@ always_on: true
   3. *Tình trạng treo/nghẽn luồng (Deadlock & Stale State)*: Kiểm tra các điểm có thể gây đứng tiến trình hoặc mất tín hiệu phản hồi.
 - **Phản Hồi Thật Thà & Khắc Phục Tức Thì (Instant Transparent Remediation)**: Tuyệt đối cấm quanh co, biện minh hoặc đổ lỗi. Phải chỉ ra chính xác vị trí lỗi, khắc phục triệt để và đồng bộ quy tắc tức thì.
 
+## 15. QUY TẮC BẮT BUỘC THỰC NGHIỆM THẬT VÀ KIỂM CHỨNG ĐẦU CUỐI SAU MỌI BẢN VÁ (STRICT_REAL_WORLD_E2E_VERIFICATION_AFTER_FIX_RULE - Hard Rule)
+- **Cấm Dừng Lại Ở Mức Giả Lập / UnitTest Đơn Thuần (No Purely Theoretical or Mocked Testing)**: Sau khi sửa bất kỳ lỗi nào hoặc tạo tính năng mới, việc chạy pass Unit Test CHỈ LÀ BƯỚC ĐẦU TIÊN. Antigravity BẮT BUỘC PHẢI THỰC NGHIỆM THỰC TẾ (Real-world End-to-End Test): Phát lệnh thật qua webhook/API, theo dõi chu trình mạng thật và kiểm chứng kết quả thực tế.
+- **Quy Trình Thực Nghiệm Thực Tế 3 Tầng (3-Tier Real Test Protocol)**:
+  1. *Tầng 1 (Code & Test Suite)*: Kiểm tra cú pháp, import, chạy bộ test 100% pass.
+  2. *Tầng 2 (Deploy & Real Trigger)*: Triển khai mã lên hệ thống thật (Worker / Git / Release) và phát lệnh thật (Real Dispatch).
+  3. *Tầng 3 (Real ACK & Artifact Confirmation)*: Xác nhận tín hiệu ACK thật trả về và kiểm tra tệp đầu ra thực tế trước khi bàn giao cho người dùng.
+- **Đồng Bộ Song Song Cả Repo Và Hệ Thống Luật (Dual-Channel Sync)**: Bắt buộc áp dụng ngay và đồng bộ điều luật này vào tất cả các kênh lưu trữ SSOT.
+
 
