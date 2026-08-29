@@ -237,15 +237,25 @@ def upload_to_github_release(
 
     auth_token = token or os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
     if not auth_token:
-        cfg_file = pathlib.Path("/storage/emulated/0/Download/Shouko/agent_config.json")
-        if cfg_file.is_file():
-            try:
-                import json
-                with open(cfg_file, "r", encoding="utf-8") as f:
-                    cfg_data = json.load(f)
-                    auth_token = cfg_data.get("github_token")
-            except Exception:
-                pass
+        candidate_configs = [
+            pathlib.Path("/storage/emulated/0/Download/Shouko/agent_config.json"),
+            pathlib.Path("/storage/emulated/0/Download/agent_config.json"),
+            pathlib.Path("/data/data/com.termux/files/home/agent_config.json"),
+            pathlib.Path.home() / "agent_config.json",
+            pathlib.Path(__file__).resolve().parent.parent / "agent_config.json",
+        ]
+        for cfg_file in candidate_configs:
+            if cfg_file.is_file():
+                try:
+                    import json
+                    with open(cfg_file, "r", encoding="utf-8") as f:
+                        cfg_data = json.load(f)
+                        token_cand = cfg_data.get("github_token") or cfg_data.get("token")
+                        if token_cand:
+                            auth_token = str(token_cand).strip()
+                            break
+                except Exception:
+                    pass
 
     if not auth_token:
         try:
@@ -309,7 +319,7 @@ def upload_to_github_release(
                 },
                 method="POST"
             )
-            with urllib.request.urlopen(up_req, timeout=60) as up_resp:
+            with urllib.request.urlopen(up_req, timeout=300) as up_resp:
                 if up_resp.status in (200, 201):
                     return f"https://github.com/{repo}/releases/download/{tag}/{file_path.name}"
         except Exception as ex:
@@ -319,7 +329,7 @@ def upload_to_github_release(
     gh_bin = shutil.which("gh") or "/data/data/com.termux/files/usr/bin/gh"
     if os.path.exists(gh_bin) or shutil.which("gh"):
         cmd = [gh_bin, "release", "upload", tag, str(file_path), "--repo", repo, "--clobber"]
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         if proc.returncode == 0:
             return f"https://github.com/{repo}/releases/download/{tag}/{file_path.name}"
         raise BackupError(f"Lỗi khi tải lên GitHub Release qua gh: {proc.stderr.strip() or proc.stdout.strip()}")
@@ -343,6 +353,7 @@ def run_backup_and_upload(
         targets = [raw]
 
     results = []
+    errors = []
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp_path = pathlib.Path(tmpdir)
         for t in targets:
@@ -358,10 +369,13 @@ def run_backup_and_upload(
                     "download_url": download_url,
                 })
             except Exception as e:
-                print(f"[WARN] Backup failed for target {t}: {e}", flush=True)
+                err_msg = str(e)
+                print(f"[WARN] Backup failed for target {t}: {err_msg}", flush=True)
+                errors.append(f"{t}: {err_msg}")
 
     if not results:
-        raise BackupError(f"Không thể sao lưu bất kỳ gói ứng dụng nào trong danh sách: {keyword_or_pkg}")
+        detail = "; ".join(errors) if errors else "Không tìm thấy dữ liệu"
+        raise BackupError(f"Sao lưu thất bại: {detail[:150]}")
 
     return {
         "ok": True,
