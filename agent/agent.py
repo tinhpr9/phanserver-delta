@@ -228,6 +228,44 @@ def handle_incoming_batch_action(
     return False
 
 
+def check_and_apply_auto_update(branch: str = "fix/delta-stability") -> bool:
+    """Check GitHub remote branch and auto-update / restart process in-place if newer commit exists."""
+    root = ROOT
+    if not (root / ".git").is_dir():
+        return False
+    try:
+        fetch_res = subprocess.run(
+            ["git", "-C", str(root), "fetch", "origin", branch],
+            capture_output=True, text=True, timeout=10
+        )
+        if fetch_res.returncode != 0:
+            return False
+
+        local_rev = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=5
+        ).stdout.strip()
+
+        remote_rev = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "FETCH_HEAD"],
+            capture_output=True, text=True, timeout=5
+        ).stdout.strip()
+
+        if local_rev and remote_rev and local_rev != remote_rev:
+            print(f"[AUTO-UPDATE] Phát hiện bản cập nhật mới trên GitHub ({remote_rev[:7]}). Đang tự động nâng cấp...", flush=True)
+            subprocess.run(
+                ["git", "-C", str(root), "reset", "--hard", "FETCH_HEAD"],
+                capture_output=True, text=True, timeout=15
+            )
+            print("[AUTO-UPDATE] Tự động khởi động lại Agent...", flush=True)
+            time.sleep(1)
+            os.execv(sys.executable, [sys.executable] + sys.argv)
+            return True
+    except Exception as e:
+        print(f"[AUTO-UPDATE] Check failed: {e}", flush=True)
+    return False
+
+
 def run_agent_loop(
     config_path: pathlib.Path = config.DEFAULT_CONFIG_PATH,
     device_id_path: pathlib.Path = config.DEFAULT_DEVICE_ID_PATH,
@@ -253,7 +291,9 @@ def run_agent_loop(
 
     print(f"[*] Starting phanserver-delta agent: ID={device_id}, Group={device_group}, URL={report_url}", flush=True)
 
+    tick_count = 0
     while True:
+        tick_count += 1
         metrics = collect_metrics()
         heartbeat_payload = {
             "device_id": device_id,
@@ -271,6 +311,11 @@ def run_agent_loop(
 
         if single_tick:
             break
+
+        # Check for code updates on GitHub periodically (~every 2 minutes)
+        if tick_count % 4 == 0:
+            check_and_apply_auto_update()
+
         time.sleep(30)
 
 

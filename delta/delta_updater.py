@@ -406,7 +406,7 @@ def install_apk(apk_path: str | pathlib.Path) -> None:
 
     common_kwargs = {"capture_output": True, "text": True, "timeout": 180}
     is_root_process = hasattr(os, "geteuid") and os.geteuid() == 0
-    pm_bin = "/system/bin/pm" if os.path.exists("/system/bin/pm") else "pm"
+    pm_bin = "pm"
     su_path = None if is_root_process else shutil.which("su")
     if not is_root_process and not su_path:
         raise DeltaUpdaterError("Root access disappeared before APK installation")
@@ -441,12 +441,12 @@ def install_apk(apk_path: str | pathlib.Path) -> None:
 
         if is_root_process:
             result = subprocess.run(
-                [pm_bin, "install", "-r", "-d", target_install_path],
+                ["pm", "install", "-r", "-d", target_install_path],
                 **common_kwargs,
             )
         else:
             install_cmd = (
-                f"exec {shlex.quote(pm_bin)} install -r -d "
+                f"exec pm install -r -d "
                 f"{shlex.quote(target_install_path)}"
             )
             result = subprocess.run([su_path, "-c", install_cmd], **common_kwargs)
