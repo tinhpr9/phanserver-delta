@@ -77,4 +77,11 @@ always_on: true
 - **Cấm Khẳng Định Mập Mờ / Đánh Lận Con Đen (Zero Ambiguity)**: Cấm tuyệt đối việc dùng các cụm từ chung chung gây hiểu lầm như *"tôi đã kiểm tra hệ thống"* khi thực chất không thể đọc được nội dung tin nhắn bot trả về cho người dùng.
 - **Quy Chuẩn Yêu Cầu Dữ Liệu Rõ Ràng (Explicit Data Request Protocol)**: Khi cần thông tin từ màn hình chat Telegram hoặc MT Manager mà hệ thống API không thể chạm tới, Antigravity bắt buộc phải yêu cầu người dùng gửi ảnh chụp màn hình hoặc dán văn bản lỗi ngay lập tức, cấm tự giả định hoặc phán đoán mù.
 
+## 13. QUY TẮC ĐỒNG BỘ SONG SONG REPO VÀ HỆ THỐNG LUẬT TOÀN DIỆN (STRICT_DUAL_CHANNEL_RULE_SYNC_RULE - Hard Rule)
+- **Bắt Buộc Đồng Bộ Tức Thì 2 Chiều (Mandatory Immediate Dual-Channel Sync)**: Bất cứ khi nào có thay đổi, bổ sung, chỉnh sửa hoặc siết chặt bất kỳ điều luật nào, Antigravity BẮT BUỘC PHẢI THỰC HIỆN ĐỒNG THỜI trên cả 2 hệ thống:
+  1. *Kênh Repo*: Tệp `rule.txt` và `.agents/rules/system_rules.md` trong Repo mã nguồn (Git commit & push ngay lập tức lên GitHub).
+  2. *Kênh Hệ Thống AI (Agent System Rules)*: Các tệp quy chuẩn hệ thống nội tại của AI (`/root/.gemini/rules/system_rules.md`, `/root/.agents/rules/system_rules.md`, `/root/.gemini/antigravity-cli/rules/system_rules.md`).
+  3. *Kênh Lưu Trữ Phụ Trợ*: `/storage/emulated/0/Download/rule.txt` và Google Drive (`remote_drive:Rules/`).
+- **Cấm Tuyệt Đối Lệch Pha Quy Tắc (Zero Desynchronization Tolerance)**: Tuyệt đối cấm chỉ cập nhật trên Repo mà quên cập nhật vào Hệ thống luật của AI, hoặc chỉ cập nhật trong AI Prompt mà quên commit lên Repo. Toàn bộ các kênh phải luôn luôn khớp nhau 100% từng từ, từng câu tại mọi thời điểm (SSOT - Single Source of Truth).
+
 
