@@ -513,6 +513,9 @@ def extract_zip_apks(zip_path: str | pathlib.Path, output_dir: str | pathlib.Pat
                         raise DeltaUpdaterError(f"APK inside ZIP is empty: {member.filename}")
                     apk_members.append(member)
             if not apk_members:
+                # If archive contains data.tar.gz, it is a valid data-only backup
+                if any(m.filename == "data.tar.gz" for m in members):
+                    return []
                 raise DeltaUpdaterError(f"ZIP archive contains no APK files: {zip_path}")
             bad_crc = archive.testzip()
             if bad_crc is not None:
