@@ -51,9 +51,16 @@ always_on: true
 - **Cấm Chạy Device Agent Trên Máy Chính**: Cấm tuyệt đối chạy `agent.py`, cấm gán `device_id` (như `m77`, `m72`), cấm chạy lệnh cài đặt APK ngầm (`pm install`, `adb install`) hoặc chạy các tác vụ điều khiển nhận lệnh trên máy chính.
 - **Phạm Vi Thực Thi Thiết Bị**: Mọi lệnh nhận cập nhật Delta, cài đặt APK, Backup ứng dụng hoặc phân phối server CHỈ ĐƯỢC PHÉP thực thi trên các máy ảo đám mây từ xa (Ugphone / Cloud Phone) do người dùng chủ động khởi động và cấu hình riêng biệt. Mọi cấu hình hoặc tiến trình giả lập thiết bị trên máy chính phải bị xoá sạch ngay lập tức.
 
-## 9. QUY TẮC TỰ ĐỘNG CẬP NHẬT & BẢO TRÌ KHÔNG CẦN CHẠM TAY (AUTO_UPDATE_AND_ZERO_TOUCH_MAINTENANCE_RULE - Hard Rule)
-- **Tự Động Nâng Cấp Ngầm**: Toàn bộ các Device Agent trên máy ảo từ xa (Ugphone) bắt buộc phải có cơ chế tự động quét phiên bản mới trên GitHub nhánh `fix/delta-stability` định kỳ (~2 phút) hoặc nhận lệnh cập nhật từ Telegram.
-- **Thay Thế Tiến Trình Tại Chỗ (In-Place Process Replacement)**: Khi phát hiện có commit mới trên GitHub, Agent phải tự động kéo mã nguồn mới nhất (`git reset --hard FETCH_HEAD`) và tự nạp lại tiến trình vào RAM bằng `os.execv` mà không bắt người dùng phải mở Termux gõ lệnh `git pull` hay khởi động lại thủ công.
-- **Tiêu Chí Vận Hành Không Chạm Tay (Zero-Touch Ops)**: Mọi sửa đổi, sửa lỗi và tính năng mới khi được Antigravity đẩy lên GitHub phải tự động có hiệu lực trên toàn bộ đội máy Ugphone mà không làm gián đoạn hoặc phiền đến người dùng.
+## 9. QUY TẮC NÂNG CẤP THEO YÊU CẦU & BẢO TRÌ TỨC THÌ (ON_DEMAND_UPGRADE_AND_ZERO_TOUCH_MAINTENANCE_RULE - Hard Rule)
+- **Nâng Cấp Tức Thì Theo Lệnh (On-Demand Immediate Upgrade)**: Toàn bộ Device Agent nâng cấp thông qua lệnh từ xa (`/upgrade <device>` hoặc `/upgrade all`) thay vì chạy vòng lặp quét ngầm gây hao phí request.
+- **Thay Thế Tiến Trình Tại Chỗ (In-Place Process Replacement)**: Khi nhận lệnh `/upgrade`, Agent lập tức kéo mã nguồn mới nhất (`git reset --hard origin/fix/delta-stability`) và tự nạp lại tiến trình vào RAM bằng `os.execv` trong 1 giây mà không bắt người dùng phải thao tác thủ công.
+- **Tiêu Chí Vận Hành Không Chạm Tay (Zero-Touch Ops)**: Mọi sửa đổi và tính năng mới khi được Antigravity đẩy lên GitHub có thể áp dụng tức thì cho toàn bộ đội máy Ugphone chỉ bằng một lệnh duy nhất từ Telegram.
+
+## 10. QUY TẮC PHÒNG CHỐNG VÒNG LẶP REQUEST & BẢO VỆ QUOTA (ANTI_LOOP_REQUEST_AND_QUOTA_GUARD_RULE - Hard Rule)
+- **Cấm Polling Nền Vô Tận (No Continuous Background Polling)**: Cấm tuyệt đối mọi vòng lặp tự động gửi request kiểm tra Git/API theo chu kỳ ngắn trong Device Agent. Chỉ cho phép gửi Heartbeat theo chu kỳ chuẩn (>=30s) và mọi tác vụ nặng (Backup, Update, Upgrade) phải chạy On-Demand theo lệnh.
+- **Chặn Thảm Họa Thử Lại (Anti-Retry Storm & Exponential Backoff)**: Mọi kết nối mạng khi gặp sự cố hoặc mã lỗi HTTP (4xx/5xx) chỉ được thử lại tối đa 3 lần (`max_retries=3`) kèm thời gian chờ dãn cách (exponential backoff). Cấm tuyệt đối vòng lặp `while True` retry liên tục làm sập server và cạn kiệt Quota.
+- **Chống Vòng Lặp Phản Hồi Bot (Anti-Webhook Echo Loop)**: Cloudflare Worker / Telegram Webhook bắt buộc phải kiểm tra và bỏ qua ngay lập tức mọi tin nhắn xuất phát từ Bot (`if (message?.from?.is_bot) return`) để triệt tiêu vĩnh viễn nguy cơ Bot tự trả lời chính mình gây lặp vô tận.
+- **Lọc Dữ Liệu Trước Khi Tải (Pre-Download Filtering)**: Bắt buộc lọc chính xác file mục tiêu trước khi tải (Target Asset Selection), cấm tải trọn gói hàng loạt (All Assets Dump) gây lãng phí dung lượng mạng và chạm trần GitHub API Rate Limit.
+- **Cấm Polling Trạng Thái Trong AI Prompt (Zero AI-Level Task Polling)**: Antigravity tuyệt đối không gọi vòng lặp kiểm tra trạng thái tác vụ nền (`manage_task status`); phải tận dụng cơ chế đánh thức tự động (`Reactive Wakeup / Event-driven completion`) để bảo toàn Token và Context Window.
 
 
