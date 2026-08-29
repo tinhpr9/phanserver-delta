@@ -100,4 +100,9 @@ always_on: true
   3. *Tầng 3 (Real ACK & Artifact Confirmation)*: Xác nhận tín hiệu ACK thật trả về và kiểm tra tệp đầu ra thực tế trước khi bàn giao cho người dùng.
 - **Đồng Bộ Song Song Cả Repo Và Hệ Thống Luật (Dual-Channel Sync)**: Bắt buộc áp dụng ngay và đồng bộ điều luật này vào tất cả các kênh lưu trữ SSOT.
 
+## 16. QUY TẮC RÀ SOÁT TƯƠNG THÍCH TOÀN CHUỖI KHI MỞ RỘNG TÍNH NĂNG (STRICT_END_TO_END_PIPELINE_COMPATIBILITY_AUDIT_RULE - Hard Rule)
+- **Bắt Buộc Rà Soát Lại Toàn Bộ Các Hàm Tiền Xử Lý / Kiểm Tra Cũ (Legacy Pre-Check & Validator Audit)**: Khi bổ sung hoặc mở rộng bất kỳ định dạng dữ liệu mới (Data-Only Backup, Cross-Package Restore, Mode selection), Antigravity BẮT BUỘC phải rà soát lại 100% tất cả các mắt xích chạy trước đó trong luồng (Pipeline).
+- **Cấm Giữ Điều Kiện Chặn Cứng Đơn Tuyến (Eliminate Monolithic Assumptions)**: Tuyệt đối cấm để lại các lệnh kiểm tra cũ mang tính giả định đơn tuyến (ví dụ: `if not apks: raise Error`) làm chặn đứng các luồng dữ liệu mới hợp lệ. Mọi hàm kiểm tra (Validator) phải được nâng cấp để hỗ trợ đầy đủ các trường hợp mở rộng mới.
+- **Tự Kiểm Tra Đa Chiều Trước Khi Đề Xuất (Mandatory Cross-Scenario Pre-Audit)**: Trước khi cung cấp bất kỳ bản vá nào cho người dùng, Antigravity phải tự đặt câu hỏi: *"Các hàm cũ trong chuỗi có thể ném ngoại lệ với dữ liệu mới này không?"* và giải quyết triệt để trước khi yêu cầu người dùng chạy thử.
+
 
