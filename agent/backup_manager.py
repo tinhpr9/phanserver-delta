@@ -67,6 +67,17 @@ def find_package_name(keyword_or_pkg: str) -> str:
         "mtmanager": "bin.mt.plus",
         "rotation": "ahapps.controlthescreenorientation",
         "opera": "com.opera.browser",
+        "roblox": "com.roblox.client",
+        "hi": "com.tinh.vv.hi",
+        "hj": "com.tinh.vv.hj",
+        "hk": "com.tinh.vv.hk",
+        "hl": "com.tinh.vv.hl",
+        "hm": "com.tinh.vv.hm",
+        "hn": "com.tinh.vv.hn",
+        "ho": "com.tinh.vv.ho",
+        "hp": "com.tinh.vv.hp",
+        "hq": "com.tinh.vv.hq",
+        "hr": "com.tinh.vv.hr",
     }
     alias_match = aliases.get(keyword_or_pkg.lower())
     if alias_match:
