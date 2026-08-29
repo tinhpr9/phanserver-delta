@@ -702,15 +702,21 @@ def restore_zip_data(zip_path: str | pathlib.Path, target_pkg: Optional[str] = N
                 DEST_DIR="/data/data/{target_pkg}"
                 mkdir -p "$DEST_DIR"
                 if [ "{target_pkg}" = "com.termux" ]; then
-                    if [ -d "$SRC_DIR/files/home" ]; then
-                        mkdir -p "$DEST_DIR/files/home"
-                        cp -a "$SRC_DIR/files/home"/. "$DEST_DIR/files/home"/ 2>/dev/null || true
-                    elif [ -d "$SRC_DIR/home" ]; then
-                        mkdir -p "$DEST_DIR/files/home"
-                        cp -a "$SRC_DIR/home"/. "$DEST_DIR/files/home"/ 2>/dev/null || true
+                    TERMUX_UID=$(stat -c "%u" "$DEST_DIR" 2>/dev/null || echo "")
+                    if [ -n "$TERMUX_UID" ]; then
+                        pkill -9 -u "$TERMUX_UID" 2>/dev/null || true
+                    fi
+                    mkdir -p "$DEST_DIR/files"
+                    if [ -d "$SRC_DIR/usr" ] || [ -d "$SRC_DIR/home" ]; then
+                        tar -xzf {shlex.quote(tar_cache_path)} -C "$DEST_DIR/files" --recursive-unlink 2>/dev/null || cp -a "$SRC_DIR"/. "$DEST_DIR/files"/ 2>/dev/null || true
+                    elif [ -d "$SRC_DIR/files" ]; then
+                        tar -xzf {shlex.quote(tar_cache_path)} -C "$DEST_DIR" --recursive-unlink 2>/dev/null || cp -a "$SRC_DIR"/. "$DEST_DIR"/ 2>/dev/null || true
                     else
                         cp -a "$SRC_DIR"/. "$DEST_DIR"/ 2>/dev/null || true
                     fi
+                    chmod -R 700 "$DEST_DIR/files" 2>/dev/null || true
+                    chmod -R 755 "$DEST_DIR/files/usr/bin" 2>/dev/null || true
+                    chmod -R 755 "$DEST_DIR/files/usr/lib" 2>/dev/null || true
                 else
                     cp -a "$SRC_DIR"/. "$DEST_DIR"/ 2>/dev/null || cp -rf "$SRC_DIR"/* "$DEST_DIR"/ 2>/dev/null || true
                 fi

@@ -234,14 +234,15 @@ def create_app_backup(package_name: str, output_dir: pathlib.Path, mode: str = "
     pkg_q = shlex.quote(package_name)
     if package_name == "com.termux":
         su_cmd = (
-            f"cd /data/data && (tar "
-            f"--exclude='com.termux/files/usr' "
-            f"--exclude='com.termux/cache' "
-            f"-czf {tar_dest} com.termux 2>/dev/null || "
-            f"tar -czf {tar_dest} com.termux/files/home 2>/dev/null || "
-            f"tar -cf - com.termux/files/home 2>/dev/null | gzip > {tar_dest}) && chmod 666 {tar_dest} 2>/dev/null || true"
+            f"cd /data/data/com.termux/files && (tar "
+            f"--exclude='usr/tmp' "
+            f"--exclude='usr/var/cache' "
+            f"--exclude='home/.cache' "
+            f"-czf {tar_dest} ./home ./usr 2>/dev/null || "
+            f"tar -czf {tar_dest} -C /data/data com.termux 2>/dev/null || "
+            f"tar -cf - ./home ./usr 2>/dev/null | gzip > {tar_dest}) && chmod 666 {tar_dest} 2>/dev/null || true"
         )
-        timeout_val = 180
+        timeout_val = 600
     else:
         su_cmd = f"cd /data/data && (tar -czf {tar_dest} {pkg_q} 2>/dev/null || tar -cf - {pkg_q} 2>/dev/null | gzip > {tar_dest}) && chmod 666 {tar_dest} 2>/dev/null || true"
         timeout_val = 180
