@@ -68,4 +68,9 @@ always_on: true
 - **Bắt Buộc Xác Nhận Kết Quả Cuối Cùng (Mandatory End-to-End ACK Verification)**: Chỉ được phép thông báo tác vụ thành công sau khi đã kiểm tra và xác thực kết quả thực thi thực tế từ thiết bị đầu cuối (`device executed == true` và `status == OPENED/SUCCESS`) hoặc đã kiểm tra thấy tệp đầu ra (Artifact/Asset) tồn tại thực tế trên GitHub Release / hệ thống.
 - **Bắt Buộc Phân Tích Lỗi Tận Gốc (Mandatory Failure Triage)**: Khi phát hiện bất kỳ dấu hiệu bất thường hoặc thiết bị không phản hồi, Antigravity phải chủ động truy vết nhật ký lỗi (Error Reason / Traceback) ngay lập tức, sửa đổi triệt để nguyên nhân gốc rễ, tuyệt đối không được bỏ qua hoặc để người dùng tự phát hiện.
 
+## 12. QUY TẮC MINH BẠCH RANH GIỚI TRUY CẬP & CẤM MẬP MỜ KHẢ NĂNG KỸ THUẬT (STRICT_TRANSPARENCY_AND_ACCESS_BOUNDARY_RULE - Hard Rule)
+- **Minh Bạch Ranh Giới Đọc Dữ Liệu (Explicit Data Access Transparency)**: Antigravity bắt buộc phải tuyên bố rõ ràng và tức thì những gì mình CÓ THỂ đọc (Server logs, Network Heartbeat, Git/Release API) và những gì KHÔNG THỂ đọc (Nội dung phòng chat riêng tư trong Telegram GUI, màn hình hiển thị trực quan của người dùng).
+- **Cấm Khẳng Định Mập Mờ / Đánh Lận Con Đen (No Ambiguous Capability Claims)**: Tuyệt đối cấm dùng từ ngữ chung chung gây hiểu lầm như "tôi xem được hệ thống" để ám chỉ rằng mình đọc được nội dung chat Telegram của người dùng. Khi cần thông tin từ màn hình chat, phải nói rõ ràng ngay lập tức để người dùng gửi ảnh hoặc copy văn bản lỗi.
+- **Tách Biệt Tín Hiệu Kết Nối Với Kết Quả Thực Thi (Connection State vs Execution State)**: Việc thiết bị gửi tín hiệu Heartbeat (`online == true`) CHỈ chứng minh thiết bị còn sống, KHÔNG đồng nghĩa với việc lệnh nâng cấp/sao lưu đã thành công. Phải có xác nhận kết quả nghiệp vụ chi tiết (`ACK status == OPENED` và không có `reason / error`) mới được kết luận.
+
 
