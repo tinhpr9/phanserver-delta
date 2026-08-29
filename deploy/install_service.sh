@@ -111,8 +111,8 @@ case "${1:-status}" in
     upgrade)
         echo "[*] Đang kéo mã nguồn mới nhất từ GitHub..."
         cd "$REPO_DIR"
-        git fetch origin fix/delta-stability
-        git reset --hard origin/fix/delta-stability
+        git -c safe.directory=* fetch origin fix/delta-stability
+        git -c safe.directory=* reset --hard origin/fix/delta-stability
         echo "[*] Khởi động lại Agent..."
         stop_agent
         sleep 1
