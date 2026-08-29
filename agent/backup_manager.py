@@ -170,7 +170,7 @@ def create_app_backup(package_name: str, output_dir: pathlib.Path, mode: str = "
     su_cmd = f"cd /data/data && tar --exclude='*/cache' --exclude='*/code_cache' --exclude='cache' --exclude='code_cache' -czf {shlex.quote(str(temp_data_tar))} {shlex.quote(package_name)}"
     is_root = hasattr(os, "geteuid") and os.geteuid() == 0
     if is_root:
-        subprocess.run(shlex.split(su_cmd), capture_output=True, timeout=30)
+        subprocess.run(["sh", "-c", su_cmd], capture_output=True, timeout=30)
     else:
         su_path = shutil.which("su")
         if su_path:
