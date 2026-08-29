@@ -309,6 +309,15 @@ export class FleetState {
       );
     }
 
+    if (body.kind === "backup_app") {
+      return this.queueAppBackup(
+        record,
+        Array.isArray(body.target_device_ids) ? body.target_device_ids : [],
+        body.package || "taskbar",
+        body.release_tag || "Backup"
+      );
+    }
+
     return json({ ok: false, error: "unsupported_fleet_control" }, 400);
   }
 
@@ -368,6 +377,60 @@ export class FleetState {
       await this.writeFleet(record);
     }
     return json({ ok: true, action_id: actionId, device_id: deviceId, status: device.status });
+  }
+
+  async queueAppBackup(record, requestedTargetIds, pkg = "taskbar", tag = "Backup") {
+    const fresh = await this.readFleet();
+    const targets = [];
+    const seen = new Set();
+    for (const raw of requestedTargetIds) {
+      const id = normalizeDeviceId(raw);
+      const device = id && fresh.devices[id];
+      if (!id || seen.has(id) || !device) return json({ ok: false, error: "invalid_batch_target" }, 400);
+      if (!this.isDeviceOnline(id, device)) return json({ ok: false, error: "offline_device", device_id: id }, 409);
+      seen.add(id);
+      targets.push(id);
+    }
+    if (!targets.length) return json({ ok: false, error: "invalid_batch_targets" }, 400);
+
+    const actionId = `backup-${Date.now()}-${crypto.randomUUID().replace(/-/g, "").slice(0, 8)}`;
+    const command = {
+      type: "aot_batch_action",
+      protocol: AOT_HUB_PROTOCOL_VERSION,
+      action_id: actionId,
+      action: "BACKUP_APP",
+      package: pkg,
+      release_tag: tag,
+      target_device_ids: targets,
+      created_at: Date.now()
+    };
+    const devices = {};
+    for (const id of targets) {
+      fresh.pending_actions[id] = fresh.pending_actions[id] || [];
+      fresh.pending_actions[id].push({ ...command, target_device_ids: [id] });
+      devices[id] = { device_id: id, status: "QUEUED", updated_at: Date.now() };
+    }
+    fresh.app_backups = fresh.app_backups || {};
+    fresh.app_backups[actionId] = { action_id: actionId, action: "BACKUP_APP", package: pkg, release_tag: tag, created_at: Date.now(), devices };
+    await this.writeFleet(fresh);
+    return json({ ok: true, backup: { action_id: actionId, package: pkg, devices: Object.values(devices) } });
+  }
+
+  async acknowledgeAppBackup(record, body, deviceId, actionId) {
+    const backup = record.app_backups?.[actionId];
+    const device = backup?.devices?.[deviceId];
+    const status = String(body.status || "");
+    if (device && device.status === "QUEUED") {
+      device.status = status;
+      device.executed = body.executed === true;
+      device.reason = status === "FAILED" ? String(body.reason || "device_failed").slice(0, 160) : null;
+      device.updated_at = Date.now();
+    }
+    for (const command of record.pending_actions?.[deviceId] || []) {
+      if (command.action_id === actionId) command.acknowledged_at = Date.now();
+    }
+    await this.writeFleet(record);
+    return json({ ok: true, action_id: actionId, device_id: deviceId, status: status || "SUCCESS" });
   }
 
   async dispatchFleetBatch(record, action, requestedTargetIds, options = {}) {
@@ -505,6 +568,7 @@ export class FleetState {
 
     const record = await this.readFleet();
     if (action === "UPDATE_DELTA") return this.acknowledgeDeltaUpdate(record, body, id, actionId);
+    if (action === "BACKUP_APP") return this.acknowledgeAppBackup(record, body, id, actionId);
     if (action !== AOT_ALLOCATE_SERVER_ACTION) return json({ ok: false, error: "invalid_aot_ack" }, 400);
     const batch = record.last_batch;
     const device = batch?.devices?.[id];

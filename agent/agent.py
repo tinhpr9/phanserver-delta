@@ -192,6 +192,36 @@ def handle_incoming_batch_action(
         )
         return True
 
+    if action == "BACKUP_APP":
+        completed = state.setdefault("backup_action_results", {})
+        cached = completed.get(action_id)
+        if isinstance(cached, dict):
+            send_ack(
+                report_url, secret, device_id, action_id,
+                status=str(cached.get("status", "FAILED")),
+                reason=cached.get("reason"),
+                executed=cached.get("executed") is True,
+                batch_action="BACKUP_APP",
+            )
+            return True
+        try:
+            from . import backup_manager
+            pkg_target = message.get("package") or "taskbar"
+            tag_target = message.get("release_tag") or "Backup"
+            backup_res = backup_manager.run_backup_and_upload(pkg_target, tag=tag_target)
+            result = {"status": "OPENED", "executed": True, "details": backup_res}
+        except Exception as e:
+            result = {"status": "FAILED", "executed": False, "reason": str(e)[:160]}
+        completed[action_id] = result
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+        send_ack(
+            report_url, secret, device_id, action_id,
+            status=result["status"], reason=result.get("reason"),
+            executed=result["executed"], batch_action="BACKUP_APP",
+        )
+        return True
+
     return False
 
 

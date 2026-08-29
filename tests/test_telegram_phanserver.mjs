@@ -231,6 +231,16 @@ async function runTests() {
     throw new Error("apks list test failed: " + (sentMessages[0]?.text || ""));
   }
 
+  // 10. Backup app command
+  await triggerMessage("/backup m1 taskbar");
+  const backupCall = fleetControlCalls.at(-1);
+  if (backupCall?.kind !== "backup_app" || backupCall?.package !== "taskbar") {
+    throw new Error("backup app dispatch test failed: " + JSON.stringify(backupCall));
+  }
+  if (!sentMessages[0]?.text.includes("ĐÃ XẾP LỆNH BACKUP LÊN RELEASE")) {
+    throw new Error("backup confirmation test failed: " + (sentMessages[0]?.text || ""));
+  }
+
   console.log("TEST_TELEGRAM_PHANSERVER_EQUIVALENCE=OK");
 }
 
