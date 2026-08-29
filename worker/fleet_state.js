@@ -320,6 +320,14 @@ export class FleetState {
       );
     }
 
+    if (body.kind === "upgrade_agent") {
+      return this.queueAgentUpgrade(
+        record,
+        Array.isArray(body.target_device_ids) ? body.target_device_ids : [],
+        { telegram_chat_id: body.telegram_chat_id }
+      );
+    }
+
     return json({ ok: false, error: "unsupported_fleet_control" }, 400);
   }
 
@@ -455,6 +463,74 @@ export class FleetState {
       const msg = isSuccess
         ? `✅ <b>BACKUP THÀNH CÔNG LÊN RELEASE!</b>\n📱 Thiết bị: <code>${deviceId}</code>\n📦 Ứng dụng: <code>${pkg}</code> (Đã đóng gói APK + Data)\n🏷️ Tag: <b>${backup?.release_tag || "Backup"}</b>\n\n💡 Bạn có thể gõ <code>/apks</code> để xem file mới trong Release.`
         : `❌ <b>BACKUP THẤT BẠI</b>\n📱 Thiết bị: <code>${deviceId}</code>\n⚠️ Lý do: ${body.reason || "Lỗi thiết bị"}`;
+      try {
+        await fetch(`https://api.telegram.org/bot${this.env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ chat_id: chatId, text: msg, parse_mode: "HTML" })
+        });
+      } catch (e) {}
+    }
+
+    return json({ ok: true, action_id: actionId, device_id: deviceId, status: status || "SUCCESS" });
+  }
+
+  async queueAgentUpgrade(record, requestedTargetIds, options = {}) {
+    const fresh = await this.readFleet();
+    const targets = [];
+    const seen = new Set();
+    for (const raw of requestedTargetIds) {
+      const id = normalizeDeviceId(raw);
+      const device = id && fresh.devices[id];
+      if (!id || seen.has(id) || !device) return json({ ok: false, error: "invalid_batch_target" }, 400);
+      if (!this.isDeviceOnline(id, device)) return json({ ok: false, error: "offline_device", device_id: id }, 409);
+      seen.add(id);
+      targets.push(id);
+    }
+    if (!targets.length) return json({ ok: false, error: "invalid_batch_targets" }, 400);
+
+    const actionId = `upgrade-${Date.now()}-${crypto.randomUUID().replace(/-/g, "").slice(0, 8)}`;
+    const command = {
+      type: "aot_batch_action",
+      protocol: AOT_HUB_PROTOCOL_VERSION,
+      action_id: actionId,
+      action: "UPGRADE_AGENT",
+      target_device_ids: targets,
+      created_at: Date.now()
+    };
+    const devices = {};
+    for (const id of targets) {
+      fresh.pending_actions[id] = fresh.pending_actions[id] || [];
+      fresh.pending_actions[id].push({ ...command, target_device_ids: [id] });
+      devices[id] = { device_id: id, status: "QUEUED", updated_at: Date.now() };
+    }
+    fresh.agent_upgrades = fresh.agent_upgrades || {};
+    fresh.agent_upgrades[actionId] = { action_id: actionId, action: "UPGRADE_AGENT", created_at: Date.now(), devices, telegram_chat_id: options.telegram_chat_id };
+    await this.writeFleet(fresh);
+    return json({ ok: true, upgrade: { action_id: actionId, devices: Object.values(devices) } });
+  }
+
+  async acknowledgeAgentUpgrade(record, body, deviceId, actionId) {
+    const upgrade = record.agent_upgrades?.[actionId];
+    const device = upgrade?.devices?.[deviceId];
+    const status = String(body.status || "");
+    if (device && device.status === "QUEUED") {
+      device.status = status;
+      device.executed = body.executed === true;
+      device.reason = status === "FAILED" ? String(body.reason || "device_failed").slice(0, 160) : null;
+      device.updated_at = Date.now();
+    }
+    for (const command of record.pending_actions?.[deviceId] || []) {
+      if (command.action_id === actionId) command.acknowledged_at = Date.now();
+    }
+    await this.writeFleet(record);
+
+    const chatId = upgrade?.telegram_chat_id || this.env?.TELEGRAM_ADMIN_USER_ID;
+    if (chatId && this.env?.TELEGRAM_BOT_TOKEN) {
+      const isSuccess = status === "OPENED" || status === "SUCCESS";
+      const msg = isSuccess
+        ? `🚀 <b>TỰ ĐỘNG NÂNG CẤP THÀNH CÔNG!</b>\n📱 Thiết bị: <code>${deviceId}</code>\n📦 Agent đã kéo mã nguồn mới nhất từ GitHub và tự khởi động lại ngầm.`
+        : `❌ <b>NÂNG CẤP THẤT BẠI</b>\n📱 Thiết bị: <code>${deviceId}</code>\n⚠️ Lý do: ${body.reason || "Lỗi thiết bị"}`;
       try {
         await fetch(`https://api.telegram.org/bot${this.env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
           method: "POST",
@@ -603,6 +679,7 @@ export class FleetState {
     const record = await this.readFleet();
     if (action === "UPDATE_DELTA") return this.acknowledgeDeltaUpdate(record, body, id, actionId);
     if (action === "BACKUP_APP") return this.acknowledgeAppBackup(record, body, id, actionId);
+    if (action === "UPGRADE_AGENT") return this.acknowledgeAgentUpgrade(record, body, id, actionId);
     if (action !== AOT_ALLOCATE_SERVER_ACTION) return json({ ok: false, error: "invalid_aot_ack" }, 400);
     const batch = record.last_batch;
     const device = batch?.devices?.[id];

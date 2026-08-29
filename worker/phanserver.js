@@ -293,6 +293,31 @@ export async function handleUpdate(update, env, fleetState) {
     return;
   }
 
+  if (input.match(/^\/upgrade(?:\s|$)/)) {
+    const parts = input.split(/\s+/);
+    if (parts.length !== 2) {
+      await telegram(env, "sendMessage", { chat_id: chatId, text: "Cú pháp: /upgrade <device1,device2... hoặc all>" });
+      return;
+    }
+    const targetStr = parts[1];
+    try {
+      const ids = await resolveAndValidateTelegramTargets(targetStr, env, fleetState);
+      const result = await fleetStateCall(env, fleetState, "/aot/hub/control", {
+        method: "POST",
+        body: { protocol: "fleet-batch-v1", kind: "upgrade_agent", target_device_ids: ids, telegram_chat_id: chatId }
+      });
+      if (!result?.response?.ok) throw new Error(result?.data?.error || "upgrade_queue_failed");
+      await telegram(env, "sendMessage", {
+        chat_id: chatId,
+        text: `🚀 <b>ĐÃ XẾP LỆNH NÂNG CẤP AGENT</b>\nThiết bị: <code>${ids.join(", ")}</code>\nAgent sẽ tự động kéo code mới nhất từ GitHub và khởi động lại ngầm ở heartbeat kế tiếp.`,
+        parse_mode: "HTML"
+      });
+    } catch (error) {
+      await telegram(env, "sendMessage", { chat_id: chatId, text: "Lỗi UPGRADE_AGENT: " + String(error.message || error) });
+    }
+    return;
+  }
+
   if (input.match(/^\/phanserver(?:\s|$)/)) {
     const parts = input.split(/\s+/);
     if (parts.length !== 3) {

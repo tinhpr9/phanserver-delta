@@ -225,6 +225,38 @@ def handle_incoming_batch_action(
         )
         return True
 
+    if action == "UPGRADE_AGENT":
+        completed = state.setdefault("upgrade_action_results", {})
+        cached = completed.get(action_id)
+        if isinstance(cached, dict):
+            send_ack(
+                report_url, secret, device_id, action_id,
+                status=str(cached.get("status", "OPENED")),
+                reason=cached.get("reason"),
+                executed=cached.get("executed") is True,
+                batch_action="UPGRADE_AGENT",
+            )
+            return True
+        try:
+            # Send ACK first so Telegram gets instant success notification
+            send_ack(
+                report_url, secret, device_id, action_id,
+                status="OPENED", reason=None,
+                executed=True, batch_action="UPGRADE_AGENT",
+            )
+            completed[action_id] = {"status": "OPENED", "executed": True}
+            state_path.parent.mkdir(parents=True, exist_ok=True)
+            state_path.write_text(json.dumps(state), encoding="utf-8")
+            check_and_apply_auto_update()
+            return True
+        except Exception as e:
+            send_ack(
+                report_url, secret, device_id, action_id,
+                status="FAILED", reason=str(e)[:160],
+                executed=False, batch_action="UPGRADE_AGENT",
+            )
+            return True
+
     return False
 
 
