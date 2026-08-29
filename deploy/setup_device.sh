@@ -25,7 +25,10 @@ echo "=========================================="
 
 # 1. Cấp quyền bộ nhớ
 echo "[1/6] Kiểm tra quyền bộ nhớ..."
-[ -d "$HOME/storage" ] || termux-setup-storage 2>/dev/null || true
+if [ ! -d "/storage/emulated/0/Download" ] && [ ! -d "$HOME/storage" ]; then
+    yes "" 2>/dev/null | termux-setup-storage 2>/dev/null || true
+    sleep 2
+fi
 
 # 2. Cài đặt các gói phụ thuộc bắt buộc
 echo "[2/6] Cài đặt Python, Git, Chứng chỉ SSL..."
