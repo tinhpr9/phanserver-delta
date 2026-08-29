@@ -137,4 +137,13 @@ always_on: true
 - **Tiêu Chuẩn Báo Cáo Kết Quả Hàng Loạt (Batch Summary Evaluation)**: Phiên làm việc chỉ bị coi là thất bại toàn diện nếu TẤT CẢ các ứng dụng trong danh sách đều không thể cài đặt được (0 apps installed). Nếu có ít nhất 1 ứng dụng cài đặt thành công, hệ thống phải xác nhận thành công và báo cáo rõ số lượng app đã hoàn tất.
 - **Đồng Bộ Song Song Cả Repo Và Hệ Thống Luật (Dual-Channel Sync)**: Bắt buộc áp dụng ngay và đồng bộ điều luật này vào tất cả các kênh lưu trữ SSOT.
 
+## 22. QUY TẮC PHÂN GIẢI ĐA TẦNG TOÀN DIỆN VÀ NÂNG QUYỀN ROOT TỰ ĐỘNG KHI ĐỊNH VỊ ỨNG DỤNG (STRICT_GENERALIZED_PACKAGE_RESOLUTION_AND_AUTO_ROOT_ELEVATION_RULE - Hard Rule)
+- **Cơ Chế Phân Giải Không Gian Tên Ứng Dụng Tổng Quát (Universal Multi-Tier Package Name Resolution)**: Khi tiếp nhận bất kỳ từ khóa, tên rút gọn, tên hiển thị hoặc định danh ứng dụng nào từ người dùng (như `termux`, `taskbar`, `drive`, `warp`, `roblox`, clone names, hệ điều hành toolkits...), hệ thống BẮT BUỘC phải thực hiện quy trình phân giải 4 tầng tổng quát:
+  1. *Khớp Bí Danh Phổ Quát (Universal Alias Mapping)*: Tra cứu từ điển bí danh mở rộng bao gồm tất cả các tiện ích hệ điều hành, shell runtime và app clone.
+  2. *Khớp Chính Xác Gói Đang Cài Đặt (Exact Installed Package Match)*: Quét toàn bộ danh mục gói của Android qua `pm list packages`.
+  3. *Khớp Mờ Chuỗi Con Linh Hoạt (Fuzzy Substring Search)*: Tìm kiếm chuỗi con không phân biệt chữ hoa/thường trên toàn bộ danh sách gói đã cài đặt.
+  4. *Dự Phòng Theo Bí Danh Chuẩn (Alias Fallback)*: Sử dụng bí danh chuẩn ngay cả khi quét danh sách gói bị trễ.
+- **Tự Động Nâng Quyền Root Khi Quét Và Trích Xuất Gói (Automatic Root Elevation for System Introspection)**: Tất cả các thao tác tra cứu danh sách gói (`pm list packages`), trích xuất đường dẫn APK (`pm path`), và đóng gói thư mục dữ liệu (`/data/data/`) BẮT BUỘC phải tự động kích hoạt đường dẫn dự phòng nâng quyền Root (`su`) nếu tiến trình người dùng gặp hạn chế quyền (Permission Denied). CẤM TUYỆT ĐỐI việc báo lỗi "không tìm thấy ứng dụng" khi chưa chạy qua kênh Root `su`.
+- **Đồng Bộ Song Song Cả Repo Và Hệ Thống Luật (Dual-Channel Sync)**: Bắt buộc áp dụng ngay và đồng bộ điều luật này vào tất cả các kênh lưu trữ SSOT.
+
 
