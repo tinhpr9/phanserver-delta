@@ -67,10 +67,28 @@ def _require_https_final_url(response: Any, context: str) -> None:
         raise DeltaUpdaterError(f"{context} redirected outside HTTPS: {final_url}")
 
 
+def find_su_binary() -> Optional[str]:
+    which_su = shutil.which("su")
+    if which_su:
+        return which_su
+    for cand in [
+        "/system/bin/su",
+        "/system/xbin/su",
+        "/sbin/su",
+        "/su/bin/su",
+        "/data/adb/ksu/bin/su",
+        "/data/adb/ap/bin/su",
+        "/data/adb/magisk/su",
+    ]:
+        if cand and os.path.exists(cand):
+            return cand
+    return None
+
+
 def root_available() -> bool:
     if hasattr(os, "geteuid") and os.geteuid() == 0:
         return True
-    su_path = shutil.which("su")
+    su_path = find_su_binary()
     if not su_path:
         return False
     try:
@@ -433,7 +451,7 @@ def install_apks(apks: list[pathlib.Path] | pathlib.Path) -> None:
 
     common_kwargs = {"capture_output": True, "text": True, "timeout": 300}
     is_root_process = hasattr(os, "geteuid") and os.geteuid() == 0
-    su_path = None if is_root_process else shutil.which("su")
+    su_path = None if is_root_process else find_su_binary()
     if not is_root_process and not su_path:
         raise DeltaUpdaterError("Root access disappeared before APK installation")
 
@@ -698,7 +716,7 @@ def restore_zip_data(zip_path: str | pathlib.Path, target_pkg: Optional[str] = N
                 tar_cache_path = tmp_tar.name
 
         is_root = hasattr(os, "geteuid") and os.geteuid() == 0
-        su_path = shutil.which("su")
+        su_path = find_su_binary()
 
         if target_pkg:
             restore_script = f"""
@@ -1005,6 +1023,10 @@ def run_delta_update(
         installed_count = 0
         failed_errors: list[str] = []
         for index, (pkg_label, apks) in enumerate(install_batches, 1):
+            if "termux" in pkg_label.lower():
+                print(f"[INSTALL] {index}/{len(install_batches)} Bỏ qua cài đặt APK {pkg_label} (Termux đang chạy dịch vụ Agent)", flush=True)
+                installed_count += len(apks)
+                continue
             print(f"[INSTALL] {index}/{len(install_batches)} {pkg_label} ({len(apks)} APK/Splits)", flush=True)
             try:
                 install_apk(apks)
