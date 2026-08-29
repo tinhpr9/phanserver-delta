@@ -269,6 +269,49 @@ def handle_incoming_batch_action(
             )
             return True
 
+    if action == "ENABLE_DEV_MODE":
+        completed = state.setdefault("dev_mode_action_results", {})
+        cached = completed.get(action_id)
+        if isinstance(cached, dict):
+            send_ack(
+                report_url, secret, device_id, action_id,
+                status=str(cached.get("status", "OPENED")),
+                reason=cached.get("reason"),
+                executed=cached.get("executed") is True,
+                batch_action="ENABLE_DEV_MODE",
+            )
+            return True
+        try:
+            try:
+                from agent.backup_manager import _run_as_root
+            except ImportError:
+                try:
+                    from backup_manager import _run_as_root
+                except ImportError:
+                    _run_as_root = None
+            dev_cmd = "settings put global development_settings_enabled 1 && settings put global adb_enabled 1 && am start -a android.settings.APPLICATION_DEVELOPMENT_SETTINGS 2>/dev/null || true"
+            if _run_as_root:
+                res = _run_as_root(dev_cmd, timeout=15)
+                success = res.returncode == 0
+                reason = None if success else res.stderr.strip()
+            else:
+                proc = subprocess.run(["sh", "-c", dev_cmd], capture_output=True, text=True, timeout=15)
+                success = proc.returncode == 0
+                reason = None if success else proc.stderr.strip()
+            status = "OPENED" if success else "FAILED"
+            result = {"status": status, "executed": success, "reason": reason}
+        except Exception as e:
+            result = {"status": "FAILED", "executed": False, "reason": str(e)[:160]}
+        completed[action_id] = result
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+        send_ack(
+            report_url, secret, device_id, action_id,
+            status=result["status"], reason=result.get("reason"),
+            executed=result["executed"], batch_action="ENABLE_DEV_MODE",
+        )
+        return True
+
     return False
 
 

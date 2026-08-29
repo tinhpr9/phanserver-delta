@@ -349,6 +349,30 @@ export async function handleUpdate(update, env, fleetState) {
     return;
   }
 
+  if (input.match(/^\/(?:devmode|developer|dev)(?:\s|$)/)) {
+    const raw = input.replace(/^\/(?:devmode|developer|dev)\s*/, "").trim();
+    if (!raw) {
+      await telegram(env, "sendMessage", { chat_id: chatId, text: "Cú pháp: /devmode <device1,device2... hoặc all>" });
+      return;
+    }
+    try {
+      const ids = await resolveAndValidateTelegramTargets(raw, env, fleetState);
+      const result = await fleetStateCall(env, fleetState, "/aot/hub/control", {
+        method: "POST",
+        body: { protocol: "fleet-batch-v1", kind: "enable_dev_mode", target_device_ids: ids, telegram_chat_id: chatId }
+      });
+      if (!result?.response?.ok) throw new Error(result?.data?.error || "dev_mode_queue_failed");
+      await telegram(env, "sendMessage", {
+        chat_id: chatId,
+        text: `⚙️ <b>ĐÃ XẾP LỆNH BẬT TÙY CHỌN NHÀ PHÁT TRIỂN</b>\nThiết bị: <code>${ids.join(", ")}</code>\nThiết bị sẽ tự động kích hoạt Developer Options & USB Debugging (ADB) và mở màn hình Cài đặt ở heartbeat kế tiếp.`,
+        parse_mode: "HTML"
+      });
+    } catch (error) {
+      await telegram(env, "sendMessage", { chat_id: chatId, text: "Lỗi ENABLE_DEV_MODE: " + String(error.message || error) });
+    }
+    return;
+  }
+
   if (input.match(/^\/phanserver(?:\s|$)/)) {
     const parts = input.split(/\s+/);
     if (parts.length !== 3) {
