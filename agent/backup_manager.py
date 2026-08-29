@@ -119,7 +119,7 @@ def create_app_backup(package_name: str, output_dir: pathlib.Path, mode: str = "
 
     # Extract Data directory for 'full' and 'data' modes
     temp_data_tar = output_dir / "data.tar.gz"
-    su_cmd = f"cd /data/data && tar -czf {shlex.quote(str(temp_data_tar))} {shlex.quote(package_name)}"
+    su_cmd = f"cd /data/data && tar --exclude='*/cache' --exclude='*/code_cache' --exclude='cache' --exclude='code_cache' -czf {shlex.quote(str(temp_data_tar))} {shlex.quote(package_name)}"
     is_root = hasattr(os, "geteuid") and os.geteuid() == 0
     if is_root:
         subprocess.run(shlex.split(su_cmd), capture_output=True, timeout=30)
