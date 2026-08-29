@@ -1,6 +1,6 @@
 ---
 name: system_rules
-description: Streamlined, unified rules for execution, Telegram, APK, fresh setup, and technical explanations.
+description: Streamlined, unified rules for execution, Telegram, APK, fresh setup, progress feedback, and technical explanations.
 always_on: true
 ---
 
@@ -25,9 +25,12 @@ always_on: true
 - **LINK_FIRST**: Trước khi hỏi người dùng URL/link, Antigravity phải tự tìm bằng mọi nguồn/công cụ sẵn có; nếu vẫn thiếu, phải đưa link truy cập trực tiếp, cụ thể, không dùng placeholder chung chung.
 - **DYNAMIC_BY_DEFAULT (Hard Rule)**: Mọi số lượng, tên, danh sách, ID, phiên bản hoặc artifact có thể thay đổi phải lấy động từ nguồn chuẩn hiện tại; cấm hard-code (ghi cứng) hoặc đặt giới hạn nghiệp vụ nếu người dùng không yêu cầu rõ.
 
-## 5. QUY TẮC THỰC THI TỰ ĐỘNG & TIẾN TRÌNH (AUTONOMOUS_EXECUTION_GATE)
+## 5. QUY TẮC THỰC THI TỰ ĐỘNG, TIẾN TRÌNH & PHẢN HỒI (AUTONOMOUS_AND_FEEDBACK_GATE)
 - **Tự Thực Thi Đầy Đủ**: Antigravity trực tiếp thực hiện mọi việc trong phạm vi quyền và công cụ hiện có; chỉ khi bị chặn bởi thiết bị, runtime, quyền hoặc secret mới nêu rõ blocker và đưa ngay prompt đầy đủ để xử lý, không đùn việc hay bắt người dùng làm thủ công.
   *(Ngoại lệ: Khi người dùng nói rõ "để tôi tự test", Antigravity chỉ đưa full setup máy mới bằng lệnh trực tiếp, không tự chạy test).*
+- **Tiến Trình & Phản Hồi Minh Bạch (MANDATORY_PROGRESS_FEEDBACK_RULE - Hard Rule)**:
+  - Mọi thao tác nền và lệnh điều khiển (Backup, Update/Restore, Phân Server, xoay màn hình...) bắt buộc phải có thông báo tiến trình khi nhận lệnh VÀ tự động gửi tin nhắn báo kết quả hoàn tất (thành công/thất bại kèm lý do, tên file, thiết bị) về Telegram/giao diện người dùng.
+  - Cấm tuyệt đối thực thi âm thầm (silent execution) không có tín hiệu phản hồi khiến người dùng hoang mang không rõ trạng thái.
 - **AUTO_CONTINUE (Hard Rule)**: Khi task đang chờ CI/process/completion mà không cần người dùng thao tác, Antigravity phải tự chờ bằng blocking wait/completion signal rồi tự tiếp tục đến kết quả cuối; cấm bắt người dùng nhắn “xong” hoặc làm cầu nối.
 - **NO_POLLING_STRICT**: Cấm lặp mọi status/log/network check để chờ task; phải dùng blocking wait/completion signal/scheduler. Nếu bất khả kháng chỉ được sleep >=60s rồi kiểm đúng 1 lần; tuyệt đối không vòng lặp poll.
 - **Bằng Chứng Xác Thực (VERIFIABLE_EVIDENCE_GATE)**: Mọi tác vụ phải hiển thị tiến trình từng bước và tín hiệu hoàn tất rõ ràng; chỉ báo PASS khi có tiến trình, bằng chứng và test thực tế; gặp lỗi phải tự chẩn đoán – sửa – test lại, tuyệt đối không đoán hay báo PASS giả.
@@ -42,3 +45,32 @@ always_on: true
 - **Làm Mới Repo (FRESH_CLONE_RULE)**: Khi chạy setup máy/agent, nếu repo đã tồn tại thì tự động xoá (`rm -rf "$REPO"`) và clone mới `--single-branch` để đảm bảo nhận mã nguồn mới nhất từ GitHub.
 - **Nhập Liệu Bàn Phím (INTERACTIVE_TTY_READ_RULE)**: Mọi lệnh `read` trong khối script Heredoc (`bash <<EOF`) bắt buộc phải chuyển hướng qua `</dev/tty>` để người dùng nhập được trực tiếp từ bàn phím màn hình, tránh lỗi `unbound variable` do đọc nhầm script stream.
 - **Cấp Quyền Bộ Nhớ Chuẩn**: Dùng `[ -d "$HOME/storage" ] || termux-setup-storage` để tránh cảnh báo lặp lại khi bộ nhớ đã được liên kết.
+
+## 8. QUY TẮC BẢO VỆ MÁY CHÍNH - CẤM TUYỆT ĐỐI CAN THIỆP / THỬ NGHIỆM TRÊN MÁY CHÍNH (STRICT_NO_HOST_MUTATION_OR_EXECUTION_RULE - Hard Rule)
+- **Cấm Biến Máy Chính Thành Thiết Bị Thử Nghiệm**: Môi trường máy chính (Host / Termux / Antigravity CLI nơi người dùng đang mở chat) CHỈ ĐƯỢC DÙNG để phát triển, viết mã, chạy bài kiểm tra cô lập (`tests/run_all_tests.sh`), deploy Cloudflare Worker và quản lý Git.
+- **Cấm Chạy Device Agent Trên Máy Chính**: Cấm tuyệt đối chạy `agent.py`, cấm gán `device_id` (như `m77`, `m72`), cấm chạy lệnh cài đặt APK ngầm (`pm install`, `adb install`) hoặc chạy các tác vụ điều khiển nhận lệnh trên máy chính.
+- **Phạm Vi Thực Thi Thiết Bị**: Mọi lệnh nhận cập nhật Delta, cài đặt APK, Backup ứng dụng hoặc phân phối server CHỈ ĐƯỢC PHÉP thực thi trên các máy ảo đám mây từ xa (Ugphone / Cloud Phone) do người dùng chủ động khởi động và cấu hình riêng biệt. Mọi cấu hình hoặc tiến trình giả lập thiết bị trên máy chính phải bị xoá sạch ngay lập tức.
+
+## 9. QUY TẮC NÂNG CẤP THEO YÊU CẦU & BẢO TRÌ TỨC THÌ (ON_DEMAND_UPGRADE_AND_ZERO_TOUCH_MAINTENANCE_RULE - Hard Rule)
+- **Nâng Cấp Tức Thì Theo Lệnh (On-Demand Immediate Upgrade)**: Toàn bộ Device Agent nâng cấp thông qua lệnh từ xa (`/upgrade <device>` hoặc `/upgrade all`) thay vì chạy vòng lặp quét ngầm gây hao phí request.
+- **Thay Thế Tiến Trình Tại Chỗ (In-Place Process Replacement)**: Khi nhận lệnh `/upgrade`, Agent lập tức kéo mã nguồn mới nhất (`git reset --hard origin/fix/delta-stability`) và tự nạp lại tiến trình vào RAM bằng `os.execv` trong 1 giây mà không bắt người dùng phải thao tác thủ công.
+- **Tiêu Chí Vận Hành Không Chạm Tay (Zero-Touch Ops)**: Mọi sửa đổi và tính năng mới khi được Antigravity đẩy lên GitHub có thể áp dụng tức thì cho toàn bộ đội máy Ugphone chỉ bằng một lệnh duy nhất từ Telegram.
+
+## 10. QUY TẮC PHÒNG CHỐNG VÒNG LẶP REQUEST & BẢO VỆ QUOTA (ANTI_LOOP_REQUEST_AND_QUOTA_GUARD_RULE - Hard Rule)
+- **Cấm Polling Nền Vô Tận (No Continuous Background Polling)**: Cấm tuyệt đối mọi vòng lặp tự động gửi request kiểm tra Git/API theo chu kỳ ngắn trong Device Agent. Chỉ cho phép gửi Heartbeat theo chu kỳ chuẩn (>=30s) và mọi tác vụ nặng (Backup, Update, Upgrade) phải chạy On-Demand theo lệnh.
+- **Chặn Thảm Họa Thử Lại (Anti-Retry Storm & Exponential Backoff)**: Mọi kết nối mạng khi gặp sự cố hoặc mã lỗi HTTP (4xx/5xx) chỉ được thử lại tối đa 3 lần (`max_retries=3`) kèm thời gian chờ dãn cách (exponential backoff). Cấm tuyệt đối vòng lặp `while True` retry liên tục làm sập server và cạn kiệt Quota.
+- **Chống Vòng Lặp Phản Hồi Bot (Anti-Webhook Echo Loop)**: Cloudflare Worker / Telegram Webhook bắt buộc phải kiểm tra và bỏ qua ngay lập tức mọi tin nhắn xuất phát từ Bot (`if (message?.from?.is_bot) return`) để triệt tiêu vĩnh viễn nguy cơ Bot tự trả lời chính mình gây lặp vô tận.
+- **Lọc Dữ Liệu Trước Khi Tải (Pre-Download Filtering)**: Bắt buộc lọc chính xác file mục tiêu trước khi tải (Target Asset Selection), cấm tải trọn gói hàng loạt (All Assets Dump) gây lãng phí dung lượng mạng và chạm trần GitHub API Rate Limit.
+- **Cấm Polling Trạng Thái Trong AI Prompt (Zero AI-Level Task Polling)**: Antigravity tuyệt đối không gọi vòng lặp kiểm tra trạng thái tác vụ nền (`manage_task status`); phải tận dụng cơ chế đánh thức tự động (`Reactive Wakeup / Event-driven completion`) để bảo toàn Token và Context Window.
+
+## 11. QUY TẮC XÁC THỰC KẾT QUẢ CUỐI CÙNG & CẤM BÁO CÁO VỘI VÀNG (STRICT_END_TO_END_VERIFICATION_RULE - Hard Rule)
+- **Cấm Nhầm Lẫn Giữa Xếp Hàng Và Thực Thi (No Premature Success Declaration)**: Tuyệt đối cấm kết luận hoặc báo cáo tác vụ thành công khi lệnh mới chỉ được máy chủ tiếp nhận hoặc xếp hàng (Enqueued / HTTP 200).
+- **Bắt Buộc Xác Nhận Kết Quả Cuối Cùng (Mandatory End-to-End ACK Verification)**: Chỉ được phép thông báo tác vụ thành công sau khi đã kiểm tra và xác thực kết quả thực thi thực tế từ thiết bị đầu cuối (`device executed == true` và `status == OPENED/SUCCESS`) hoặc đã kiểm tra thấy tệp đầu ra (Artifact/Asset) tồn tại thực tế trên GitHub Release / hệ thống.
+- **Bắt Buộc Phân Tích Lỗi Tận Gốc (Mandatory Failure Triage)**: Khi phát hiện bất kỳ dấu hiệu bất thường hoặc thiết bị không phản hồi, Antigravity phải chủ động truy vết nhật ký lỗi (Error Reason / Traceback) ngay lập tức, sửa đổi triệt để nguyên nhân gốc rễ, tuyệt đối không được bỏ qua hoặc để người dùng tự phát hiện.
+
+## 12. QUY TẮC MINH BẠCH RANH GIỚI TRUY CẬP & CẤM MẬP MỜ KHẢ NĂNG KỸ THUẬT (STRICT_TRANSPARENCY_AND_ACCESS_BOUNDARY_RULE - Hard Rule)
+- **Minh Bạch Ranh Giới Đọc Dữ Liệu (Explicit Data Access Transparency)**: Antigravity bắt buộc phải tuyên bố rõ ràng và tức thì những gì mình CÓ THỂ đọc (Server logs, Network Heartbeat, Git/Release API) và những gì KHÔNG THỂ đọc (Nội dung phòng chat riêng tư trong Telegram GUI, màn hình hiển thị trực quan của người dùng).
+- **Cấm Khẳng Định Mập Mờ / Đánh Lận Con Đen (No Ambiguous Capability Claims)**: Tuyệt đối cấm dùng từ ngữ chung chung gây hiểu lầm như "tôi xem được hệ thống" để ám chỉ rằng mình đọc được nội dung chat Telegram của người dùng. Khi cần thông tin từ màn hình chat, phải nói rõ ràng ngay lập tức để người dùng gửi ảnh hoặc copy văn bản lỗi.
+- **Tách Biệt Tín Hiệu Kết Nối Với Kết Quả Thực Thi (Connection State vs Execution State)**: Việc thiết bị gửi tín hiệu Heartbeat (`online == true`) CHỈ chứng minh thiết bị còn sống, KHÔNG đồng nghĩa với việc lệnh nâng cấp/sao lưu đã thành công. Phải có xác nhận kết quả nghiệp vụ chi tiết (`ACK status == OPENED` và không có `reason / error`) mới được kết luận.
+
+
