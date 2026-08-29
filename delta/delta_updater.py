@@ -637,6 +637,7 @@ def restore_zip_data(zip_path: str | pathlib.Path, target_pkg: Optional[str] = N
         if target_pkg:
             restore_script = f"""
             set -e
+            am force-stop {target_pkg} 2>/dev/null || pkill -9 -f {target_pkg} 2>/dev/null || true
             TMP_EXT="/data/local/tmp/restore_ext_$$"
             rm -rf "$TMP_EXT"
             mkdir -p "$TMP_EXT"
@@ -646,7 +647,7 @@ def restore_zip_data(zip_path: str | pathlib.Path, target_pkg: Optional[str] = N
             if [ -n "$SRC_DIR" ]; then
                 DEST_DIR="/data/data/{target_pkg}"
                 mkdir -p "$DEST_DIR"
-                cp -rf "$SRC_DIR"/* "$DEST_DIR"/ 2>/dev/null || true
+                cp -a "$SRC_DIR"/. "$DEST_DIR"/ 2>/dev/null || cp -rf "$SRC_DIR"/* "$DEST_DIR"/ 2>/dev/null || true
                 
                 OWNER=$(stat -c "%u:%g" "$DEST_DIR" 2>/dev/null || stat -c "%u:%g" /data/data)
                 if [ -n "$OWNER" ]; then
