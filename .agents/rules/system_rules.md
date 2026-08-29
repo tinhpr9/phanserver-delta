@@ -105,4 +105,9 @@ always_on: true
 - **Cấm Giữ Điều Kiện Chặn Cứng Đơn Tuyến (Eliminate Monolithic Assumptions)**: Tuyệt đối cấm để lại các lệnh kiểm tra cũ mang tính giả định đơn tuyến (ví dụ: `if not apks: raise Error`) làm chặn đứng các luồng dữ liệu mới hợp lệ. Mọi hàm kiểm tra (Validator) phải được nâng cấp để hỗ trợ đầy đủ các trường hợp mở rộng mới.
 - **Tự Kiểm Tra Đa Chiều Trước Khi Đề Xuất (Mandatory Cross-Scenario Pre-Audit)**: Trước khi cung cấp bất kỳ bản vá nào cho người dùng, Antigravity phải tự đặt câu hỏi: *"Các hàm cũ trong chuỗi có thể ném ngoại lệ với dữ liệu mới này không?"* và giải quyết triệt để trước khi yêu cầu người dùng chạy thử.
 
+## 17. QUY TẮC PHÂN TÁCH TẢI TRỌNG CÀI ĐẶT VÀ BẢO VỆ DỮ LIỆU TÀI KHOẢN (STRICT_PAYLOAD_SEPARATION_AND_ACCOUNT_DATA_PROTECTION_RULE - Hard Rule)
+- **Cấm Tuyệt Đối Nạp Đè Tài Khoản Khi Khôi Phục Hàng Loạt (Zero Bulk Account Injection on 'all' Selection)**: Khi thực hiện các lệnh cài đặt hoặc khôi phục toàn bộ (`selection == "all"`, `*`, hoặc `/update`), hệ thống CHỈ ĐƯỢC PHÉP tải và cài đặt các ứng dụng cơ sở, bộ cài APK, và các công cụ hệ thống (APKs, System Bundles). TẤT CẢ các tệp sao lưu dữ liệu tài khoản (`*_DataBackup.zip`, Account Session Cookies, Tokens) BẮT BUỘC PHẢI BỊ BỎ QUA trong chế độ `all`.
+- **Yêu Cầu Chỉ Định Đích Danh Khi Khôi Phục Tài Khoản (Explicit Identification for Account Restoration)**: Dữ liệu tài khoản cá nhân CHỈ ĐƯỢC PHÉP khôi phục khi người dùng chủ động yêu cầu đích danh bằng Tên tài khoản (Username), Số thứ tự tệp (Index), hoặc Từ khóa nhận diện cụ thể kèm App đích (Target App/Package).
+- **Đồng Bộ Song Song Cả Repo Và Hệ Thống Luật (Dual-Channel Sync)**: Bắt buộc áp dụng ngay và đồng bộ điều luật này vào tất cả các kênh lưu trữ SSOT.
+
 
