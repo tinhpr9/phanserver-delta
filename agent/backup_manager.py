@@ -235,16 +235,13 @@ def create_app_backup(package_name: str, output_dir: pathlib.Path, mode: str = "
     if package_name == "com.termux":
         su_cmd = (
             f"cd /data/data && (tar "
-            f"--exclude='com.termux/files/usr/tmp' "
-            f"--exclude='com.termux/files/usr/var/cache' "
-            f"--exclude='com.termux/files/usr/share/doc' "
-            f"--exclude='com.termux/files/usr/share/man' "
+            f"--exclude='com.termux/files/usr' "
             f"--exclude='com.termux/cache' "
             f"-czf {tar_dest} com.termux 2>/dev/null || "
-            f"tar -czf {tar_dest} com.termux 2>/dev/null || "
-            f"tar -cf - com.termux 2>/dev/null | gzip > {tar_dest}) && chmod 666 {tar_dest} 2>/dev/null || true"
+            f"tar -czf {tar_dest} com.termux/files/home 2>/dev/null || "
+            f"tar -cf - com.termux/files/home 2>/dev/null | gzip > {tar_dest}) && chmod 666 {tar_dest} 2>/dev/null || true"
         )
-        timeout_val = 600
+        timeout_val = 180
     else:
         su_cmd = f"cd /data/data && (tar -czf {tar_dest} {pkg_q} 2>/dev/null || tar -cf - {pkg_q} 2>/dev/null | gzip > {tar_dest}) && chmod 666 {tar_dest} 2>/dev/null || true"
         timeout_val = 180

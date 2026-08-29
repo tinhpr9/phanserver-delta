@@ -701,7 +701,19 @@ def restore_zip_data(zip_path: str | pathlib.Path, target_pkg: Optional[str] = N
             if [ -n "$SRC_DIR" ]; then
                 DEST_DIR="/data/data/{target_pkg}"
                 mkdir -p "$DEST_DIR"
-                cp -a "$SRC_DIR"/. "$DEST_DIR"/ 2>/dev/null || cp -rf "$SRC_DIR"/* "$DEST_DIR"/ 2>/dev/null || true
+                if [ "{target_pkg}" = "com.termux" ]; then
+                    if [ -d "$SRC_DIR/files/home" ]; then
+                        mkdir -p "$DEST_DIR/files/home"
+                        cp -a "$SRC_DIR/files/home"/. "$DEST_DIR/files/home"/ 2>/dev/null || true
+                    elif [ -d "$SRC_DIR/home" ]; then
+                        mkdir -p "$DEST_DIR/files/home"
+                        cp -a "$SRC_DIR/home"/. "$DEST_DIR/files/home"/ 2>/dev/null || true
+                    else
+                        cp -a "$SRC_DIR"/. "$DEST_DIR"/ 2>/dev/null || true
+                    fi
+                else
+                    cp -a "$SRC_DIR"/. "$DEST_DIR"/ 2>/dev/null || cp -rf "$SRC_DIR"/* "$DEST_DIR"/ 2>/dev/null || true
+                fi
                 
                 OWNER=$(stat -c "%u:%g" "$DEST_DIR" 2>/dev/null || stat -c "%u:%g" /data/data)
                 if [ -n "$OWNER" ]; then
