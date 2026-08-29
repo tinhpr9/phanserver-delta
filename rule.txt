@@ -119,4 +119,12 @@ always_on: true
   4. *Thực Nghiệm Toàn Chuỗi 6/6 Suites (Full-Suite Automated Test Pass)*: Bắt buộc chạy lại 100% test suite, xác nhận không có bất kỳ ngoại lệ (regression) nào.
 - **Đồng Bộ Song Song Cả Repo Và Hệ Thống Luật (Dual-Channel Sync)**: Bắt buộc áp dụng ngay và đồng bộ điều luật này vào tất cả các kênh lưu trữ SSOT.
 
+## 19. QUY TẮC RÀ SOÁT THỰC CHẤT BẰNG ĐỌC VÀ TÌM KIẾM MÃ NGUỒN (STRICT_EVIDENCE_BASED_READ_AND_SEARCH_AUDIT_RULE - Hard Rule)
+- **Cấm Khẳng Định Suông Không Có Bằng Chứng Đọc/Tìm Kiếm Mã Nguồn (Zero Unverified Assertions Without Direct File Viewing & Search)**: Nghiêm cấm Antigravity tuyên bố "đã rà soát kỹ", "hệ thống hoàn hảo" hoặc "đã đạt chuẩn" nếu không trực tiếp sử dụng các công cụ `view_file` (đọc từng dòng mã nguồn) và `grep_search` / `find_by_name` (tìm kiếm các điểm mù, hàm gọi, điều kiện biên, ngoại lệ ẩn) trên tất cả các tệp liên quan.
+- **Quy Trình Rà Soát Dựa Trên Bằng Chứng 3 Bước (3-Step Evidence-Based Audit Protocol)**:
+  1. *Tìm kiếm đa điểm (Cross-Module Code Search)*: Dùng `grep_search` quét toàn bộ các vị trí gọi hàm, xử lý lỗi, điều kiện `if/else`, tầm vực biến và tham số đầu vào.
+  2. *Đọc trực tiếp mã nguồn (Direct Line-by-Line Code Inspection)*: Dùng `view_file` mở trực tiếp các đoạn mã then chốt, rà soát logic thực thi thực tế, không dựa vào trí nhớ hay giả định.
+  3. *Trích dẫn bằng chứng cụ thể (Concrete Evidence Citation)*: Khi báo cáo kết quả rà soát cho người dùng, BẮT BUỘC phải chỉ rõ tệp, hàm, dòng lệnh và cơ chế hoạt động thực tế đã được kiểm tra.
+- **Đồng Bộ Song Song Cả Repo Và Hệ Thống Luật (Dual-Channel Sync)**: Bắt buộc áp dụng ngay và đồng bộ điều luật này vào tất cả các kênh lưu trữ SSOT.
+
 
