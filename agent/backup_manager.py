@@ -381,13 +381,54 @@ def upload_to_github_release(
     raise BackupError("Không tìm thấy GitHub Token hoặc lệnh 'gh' trên thiết bị để upload Release.")
 
 
+FOLDER_TARGETS = {
+    "delta": "/storage/emulated/0/Delta",
+    "shouko": "/storage/emulated/0/Download/Shouko",
+    "cookie-pool-leases": "/storage/emulated/0/Download/.cookie-pool-leases",
+}
+
+
+def create_folder_backup(folder_name: str, folder_path: str, output_dir: pathlib.Path) -> pathlib.Path:
+    """Compress an Android folder (e.g. /sdcard/Delta or /sdcard/Download/Shouko) into a backup bundle."""
+    clean_name = folder_name.capitalize()
+    bundle_path = output_dir / f"{clean_name}_FolderBackup.zip"
+    temp_tar = pathlib.Path(f"/data/local/tmp/{clean_name}_folder.tar.gz")
+    temp_tar.unlink(missing_ok=True)
+
+    tar_dest = shlex.quote(str(temp_tar))
+    parent_dir = str(pathlib.Path(folder_path).parent)
+    base_name = pathlib.Path(folder_path).name
+
+    cmd = f"cd {shlex.quote(parent_dir)} && (tar -czf {tar_dest} {shlex.quote(base_name)} 2>/dev/null || tar -cf - {shlex.quote(base_name)} 2>/dev/null | gzip > {tar_dest}) && chmod 666 {tar_dest} 2>/dev/null || true"
+    _run_as_root(cmd, timeout=300)
+
+    if not temp_tar.exists() or temp_tar.stat().st_size < 50:
+        subprocess.run(["sh", "-c", cmd], capture_output=True, timeout=300)
+
+    if not temp_tar.exists() or temp_tar.stat().st_size < 50:
+        raise BackupError(f"Không thể nén thư mục {folder_path} (thư mục không tồn tại hoặc rỗng).")
+
+    meta = {
+        "type": "folder",
+        "folder_name": folder_name,
+        "folder_path": folder_path
+    }
+
+    with zipfile.ZipFile(bundle_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("folder_meta.json", json.dumps(meta, indent=2))
+        zf.write(temp_tar, arcname="folder.tar.gz")
+
+    temp_tar.unlink(missing_ok=True)
+    return bundle_path
+
+
 def run_backup_and_upload(
     keyword_or_pkg: str,
     mode: str = "full",
     repo: str = "tinhpr9/phanserver-delta",
     tag: str = "Backup"
 ) -> dict[str, Any]:
-    """Orchestrate finding package(s), packaging APK, Data, or both, and uploading to GitHub Release."""
+    """Orchestrate finding package(s) or folder(s), packaging, and uploading to GitHub Release."""
     raw = keyword_or_pkg.strip()
     if raw.lower() in ("all", "clones"):
         targets = ["hi", "hj", "hk", "hl", "hm", "hn", "ho", "hp", "hq", "hr", "roblox"]
@@ -415,8 +456,14 @@ def run_backup_and_upload(
         tmp_path = pathlib.Path(tmpdir)
         for t in targets:
             try:
-                pkg_name = find_package_name(t)
-                bundle_file = create_app_backup(pkg_name, tmp_path, mode=mode)
+                if t.lower() in FOLDER_TARGETS or os.path.isdir(t):
+                    folder_name = t.lower() if t.lower() in FOLDER_TARGETS else pathlib.Path(t).name
+                    folder_path = FOLDER_TARGETS.get(t.lower(), t)
+                    bundle_file = create_folder_backup(folder_name, folder_path, tmp_path)
+                    pkg_name = f"folder:{folder_name}"
+                else:
+                    pkg_name = find_package_name(t)
+                    bundle_file = create_app_backup(pkg_name, tmp_path, mode=mode)
                 download_url = upload_to_github_release(bundle_file, repo=repo, tag=tag)
                 results.append({
                     "ok": True,

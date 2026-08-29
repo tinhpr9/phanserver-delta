@@ -560,8 +560,8 @@ def extract_zip_apks(zip_path: str | pathlib.Path, output_dir: str | pathlib.Pat
                         raise DeltaUpdaterError(f"APK inside ZIP is empty: {member.filename}")
                     apk_members.append(member)
             if not apk_members:
-                # If archive contains data.tar.gz, it is a valid data-only backup
-                if any(m.filename == "data.tar.gz" for m in members):
+                # If archive contains data.tar.gz or folder.tar.gz, it is a valid data/folder backup
+                if any(m.filename in ("data.tar.gz", "folder.tar.gz") for m in members):
                     return []
                 raise DeltaUpdaterError(f"ZIP archive contains no APK files: {zip_path}")
             bad_crc = archive.testzip()
@@ -594,13 +594,60 @@ def extract_zip_apks(zip_path: str | pathlib.Path, output_dir: str | pathlib.Pat
 
 
 def restore_zip_data(zip_path: str | pathlib.Path, target_pkg: Optional[str] = None) -> bool:
-    """Extract and restore data.tar.gz from bundle ZIP into /data/data/ with optional target package remap."""
+    """Extract and restore data.tar.gz or folder.tar.gz from bundle ZIP into destination."""
     if not root_available():
-        raise DeltaUpdaterError("Yêu cầu quyền Root (su) để khôi phục dữ liệu ứng dụng /data/data/")
+        raise DeltaUpdaterError("Yêu cầu quyền Root (su) để khôi phục dữ liệu ứng dụng / thư mục")
     try:
         with zipfile.ZipFile(zip_path, "r") as archive:
-            if "data.tar.gz" not in archive.namelist():
+            namelist = archive.namelist()
+            is_folder_backup = "folder.tar.gz" in namelist
+            is_data_backup = "data.tar.gz" in namelist
+            if not is_folder_backup and not is_data_backup:
                 return False
+
+            if is_folder_backup:
+                folder_bytes = archive.read("folder.tar.gz")
+                if len(folder_bytes) < 50:
+                    return False
+                meta_dest = None
+                if "folder_meta.json" in namelist:
+                    try:
+                        meta = json.loads(archive.read("folder_meta.json").decode("utf-8"))
+                        meta_dest = meta.get("folder_path")
+                    except Exception:
+                        pass
+                folder_alias_map = {
+                    "delta": "/storage/emulated/0/Delta",
+                    "shouko": "/storage/emulated/0/Download/Shouko",
+                    "download": "/storage/emulated/0/Download",
+                }
+                if not meta_dest and target_pkg:
+                    meta_dest = folder_alias_map.get(target_pkg.lower())
+                if not meta_dest:
+                    meta_dest = "/storage/emulated/0/Delta" if "delta" in str(zip_path).lower() else "/storage/emulated/0/Download/Shouko"
+
+                tar_cache_path = "/data/local/tmp/delta_restore_folder.tar.gz"
+                with open(tar_cache_path, "wb") as f:
+                    f.write(folder_bytes)
+                os.chmod(tar_cache_path, 0o666)
+
+                parent_dest = str(pathlib.Path(meta_dest).parent)
+                restore_folder_script = f"""
+                set -e
+                mkdir -p {shlex.quote(parent_dest)}
+                tar -xzf {shlex.quote(tar_cache_path)} -C {shlex.quote(parent_dest)}
+                chmod -R 777 {shlex.quote(meta_dest)} 2>/dev/null || true
+                rm -f {shlex.quote(tar_cache_path)}
+                """
+                is_root_proc = hasattr(os, "geteuid") and os.geteuid() == 0
+                su_bin = shutil.which("su")
+                kwargs = {"capture_output": True, "text": True, "timeout": 60}
+                if is_root_proc:
+                    proc = subprocess.run(["sh", "-c", restore_folder_script], **kwargs)
+                else:
+                    proc = subprocess.run([su_bin, "-c", restore_folder_script], **kwargs)
+                return proc.returncode == 0
+
             data_bytes = archive.read("data.tar.gz")
             if len(data_bytes) < 100:
                 return False
