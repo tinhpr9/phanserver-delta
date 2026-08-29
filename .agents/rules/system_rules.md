@@ -163,6 +163,16 @@ always_on: true
   3. *Tầng 3 (Triển khai & Đồng bộ)*: Commit, push lên GitHub, nạp vào Worker/Agent và đồng bộ song song vào toàn bộ 5 kênh luật SSOT.
 - **Đồng Bộ Song Song Cả Repo Và Hệ Thống Luật (Dual-Channel Sync)**: Bắt buộc áp dụng ngay và đồng bộ điều luật này vào tất cả các kênh lưu trữ SSOT.
 
+## 25. QUY TẮC BẮT BUỘC KHỬ NHẬP NHẰNG TỪ KHÓA VÀ TRIỆT TIÊU XUNG ĐỘT TÀI NGUYÊN (STRICT_KEYWORD_DISAMBIGUATION_AND_ZERO_RESOURCE_COLLISION_RULE - Hard Rule)
+- **Cấm Tuyệt Đối Để Trùng Lặp Hoặc Nhập Nhằng Từ Khóa Giữa Các Loại Tài Nguyên (Zero Keyword Overlap & Collision)**: Khi thiết kế hoặc xử lý các lệnh phân phối từ xa (`/restore`, `/update`, `/backup`), Antigravity BẮT BUỘC phải thực hiện cơ chế khử nhập nhằng từ khóa (Disambiguation) ngay từ khâu lọc dữ liệu (`filter_assets`). NGHIÊM CẤM việc để một từ khóa chung chung (ví dụ: `delta`) khớp đồng thời cả tệp cài đặt ứng dụng (`Delta*.apk`), tệp nén chia nhỏ (`delta2.zip`), và gói sao lưu thư mục (`Delta_FolderBackup.zip`).
+- **Nguyên Tắc Định Danh Đích Danh Theo Mục Đích Thực Thi (Semantic-Explicit Asset Matching)**:
+  1. *Lệnh Khôi Phục Thư Mục (`/restore <device> <target>`)*: Chỉ được phép khớp chính xác các gói sao lưu thư mục chuyên biệt (`*_FolderBackup.zip`). Từ khóa `delta` hoặc `shouko` trong lệnh `/restore` BẮT BUỘC phải trỏ duy nhất đến `Delta_FolderBackup.zip` hoặc `Shouko_FolderBackup.zip`.
+  2. *Lệnh Cài Đặt / Cập Nhật App (`/update <device> <target>`)*: Chỉ được phép khớp các bộ cài ứng dụng (`.apk`, `_APKs.zip`). Các từ khóa nhắm vào App (như `delta_apk`, `delta_app`) BẮT BUỘC phải loại bỏ toàn bộ các gói sao lưu dữ liệu/thư mục.
+  3. *Lệnh Cài Đặt Tất Cả (`/update all`)*: Tuyệt đối không được kéo theo bất kỳ gói sao lưu cá nhân hay thư mục nào (`*_DataBackup.zip`, `*_FolderBackup.zip`).
+- **Quy Chuẩn Kiểm Thử Chống Xung Đột Từ Khóa (Anti-Collision Verification Protocol)**: Trước khi bàn giao bất kỳ từ khóa hoặc tính năng mới nào, Antigravity BẮT BUỘC phải chạy thử nghiệm truy vấn lọc tài nguyên trên toàn bộ danh mục Release hiện hữu, đảm bảo mỗi từ khóa người dùng gửi lên chỉ trả về duy nhất 1 tập hợp tài nguyên có cùng mục đích nghiệp vụ, không được lẫn lộn nhiều loại tệp.
+- **Đồng Bộ Song Song Cả Repo Và Hệ Thống Luật (Dual-Channel Sync)**: Bắt buộc áp dụng ngay và đồng bộ điều luật này vào tất cả các kênh lưu trữ SSOT.
+
+
 
 
 

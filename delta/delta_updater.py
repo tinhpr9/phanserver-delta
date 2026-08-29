@@ -903,7 +903,9 @@ def filter_assets(
     if sel in ("delta_apk", "delta_app", "apk:delta"):
         apk_matches = [
             a for a in assets
-            if "delta" in a.get("name", "").lower() and not a.get("name", "").lower().endswith(("_folderbackup.zip", "_databackup.zip"))
+            if "delta" in a.get("name", "").lower()
+            and (a.get("kind") == "apk" or a.get("name", "").lower().endswith((".apk", "_apks.zip")))
+            and not a.get("name", "").lower().endswith(("_folderbackup.zip", "_databackup.zip"))
         ]
         if apk_matches:
             return apk_matches

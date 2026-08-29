@@ -300,6 +300,39 @@ class TestDeltaUpdater(unittest.TestCase):
         res_multi = delta_updater.filter_apks(apks, "1.1.1,opera,swift")
         self.assertEqual(len(res_multi), 3)
 
+    def test_filter_assets_disambiguation(self):
+        assets = [
+            {"name": "Delta-2.735.apk", "kind": "apk", "url": "https://example.com/delta.apk"},
+            {"name": "delta2.zip", "kind": "zip", "url": "https://example.com/delta2.zip"},
+            {"name": "Delta_FolderBackup.zip", "kind": "zip", "url": "https://example.com/folder.zip"},
+            {"name": "Shouko_FolderBackup.zip", "kind": "zip", "url": "https://example.com/shouko.zip"},
+            {"name": "Hi_User1_DataBackup.zip", "kind": "zip", "url": "https://example.com/hi.zip"},
+        ]
+        # "delta" keyword should match only Delta_FolderBackup.zip for folder restore
+        matched_delta = delta_updater.filter_assets(assets, "delta")
+        self.assertEqual(len(matched_delta), 1)
+        self.assertEqual(matched_delta[0]["name"], "Delta_FolderBackup.zip")
+
+        # "shouko" keyword should match Shouko_FolderBackup.zip
+        matched_shouko = delta_updater.filter_assets(assets, "shouko")
+        self.assertEqual(len(matched_shouko), 1)
+        self.assertEqual(matched_shouko[0]["name"], "Shouko_FolderBackup.zip")
+
+        # "delta_apk" should match only APK
+        matched_apk = delta_updater.filter_assets(assets, "delta_apk")
+        self.assertEqual(len(matched_apk), 1)
+        self.assertEqual(matched_apk[0]["name"], "Delta-2.735.apk")
+
+        # "all" should exclude all DataBackup and FolderBackup archives
+        matched_all = delta_updater.filter_assets(assets, "all")
+        self.assertEqual(len(matched_all), 2)
+        names = [a["name"] for a in matched_all]
+        self.assertIn("Delta-2.735.apk", names)
+        self.assertIn("delta2.zip", names)
+        self.assertNotIn("Delta_FolderBackup.zip", names)
+        self.assertNotIn("Shouko_FolderBackup.zip", names)
+        self.assertNotIn("Hi_User1_DataBackup.zip", names)
+
 
 if __name__ == "__main__":
     unittest.main()
