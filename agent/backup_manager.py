@@ -25,11 +25,16 @@ def _get_pm_bin() -> str:
     return shutil.which("pm") or "pm"
 
 
-def _run_as_root(cmd: str, timeout: int = 120) -> subprocess.CompletedProcess:
+def _run_as_root(cmd: str, timeout: int = 180) -> subprocess.CompletedProcess:
     """Execute command as root using the real Android system su binary."""
     is_root = hasattr(os, "geteuid") and os.geteuid() == 0
     if is_root:
-        return subprocess.run(["sh", "-c", cmd], capture_output=True, text=True, timeout=timeout)
+        try:
+            return subprocess.run(["sh", "-c", cmd], capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return subprocess.CompletedProcess(args=["sh", "-c", cmd], returncode=124, stdout="", stderr=f"Lệnh chạy quá thời gian ({timeout}s)")
+        except Exception as e:
+            return subprocess.CompletedProcess(args=["sh", "-c", cmd], returncode=1, stdout="", stderr=str(e))
 
     su_candidates = ["/system/xbin/su", "/system/bin/su", "/sbin/su", "/vendor/bin/su"]
     which_su = shutil.which("su")
@@ -51,7 +56,10 @@ def _run_as_root(cmd: str, timeout: int = 120) -> subprocess.CompletedProcess:
 
     if last_res is not None:
         return last_res
-    return subprocess.run(["sh", "-c", cmd], capture_output=True, text=True, timeout=timeout)
+    try:
+        return subprocess.run(["sh", "-c", cmd], capture_output=True, text=True, timeout=timeout)
+    except Exception as e:
+        return subprocess.CompletedProcess(args=["sh", "-c", cmd], returncode=1, stdout="", stderr=str(e))
 
 
 def find_package_name(keyword_or_pkg: str) -> str:
@@ -210,10 +218,23 @@ def create_app_backup(package_name: str, output_dir: pathlib.Path, mode: str = "
     tar_dest = shlex.quote(str(temp_data_tar))
     pkg_q = shlex.quote(package_name)
     if package_name == "com.termux":
-        su_cmd = f"cd /data/data && (tar --exclude='com.termux/files/usr/tmp' --exclude='com.termux/cache' -czf {tar_dest} com.termux 2>/dev/null || tar -czf {tar_dest} com.termux 2>/dev/null || tar -cf - com.termux 2>/dev/null | gzip > {tar_dest}) && chmod 666 {tar_dest} 2>/dev/null || true"
+        su_cmd = (
+            f"cd /data/data && (tar "
+            f"--exclude='com.termux/files/usr/tmp' "
+            f"--exclude='com.termux/files/usr/var/cache' "
+            f"--exclude='com.termux/files/usr/share/doc' "
+            f"--exclude='com.termux/files/usr/share/man' "
+            f"--exclude='com.termux/cache' "
+            f"-czf {tar_dest} com.termux 2>/dev/null || "
+            f"tar -czf {tar_dest} com.termux 2>/dev/null || "
+            f"tar -cf - com.termux 2>/dev/null | gzip > {tar_dest}) && chmod 666 {tar_dest} 2>/dev/null || true"
+        )
+        timeout_val = 600
     else:
         su_cmd = f"cd /data/data && (tar -czf {tar_dest} {pkg_q} 2>/dev/null || tar -cf - {pkg_q} 2>/dev/null | gzip > {tar_dest}) && chmod 666 {tar_dest} 2>/dev/null || true"
-    _run_as_root(su_cmd, timeout=120)
+        timeout_val = 180
+
+    _run_as_root(su_cmd, timeout=timeout_val)
 
     has_data = temp_data_tar.exists() and temp_data_tar.stat().st_size > 50
 
