@@ -574,6 +574,66 @@ def filter_apks(
     return matched
 
 
+def filter_assets(
+    assets: list[dict[str, Any]],
+    selection: Optional[str] = None
+) -> list[dict[str, Any]]:
+    if not assets:
+        return []
+    if not selection or str(selection).strip().lower() in ("all", "none", "*", ""):
+        return assets
+
+    sel = str(selection).strip().lower()
+
+    # Full random
+    if sel in ("random", "rnd"):
+        import random
+        return [random.choice(assets)]
+
+    # Keyword random (e.g. "delta:random", "opera:rnd", "random:3")
+    if sel.startswith("random:"):
+        count_str = sel.split(":", 1)[1]
+        count = int(count_str) if count_str.isdigit() else 1
+        count = max(1, min(count, len(assets)))
+        import random
+        return random.sample(assets, count)
+
+    if ":random" in sel or ":rnd" in sel:
+        kw = sel.split(":", 1)[0]
+        matched = [a for a in assets if kw in a.get("name", "").lower()]
+        if not matched:
+            raise DeltaUpdaterError(f"Không tìm thấy file nào chứa từ khóa '{kw}' để chọn ngẫu nhiên")
+        import random
+        return [random.choice(matched)]
+
+    # Numeric indices (e.g. "13", "1,3,5", "1-4")
+    if re.match(r"^\d+(?:-\d+|,\d+)*$", sel):
+        indices = parse_indices(sel, len(assets))
+        if not indices:
+            raise DeltaUpdaterError(f"Chỉ số lựa chọn '{selection}' vượt quá số lượng file trong Release ({len(assets)})")
+        return [assets[i] for i in indices]
+
+    # Multi-keyword / Comma or plus separated filters (e.g. "1.1.1,apk,mt" or "warp+mt")
+    delimiters = [",", "+", ";"]
+    for delim in delimiters:
+        if delim in sel:
+            keywords = [k.strip() for k in sel.split(delim) if k.strip()]
+            matched_map: dict[str, dict[str, Any]] = {}
+            for kw in keywords:
+                for a in assets:
+                    if kw in a.get("name", "").lower():
+                        matched_map[a["name"]] = a
+            if not matched_map:
+                raise DeltaUpdaterError(f"Không tìm thấy file nào khớp với '{selection}' trong Release")
+            return list(matched_map.values())
+
+    # Single keyword / App name filter (e.g. "opera", "1.1.1.1", "taskbar", "drive")
+    matched = [a for a in assets if sel in a.get("name", "").lower()]
+    if not matched:
+        raise DeltaUpdaterError(f"Không tìm thấy file nào khớp với '{selection}' trong Release")
+    return matched
+
+
 def _select_assets(assets: list[dict[str, Any]]) -> list[dict[str, Any]]:
     selected = [asset for asset in assets if asset.get("kind") in {"apk", "zip"}]
     if not selected:
@@ -590,10 +650,11 @@ def run_delta_update(
     dl_dir = pathlib.Path(download_dir or DEFAULT_DOWNLOAD_DIR)
     dl_dir.mkdir(parents=True, exist_ok=True)
     manifest = load_latest_release_manifest() if manifest_source is None else load_manifest(manifest_source)
-    assets = _select_assets(manifest["assets"])
+    all_assets = _select_assets(manifest["assets"])
+    assets = filter_assets(all_assets, selection)
     print(
         f"[RELEASE] tag={manifest.get('release_tag') or manifest.get('version')} "
-        f"assets={len(assets)}",
+        f"selected={len(assets)}/{len(all_assets)} assets",
         flush=True,
     )
 
@@ -628,10 +689,6 @@ def run_delta_update(
 
         if not install_queue:
             raise DeltaUpdaterError("UPDATE_DELTA verified release but found zero APKs")
-
-        install_queue = filter_apks(install_queue, selection)
-        if not install_queue:
-            raise DeltaUpdaterError("UPDATE_DELTA không tìm thấy APK nào phù hợp với điều kiện lọc")
 
         print(f"[INSTALL] all assets verified; installing {len(install_queue)} APK(s)", flush=True)
         for index, apk in enumerate(install_queue, 1):
