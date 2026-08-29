@@ -880,6 +880,34 @@ def filter_assets(
                 raise DeltaUpdaterError(f"Không tìm thấy file nào khớp với '{selection}' trong Release")
             return list(matched_map.values())
 
+    # Exact file name match (case-insensitive) without or with extension
+    exact_matches = [
+        a for a in assets
+        if sel == a.get("name", "").lower() or sel == pathlib.PurePosixPath(a.get("name", "")).stem.lower()
+    ]
+    if exact_matches:
+        return exact_matches
+
+    # Folder-specific aliases (prioritize clean single folder backup)
+    if sel in ("delta", "delta_folder", "folder:delta", "delta_backup"):
+        folder_match = [a for a in assets if a.get("name", "").lower() == "delta_folderbackup.zip"]
+        if folder_match:
+            return folder_match
+
+    if sel in ("shouko", "shouko_folder", "folder:shouko", "shouko_backup"):
+        folder_match = [a for a in assets if a.get("name", "").lower() == "shouko_folderbackup.zip"]
+        if folder_match:
+            return folder_match
+
+    # APK-specific aliases (e.g. delta_apk, apk:delta)
+    if sel in ("delta_apk", "delta_app", "apk:delta"):
+        apk_matches = [
+            a for a in assets
+            if "delta" in a.get("name", "").lower() and not a.get("name", "").lower().endswith(("_folderbackup.zip", "_databackup.zip"))
+        ]
+        if apk_matches:
+            return apk_matches
+
     # Single keyword / App name filter (e.g. "opera", "1.1.1.1", "taskbar", "drive")
     matched = [a for a in assets if sel in a.get("name", "").lower()]
     if not matched:
