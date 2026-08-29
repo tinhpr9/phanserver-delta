@@ -254,7 +254,7 @@ export async function handleUpdate(update, env, fleetState) {
       const ids = await resolveAndValidateTelegramTargets(targetStr, env, fleetState);
       const result = await fleetStateCall(env, fleetState, "/aot/hub/control", {
         method: "POST",
-        body: { protocol: "fleet-batch-v1", kind: "update_delta", target_device_ids: ids, selection }
+        body: { protocol: "fleet-batch-v1", kind: "update_delta", target_device_ids: ids, selection, telegram_chat_id: chatId }
       });
       if (!result?.response?.ok) throw new Error(result?.data?.error || "update_queue_failed");
       const selText = selection !== "all" ? ` (Lựa chọn: ${selection})` : "";
@@ -280,7 +280,7 @@ export async function handleUpdate(update, env, fleetState) {
       const ids = await resolveAndValidateTelegramTargets(targetStr, env, fleetState);
       const result = await fleetStateCall(env, fleetState, "/aot/hub/control", {
         method: "POST",
-        body: { protocol: "fleet-batch-v1", kind: "backup_app", target_device_ids: ids, package: pkg, release_tag: "Backup" }
+        body: { protocol: "fleet-batch-v1", kind: "backup_app", target_device_ids: ids, package: pkg, release_tag: "Backup", telegram_chat_id: chatId }
       });
       if (!result?.response?.ok) throw new Error(result?.data?.error || "backup_queue_failed");
       await telegram(env, "sendMessage", {

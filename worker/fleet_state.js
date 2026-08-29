@@ -305,7 +305,8 @@ export class FleetState {
       return this.queueDeltaUpdate(
         record,
         Array.isArray(body.target_device_ids) ? body.target_device_ids : [],
-        body.selection || "all"
+        body.selection || "all",
+        { telegram_chat_id: body.telegram_chat_id }
       );
     }
 
@@ -314,14 +315,15 @@ export class FleetState {
         record,
         Array.isArray(body.target_device_ids) ? body.target_device_ids : [],
         body.package || "taskbar",
-        body.release_tag || "Backup"
+        body.release_tag || "Backup",
+        { telegram_chat_id: body.telegram_chat_id }
       );
     }
 
     return json({ ok: false, error: "unsupported_fleet_control" }, 400);
   }
 
-  async queueDeltaUpdate(record, requestedTargetIds, selection = "all") {
+  async queueDeltaUpdate(record, requestedTargetIds, selection = "all", options = {}) {
     const fresh = await this.readFleet();
     const targets = [];
     const seen = new Set();
@@ -354,7 +356,7 @@ export class FleetState {
       fresh.pending_actions[id].push({ ...command, target_device_ids: [id] });
       devices[id] = { device_id: id, status: "QUEUED", updated_at: Date.now() };
     }
-    fresh.delta_updates[actionId] = { action_id: actionId, action: "UPDATE_DELTA", created_at: Date.now(), devices };
+    fresh.delta_updates[actionId] = { action_id: actionId, action: "UPDATE_DELTA", created_at: Date.now(), devices, telegram_chat_id: options.telegram_chat_id };
     await this.writeFleet(fresh);
     return json({ ok: true, update: { action_id: actionId, devices: Object.values(devices) } });
   }
@@ -375,11 +377,26 @@ export class FleetState {
         if (command.action_id === actionId) command.acknowledged_at = Date.now();
       }
       await this.writeFleet(record);
+
+      const chatId = update?.telegram_chat_id || this.env?.TELEGRAM_ADMIN_USER_ID;
+      if (chatId && this.env?.TELEGRAM_BOT_TOKEN) {
+        const isSuccess = status === "OPENED";
+        const msg = isSuccess
+          ? `✅ <b>UPDATE THÀNH CÔNG!</b>\n📱 Thiết bị: <code>${deviceId}</code>\n📦 Đã hoàn tất cài đặt ứng dụng.`
+          : `❌ <b>UPDATE THẤT BẠI</b>\n📱 Thiết bị: <code>${deviceId}</code>\n⚠️ Lý do: ${body.reason || "Lỗi thiết bị"}`;
+        try {
+          await fetch(`https://api.telegram.org/bot${this.env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ chat_id: chatId, text: msg, parse_mode: "HTML" })
+          });
+        } catch (e) {}
+      }
     }
     return json({ ok: true, action_id: actionId, device_id: deviceId, status: device.status });
   }
 
-  async queueAppBackup(record, requestedTargetIds, pkg = "taskbar", tag = "Backup") {
+  async queueAppBackup(record, requestedTargetIds, pkg = "taskbar", tag = "Backup", options = {}) {
     const fresh = await this.readFleet();
     const targets = [];
     const seen = new Set();
@@ -411,7 +428,7 @@ export class FleetState {
       devices[id] = { device_id: id, status: "QUEUED", updated_at: Date.now() };
     }
     fresh.app_backups = fresh.app_backups || {};
-    fresh.app_backups[actionId] = { action_id: actionId, action: "BACKUP_APP", package: pkg, release_tag: tag, created_at: Date.now(), devices };
+    fresh.app_backups[actionId] = { action_id: actionId, action: "BACKUP_APP", package: pkg, release_tag: tag, created_at: Date.now(), devices, telegram_chat_id: options.telegram_chat_id };
     await this.writeFleet(fresh);
     return json({ ok: true, backup: { action_id: actionId, package: pkg, devices: Object.values(devices) } });
   }
@@ -430,6 +447,23 @@ export class FleetState {
       if (command.action_id === actionId) command.acknowledged_at = Date.now();
     }
     await this.writeFleet(record);
+
+    const chatId = backup?.telegram_chat_id || this.env?.TELEGRAM_ADMIN_USER_ID;
+    if (chatId && this.env?.TELEGRAM_BOT_TOKEN) {
+      const isSuccess = status === "OPENED" || status === "SUCCESS";
+      const pkg = backup?.package || "app";
+      const msg = isSuccess
+        ? `✅ <b>BACKUP THÀNH CÔNG LÊN RELEASE!</b>\n📱 Thiết bị: <code>${deviceId}</code>\n📦 Ứng dụng: <code>${pkg}</code> (Đã đóng gói APK + Data)\n🏷️ Tag: <b>${backup?.release_tag || "Backup"}</b>\n\n💡 Bạn có thể gõ <code>/apks</code> để xem file mới trong Release.`
+        : `❌ <b>BACKUP THẤT BẠI</b>\n📱 Thiết bị: <code>${deviceId}</code>\n⚠️ Lý do: ${body.reason || "Lỗi thiết bị"}`;
+      try {
+        await fetch(`https://api.telegram.org/bot${this.env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ chat_id: chatId, text: msg, parse_mode: "HTML" })
+        });
+      } catch (e) {}
+    }
+
     return json({ ok: true, action_id: actionId, device_id: deviceId, status: status || "SUCCESS" });
   }
 
