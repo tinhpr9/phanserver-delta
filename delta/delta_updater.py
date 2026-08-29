@@ -712,10 +712,11 @@ def filter_assets(
     assets: list[dict[str, Any]],
     selection: Optional[str] = None
 ) -> list[dict[str, Any]]:
-    if not assets:
-        return []
     if not selection or str(selection).strip().lower() in ("all", "none", "*", ""):
-        return assets
+        # Exclude individual account data backups (*_DataBackup.zip) from general "all" updates
+        # Account backups should only be restored when explicitly targeted by user/index
+        base_assets = [a for a in assets if not a.get("name", "").lower().endswith("_databackup.zip")]
+        return base_assets if base_assets else assets
 
     sel = str(selection).strip().lower()
 
