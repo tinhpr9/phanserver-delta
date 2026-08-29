@@ -626,10 +626,20 @@ def restore_zip_data(zip_path: str | pathlib.Path, target_pkg: Optional[str] = N
                 if not meta_dest:
                     meta_dest = "/storage/emulated/0/Delta" if "delta" in str(zip_path).lower() else "/storage/emulated/0/Download/Shouko"
 
-                tar_cache_path = "/data/local/tmp/delta_restore_folder.tar.gz"
-                with open(tar_cache_path, "wb") as f:
-                    f.write(folder_bytes)
-                os.chmod(tar_cache_path, 0o666)
+                try:
+                    if pathlib.Path("/data/local/tmp").is_dir():
+                        tar_cache_path = "/data/local/tmp/delta_restore_folder.tar.gz"
+                        with open(tar_cache_path, "wb") as f:
+                            f.write(folder_bytes)
+                        os.chmod(tar_cache_path, 0o666)
+                    else:
+                        with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp_tar:
+                            tmp_tar.write(folder_bytes)
+                            tar_cache_path = tmp_tar.name
+                except Exception:
+                    with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp_tar:
+                        tmp_tar.write(folder_bytes)
+                        tar_cache_path = tmp_tar.name
 
                 parent_dest = str(pathlib.Path(meta_dest).parent)
                 base_folder_name = pathlib.Path(meta_dest).name
@@ -651,8 +661,10 @@ def restore_zip_data(zip_path: str | pathlib.Path, target_pkg: Optional[str] = N
                 kwargs = {"capture_output": True, "text": True, "timeout": 60}
                 if is_root_proc:
                     proc = subprocess.run(["sh", "-c", restore_folder_script], **kwargs)
-                else:
+                elif su_bin:
                     proc = subprocess.run([su_bin, "-c", restore_folder_script], **kwargs)
+                else:
+                    proc = subprocess.run(["sh", "-c", restore_folder_script], **kwargs)
                 return proc.returncode == 0
 
             data_bytes = archive.read("data.tar.gz")
