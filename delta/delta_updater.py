@@ -456,19 +456,30 @@ def install_apks(apks: list[pathlib.Path] | pathlib.Path) -> None:
                         f"pm install failed for {pathlib.Path(single_path).name} (rc={result.returncode}): {output[:400]}"
                     )
         else:
-            # Multiple Split APK install (App Bundle) via Android PM Session Install
+            # Multiple Split APK install (App Bundle)
+            # Primary: Native pm install-multiple -r -d
+            # Fallback: PM Session Install
+            split_files_args = " ".join(shlex.quote(p) for p in staged_paths)
             install_script = f"""
-            set -e
+            OUT=$(pm install-multiple -r -d {split_files_args} 2>&1)
+            RC=$?
+            if [ $RC -eq 0 ] && echo "$OUT" | grep -q "Success"; then
+                echo "$OUT"
+                exit 0
+            fi
+            
+            # Fallback to session install
             SESSION_ID=$(pm install-create -r -d 2>/dev/null | grep -oE '[0-9]+' | head -n 1)
             if [ -n "$SESSION_ID" ]; then
                 IDX=0
-                for f in {' '.join(shlex.quote(p) for p in staged_paths)}; do
-                    pm install-write -S $(stat -c "%s" "$f") "$SESSION_ID" "split_$IDX" "$f"
+                for f in {split_files_args}; do
+                    pm install-write "$SESSION_ID" "split_$IDX" "$f" 2>&1 || true
                     IDX=$((IDX+1))
                 done
-                pm install-commit "$SESSION_ID"
+                pm install-commit "$SESSION_ID" 2>&1
             else
-                pm install-multiple -r -d {' '.join(shlex.quote(p) for p in staged_paths)}
+                echo "$OUT"
+                exit $RC
             fi
             """
             if is_root_process:
