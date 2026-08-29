@@ -127,4 +127,9 @@ always_on: true
   3. *Trích dẫn bằng chứng cụ thể (Concrete Evidence Citation)*: Khi báo cáo kết quả rà soát cho người dùng, BẮT BUỘC phải chỉ rõ tệp, hàm, dòng lệnh và cơ chế hoạt động thực tế đã được kiểm tra.
 - **Đồng Bộ Song Song Cả Repo Và Hệ Thống Luật (Dual-Channel Sync)**: Bắt buộc áp dụng ngay và đồng bộ điều luật này vào tất cả các kênh lưu trữ SSOT.
 
+## 20. QUY TẮC ƯU TIÊN LỆNH GỐC NGUYÊN TỬ VÀ CẤM PHỨC TẠP HÓA SHELL TRUNG GIAN (STRICT_ATOMIC_NATIVE_COMMANDS_OVER_COMPLEX_SHELL_CHAINS_RULE - Hard Rule)
+- **Cấm Tuyệt Đối Ghép Nối Shell Nhiều Bước Khi Có Sẵn Lệnh Gốc Của Hệ Điều Hành (Zero Redundant Shell Chains When Native Binary Exists)**: Khi tương tác với hệ điều hành Android hoặc môi trường Linux (cài đặt ứng dụng, phân quyền, quản lý tiến trình), Antigravity BẮT BUỘC phải sử dụng các lệnh gốc 1 dòng nguyên tử chính thức (như `pm install-multiple -r -d`, `tar -czf`, `pm install -r -d`). NGHIÊM CẤM tự ý xây dựng các chuỗi shell nhiều bước phức tạp (`install-create` $\rightarrow$ `install-write` $\rightarrow$ `install-commit`, gọi `stat`, `cut`, `grep` phụ trợ) dễ gây đứt gãy luồng, xung đột cú pháp Toybox/Busybox hoặc trả về mã lỗi giả lập (`rc=7`).
+- **Nguyên Tắc Đơn Giản Hóa Và Chống Điểm Mù Giả Lập (Simplicity & Mock Blindspot Elimination)**: Luôn chọn giải pháp có ít trạng thái trung gian nhất. Không được tin tưởng tuyệt đối vào kết quả mock Unit Test nếu lệnh shell bên dưới phụ thuộc vào các tiện ích môi trường thực tế của Android mà chưa được kiểm chứng trên binary gốc.
+- **Đồng Bộ Song Song Cả Repo Và Hệ Thống Luật (Dual-Channel Sync)**: Bắt buộc áp dụng ngay và đồng bộ điều luật này vào tất cả các kênh lưu trữ SSOT.
+
 
