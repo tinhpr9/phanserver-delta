@@ -404,50 +404,22 @@ def install_apk(apk_path: str | pathlib.Path) -> None:
             "Root access required for pm install. Non-root environment is unsupported for Delta APK installation."
         )
     common_kwargs = {"capture_output": True, "text": True, "timeout": 180}
-    pm_bin = "/system/bin/pm" if os.path.exists("/system/bin/pm") else (shutil.which("pm") or "pm")
-
-    # Android Scoped Storage restriction: pm install requires file accessible in /data/local/tmp/
-    tmp_dest = pathlib.Path(f"/data/local/tmp/{apk.name}")
-    copied_to_tmp = False
-    target_install_path = str(apk)
-
-    if "/storage/" in str(apk) or "/sdcard/" in str(apk):
-        try:
-            shutil.copyfile(apk, tmp_dest)
-            os.chmod(tmp_dest, 0o644)
-            target_install_path = str(tmp_dest)
-            copied_to_tmp = True
-        except Exception:
-            su_path = shutil.which("su") or "/system/bin/su"
-            if su_path:
-                subprocess.run(
-                    [su_path, "-c", f"cp {shlex.quote(str(apk))} {shlex.quote(str(tmp_dest))} && chmod 644 {shlex.quote(str(tmp_dest))}"],
-                    **common_kwargs
-                )
-                target_install_path = str(tmp_dest)
-                copied_to_tmp = True
-
-    try:
-        result = subprocess.run([pm_bin, "install", "-r", "-d", target_install_path], **common_kwargs)
-        output = ((result.stdout or "") + "\n" + (result.stderr or "")).strip()
-
-        if result.returncode != 0 or "Success" not in output:
-            su_path = shutil.which("su") or "/system/bin/su"
-            if su_path and os.path.exists(su_path):
-                su_cmd = f"exec /system/bin/pm install -r -d {shlex.quote(target_install_path)}"
-                result = subprocess.run([su_path, "-c", su_cmd], **common_kwargs)
-                output = ((result.stdout or "") + "\n" + (result.stderr or "")).strip()
-
-        if result.returncode != 0 or "Success" not in output:
-            raise DeltaUpdaterError(
-                f"pm install failed for {apk.name} (rc={result.returncode}): {output[:400]}"
-            )
-    finally:
-        if copied_to_tmp and tmp_dest.exists():
-            try:
-                tmp_dest.unlink(missing_ok=True)
-            except Exception:
-                pass
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        result = subprocess.run(["pm", "install", "-r", "-d", str(apk)], **common_kwargs)
+    else:
+        su_path = shutil.which("su")
+        if not su_path:
+            raise DeltaUpdaterError("Root access disappeared before APK installation")
+        su_cmd = f"exec pm install -r -d {shlex.quote(str(apk))}"
+        result = subprocess.run(
+            [su_path, "-c", su_cmd],
+            **common_kwargs,
+        )
+    output = ((result.stdout or "") + "\n" + (result.stderr or "")).strip()
+    if result.returncode != 0 or "Success" not in output:
+        raise DeltaUpdaterError(
+            f"pm install failed for {apk.name} (rc={result.returncode}): {output[:400]}"
+        )
 
 
 def _validate_zip_member(member: zipfile.ZipInfo) -> None:
