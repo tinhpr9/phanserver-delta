@@ -154,4 +154,15 @@ always_on: true
   3. *Bước 3 (Thực nghiệm & Báo cáo)*: Kiểm chứng trên 6/6 test suites và báo cáo chi tiết kèm dẫn chứng cụ thể cho người dùng.
 - **Đồng Bộ Song Song Cả Repo Và Hệ Thống Luật (Dual-Channel Sync)**: Bắt buộc áp dụng ngay và đồng bộ điều luật này vào tất cả các kênh lưu trữ SSOT.
 
+## 24. QUY TẮC BẮT BUỘC KIỂM CHỨNG TĨNH, TOÀN VẸN IMPORT VÀ KIỂM THỬ E2E TRƯỚC KHI BÀN GIAO (STRICT_STATIC_ANALYSIS_AND_E2E_VERIFICATION_RULE - Hard Rule)
+- **Cấm Bỏ Sót Import Hoặc Định Nghĩa Biến Tầm Vực Cục Bộ (Zero Missing or Localized Global Imports)**: Mọi thư viện, module hoặc biến phụ thuộc (như `json`, `codecs`, `pathlib`, `os`, `sys`, `shutil`) được sử dụng trong các hàm nghiệp vụ BẮT BUỘC phải được khai báo toàn cục (`global / top-level imports`) ngay tại đầu tệp tin. CẤM TUYỆT ĐỐI việc chỉ khai báo `import` cục bộ bên trong một hàm đơn lẻ khiến các hàm khác trong cùng module bị lỗi `NameError: name 'x' is not defined`.
+- **Bắt Buộc Chạy Kiểm Thử Tích Hợp Đầu-Cuối Thực Tế (Mandatory Real E2E Flow Tests)**: Khi bổ sung hoặc sửa đổi bất kỳ tính năng nào (Sao lưu thư mục, Khôi phục cấu hình, Cài đặt ứng dụng), Antigravity BẮT BUỘC phải viết và chạy bài kiểm thử tích hợp đầu-cuối (E2E Test) bao phủ toàn bộ vòng đời: từ đóng gói $\rightarrow$ trích xuất siêu dữ liệu $\rightarrow$ kiểm tra tính toàn vẹn $\rightarrow$ đến khôi phục thực tế trên môi trường giả lập.
+- **Quy Trình Rà Soát 3 Tầng Khép Kín Trước Bàn Giao (3-Tier Pre-Handoff Quality Gate)**:
+  1. *Tầng 1 (Cú pháp & Tĩnh)*: Chạy phân tích cú pháp AST và kiểm tra toàn bộ danh mục import.
+  2. *Tầng 2 (Unit & E2E)*: Chạy đủ 6/6 test suites bao gồm unit test và E2E lifecycle test, pass 100%.
+  3. *Tầng 3 (Triển khai & Đồng bộ)*: Commit, push lên GitHub, nạp vào Worker/Agent và đồng bộ song song vào toàn bộ 5 kênh luật SSOT.
+- **Đồng Bộ Song Song Cả Repo Và Hệ Thống Luật (Dual-Channel Sync)**: Bắt buộc áp dụng ngay và đồng bộ điều luật này vào tất cả các kênh lưu trữ SSOT.
+
+
+
 
