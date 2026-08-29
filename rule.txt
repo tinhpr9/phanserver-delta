@@ -45,3 +45,9 @@ always_on: true
 - **Làm Mới Repo (FRESH_CLONE_RULE)**: Khi chạy setup máy/agent, nếu repo đã tồn tại thì tự động xoá (`rm -rf "$REPO"`) và clone mới `--single-branch` để đảm bảo nhận mã nguồn mới nhất từ GitHub.
 - **Nhập Liệu Bàn Phím (INTERACTIVE_TTY_READ_RULE)**: Mọi lệnh `read` trong khối script Heredoc (`bash <<EOF`) bắt buộc phải chuyển hướng qua `</dev/tty>` để người dùng nhập được trực tiếp từ bàn phím màn hình, tránh lỗi `unbound variable` do đọc nhầm script stream.
 - **Cấp Quyền Bộ Nhớ Chuẩn**: Dùng `[ -d "$HOME/storage" ] || termux-setup-storage` để tránh cảnh báo lặp lại khi bộ nhớ đã được liên kết.
+
+## 8. QUY TẮC BẢO VỆ MÁY CHÍNH - CẤM TUYỆT ĐỐI CAN THIỆP / THỬ NGHIỆM TRÊN MÁY CHÍNH (STRICT_NO_HOST_MUTATION_OR_EXECUTION_RULE - Hard Rule)
+- **Cấm Biến Máy Chính Thành Thiết Bị Thử Nghiệm**: Môi trường máy chính (Host / Termux / Antigravity CLI nơi người dùng đang mở chat) CHỈ ĐƯỢC DÙNG để phát triển, viết mã, chạy bài kiểm tra cô lập (`tests/run_all_tests.sh`), deploy Cloudflare Worker và quản lý Git.
+- **Cấm Chạy Device Agent Trên Máy Chính**: Cấm tuyệt đối chạy `agent.py`, cấm gán `device_id` (như `m77`, `m72`), cấm chạy lệnh cài đặt APK ngầm (`pm install`, `adb install`) hoặc chạy các tác vụ điều khiển nhận lệnh trên máy chính.
+- **Phạm Vi Thực Thi Thiết Bị**: Mọi lệnh nhận cập nhật Delta, cài đặt APK, Backup ứng dụng hoặc phân phối server CHỈ ĐƯỢC PHÉP thực thi trên các máy ảo đám mây từ xa (Ugphone / Cloud Phone) do người dùng chủ động khởi động và cấu hình riêng biệt. Mọi cấu hình hoặc tiến trình giả lập thiết bị trên máy chính phải bị xoá sạch ngay lập tức.
+
