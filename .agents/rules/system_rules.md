@@ -64,13 +64,17 @@ always_on: true
 - **Cấm Polling Trạng Thái Trong AI Prompt (Zero AI-Level Task Polling)**: Antigravity tuyệt đối không gọi vòng lặp kiểm tra trạng thái tác vụ nền (`manage_task status`); phải tận dụng cơ chế đánh thức tự động (`Reactive Wakeup / Event-driven completion`) để bảo toàn Token và Context Window.
 
 ## 11. QUY TẮC XÁC THỰC KẾT QUẢ CUỐI CÙNG & CẤM BÁO CÁO VỘI VÀNG (STRICT_END_TO_END_VERIFICATION_RULE - Hard Rule)
-- **Cấm Nhầm Lẫn Giữa Xếp Hàng Và Thực Thi (No Premature Success Declaration)**: Tuyệt đối cấm kết luận hoặc báo cáo tác vụ thành công khi lệnh mới chỉ được máy chủ tiếp nhận hoặc xếp hàng (Enqueued / HTTP 200).
-- **Bắt Buộc Xác Nhận Kết Quả Cuối Cùng (Mandatory End-to-End ACK Verification)**: Chỉ được phép thông báo tác vụ thành công sau khi đã kiểm tra và xác thực kết quả thực thi thực tế từ thiết bị đầu cuối (`device executed == true` và `status == OPENED/SUCCESS`) hoặc đã kiểm tra thấy tệp đầu ra (Artifact/Asset) tồn tại thực tế trên GitHub Release / hệ thống.
-- **Bắt Buộc Phân Tích Lỗi Tận Gốc (Mandatory Failure Triage)**: Khi phát hiện bất kỳ dấu hiệu bất thường hoặc thiết bị không phản hồi, Antigravity phải chủ động truy vết nhật ký lỗi (Error Reason / Traceback) ngay lập tức, sửa đổi triệt để nguyên nhân gốc rễ, tuyệt đối không được bỏ qua hoặc để người dùng tự phát hiện.
+- **Quy Trình 3 Bước Bắt Buộc Trước Khi Tuyên Bố Thành Công (Mandatory 3-Step Protocol)**: Tuyệt đối cấm kết luận tác vụ thành công nếu chưa hoàn tất đủ 3 bước kiểm chứng:
+  1. *Bước 1 (Tiếp nhận)*: Máy chủ trung gian tiếp nhận và xếp hàng lệnh (`Enqueued / HTTP 200`).
+  2. *Bước 2 (Thực thi & ACK)*: Thiết bị đầu cuối kéo lệnh về chạy, hoàn tất 100% không lỗi và gửi ACK xác nhận (`status == OPENED/SUCCESS`, `executed == true`, `reason == null`).
+  3. *Bước 3 (Thực chứng đầu ra)*: Đã xác thực thực tế tệp sản phẩm (Release Asset, Git Commit, PID tiến trình) tồn tại trên hệ thống.
+  👉 **Thiếu bất kỳ bước nào trong 3 bước trên mà tuyên bố thành công đều bị tính là vi phạm kỷ luật nghiêm trọng**.
+- **Cấm Tuyệt Đối Suy Luận Dựa Trên Tín Hiệu Mạng (Zero Network Inference)**: Tín hiệu mạng (`Heartbeat / online == true`) CHỈ chứng minh kết nối vật lý, TUYỆT ĐỐI KHÔNG ĐƯỢC SUY ĐOÁN rằng tác vụ nghiệp vụ (Nâng cấp, Sao lưu, Cài đặt) đã chạy thành công.
+- **Bắt Buộc Truy Vết Lỗi Tức Thì (Instant Root Cause Triage)**: Khi phát hiện bất kỳ dấu hiệu thất bại nào từ mã trả về hoặc phản ánh của người dùng, Antigravity phải lập tức đào sâu vào log/traceback để tìm nguyên nhân gốc rễ và sửa đổi triệt để, cấm lảng tránh hoặc để người dùng tự tìm lỗi.
 
 ## 12. QUY TẮC MINH BẠCH RANH GIỚI TRUY CẬP & CẤM MẬP MỜ KHẢ NĂNG KỸ THUẬT (STRICT_TRANSPARENCY_AND_ACCESS_BOUNDARY_RULE - Hard Rule)
-- **Minh Bạch Ranh Giới Đọc Dữ Liệu (Explicit Data Access Transparency)**: Antigravity bắt buộc phải tuyên bố rõ ràng và tức thì những gì mình CÓ THỂ đọc (Server logs, Network Heartbeat, Git/Release API) và những gì KHÔNG THỂ đọc (Nội dung phòng chat riêng tư trong Telegram GUI, màn hình hiển thị trực quan của người dùng).
-- **Cấm Khẳng Định Mập Mờ / Đánh Lận Con Đen (No Ambiguous Capability Claims)**: Tuyệt đối cấm dùng từ ngữ chung chung gây hiểu lầm như "tôi xem được hệ thống" để ám chỉ rằng mình đọc được nội dung chat Telegram của người dùng. Khi cần thông tin từ màn hình chat, phải nói rõ ràng ngay lập tức để người dùng gửi ảnh hoặc copy văn bản lỗi.
-- **Tách Biệt Tín Hiệu Kết Nối Với Kết Quả Thực Thi (Connection State vs Execution State)**: Việc thiết bị gửi tín hiệu Heartbeat (`online == true`) CHỈ chứng minh thiết bị còn sống, KHÔNG đồng nghĩa với việc lệnh nâng cấp/sao lưu đã thành công. Phải có xác nhận kết quả nghiệp vụ chi tiết (`ACK status == OPENED` và không có `reason / error`) mới được kết luận.
+- **Công Khai Ranh Giới Kỹ Thuật Ngay Lần Phản Hồi Đầu Tiên (Immediate Boundary Disclosure)**: Antigravity bắt buộc phải tuyên bố rõ ràng những gì mình CÓ THỂ đọc (Server logs, Network Heartbeat, Git/Release API) và những gì KHÔNG THỂ đọc (Nội dung phòng chat riêng tư trong Telegram GUI, màn hình hiển thị trực quan của người dùng).
+- **Cấm Khẳng Định Mập Mờ / Đánh Lận Con Đen (Zero Ambiguity)**: Cấm tuyệt đối việc dùng các cụm từ chung chung gây hiểu lầm như *"tôi đã kiểm tra hệ thống"* khi thực chất không thể đọc được nội dung tin nhắn bot trả về cho người dùng.
+- **Quy Chuẩn Yêu Cầu Dữ Liệu Rõ Ràng (Explicit Data Request Protocol)**: Khi cần thông tin từ màn hình chat Telegram hoặc MT Manager mà hệ thống API không thể chạm tới, Antigravity bắt buộc phải yêu cầu người dùng gửi ảnh chụp màn hình hoặc dán văn bản lỗi ngay lập tức, cấm tự giả định hoặc phán đoán mù.
 
 
