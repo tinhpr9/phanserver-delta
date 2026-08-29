@@ -139,6 +139,25 @@ class TestDeviceAgent(unittest.TestCase):
             self.assertIsNone(err)
             self.assertEqual(mock_subproc.call_count, 2)
 
+    def test_create_folder_backup(self):
+        from agent import backup_manager
+        test_dir = self.root_path / "TestFolder"
+        test_dir.mkdir()
+        (test_dir / "file1.txt").write_text("hello world")
+        (test_dir / "file2.json").write_text('{"key": "value"}')
+
+        out_zip = backup_manager.create_folder_backup("TestFolder", str(test_dir), self.root_path)
+        self.assertTrue(out_zip.is_file())
+        self.assertEqual(out_zip.name, "Testfolder_FolderBackup.zip")
+
+        import zipfile
+        with zipfile.ZipFile(out_zip, "r") as zf:
+            self.assertIn("folder_meta.json", zf.namelist())
+            self.assertIn("folder.tar.gz", zf.namelist())
+            meta = json.loads(zf.read("folder_meta.json").decode("utf-8"))
+            self.assertEqual(meta["type"], "folder")
+            self.assertEqual(meta["folder_name"], "TestFolder")
+
 
 if __name__ == "__main__":
     unittest.main()
