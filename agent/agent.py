@@ -303,7 +303,20 @@ def handle_incoming_batch_action(
                     from backup_manager import _run_as_root
                 except ImportError:
                     _run_as_root = None
-            dev_cmd = "settings put global development_settings_enabled 1 && settings put global adb_enabled 1 && am start -a android.settings.APPLICATION_DEVELOPMENT_SETTINGS 2>/dev/null || true"
+            dev_cmd = """
+            settings put global development_settings_enabled 1
+            settings put global adb_enabled 1
+            settings put global force_allow_on_external 1
+            settings put global force_resizable_activities 1
+            settings put global enable_freeform_support 1
+            settings put global force_desktop_mode_on_external_displays 1
+            WIDTH=$(wm size 2>/dev/null | awk '{print $NF}' | cut -d'x' -f1)
+            if [ -n "$WIDTH" ] && [ "$WIDTH" -gt 0 ] 2>/dev/null; then
+                DPI=$((WIDTH * 160 / 700))
+                [ "$DPI" -gt 50 ] && [ "$DPI" -lt 1000 ] && wm density "$DPI" 2>/dev/null || true
+            fi
+            am start -a android.settings.APPLICATION_DEVELOPMENT_SETTINGS 2>/dev/null || true
+            """
             if _run_as_root:
                 res = _run_as_root(dev_cmd, timeout=15)
                 success = res.returncode == 0

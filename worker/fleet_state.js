@@ -627,7 +627,7 @@ export class FleetState {
     if (chatId && this.env?.TELEGRAM_BOT_TOKEN) {
       const isSuccess = status === "OPENED" || status === "SUCCESS";
       const msg = isSuccess
-        ? `⚙️ <b>ĐÃ BẬT TÙY CHỌN NHÀ PHÁT TRIỂN THÀNH CÔNG!</b>\n📱 Thiết bị: <code>${deviceId}</code>\n✅ Đã kích hoạt Developer Options & USB Debugging (ADB) và mở màn hình Cài đặt.`
+        ? `⚙️ <b>ĐÃ BẬT TÙY CHỌN NHÀ PHÁT TRIỂN & CẤU HÌNH THÀNH CÔNG!</b>\n📱 Thiết bị: <code>${deviceId}</code>\n✅ Kích hoạt Developer Options & ADB\n✅ Buộc ứng dụng trên bộ nhớ ngoài\n✅ Cho phép thay đổi kích thước hoạt động\n✅ Bật cửa sổ dạng tự do\n✅ Buộc chạy chế độ máy tính\n📐 Đã chỉnh Smallest Width về chuẩn <b>700 dp</b>.`
         : `❌ <b>BẬT TÙY CHỌN NHÀ PHÁT TRIỂN THẤT BẠI</b>\n📱 Thiết bị: <code>${deviceId}</code>\n⚠️ Lý do: ${body.reason || "Lỗi thiết bị"}`;
       try {
         await fetch(`https://api.telegram.org/bot${this.env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
