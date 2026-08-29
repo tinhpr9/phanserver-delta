@@ -209,7 +209,10 @@ def create_app_backup(package_name: str, output_dir: pathlib.Path, mode: str = "
     temp_data_tar = output_dir / "data.tar.gz"
     tar_dest = shlex.quote(str(temp_data_tar))
     pkg_q = shlex.quote(package_name)
-    su_cmd = f"cd /data/data && (tar -czf {tar_dest} {pkg_q} 2>/dev/null || tar -cf - {pkg_q} 2>/dev/null | gzip > {tar_dest}) && chmod 666 {tar_dest} 2>/dev/null || true"
+    if package_name == "com.termux":
+        su_cmd = f"cd /data/data && (tar --exclude='com.termux/files/usr/tmp' --exclude='com.termux/cache' -czf {tar_dest} com.termux 2>/dev/null || tar -czf {tar_dest} com.termux 2>/dev/null || tar -cf - com.termux 2>/dev/null | gzip > {tar_dest}) && chmod 666 {tar_dest} 2>/dev/null || true"
+    else:
+        su_cmd = f"cd /data/data && (tar -czf {tar_dest} {pkg_q} 2>/dev/null || tar -cf - {pkg_q} 2>/dev/null | gzip > {tar_dest}) && chmod 666 {tar_dest} 2>/dev/null || true"
     _run_as_root(su_cmd, timeout=120)
 
     has_data = temp_data_tar.exists() and temp_data_tar.stat().st_size > 50
@@ -278,6 +281,7 @@ def upload_to_github_release(
             pass
 
     # 1. Direct Python GitHub REST API upload
+    last_upload_err = None
     if auth_token:
         try:
             import urllib.request, json
@@ -331,7 +335,6 @@ def upload_to_github_release(
                 },
                 method="POST"
             )
-            last_upload_err = None
             try:
                 with urllib.request.urlopen(up_req, timeout=300) as up_resp:
                     if up_resp.status in (200, 201):
@@ -374,7 +377,20 @@ def run_backup_and_upload(
 
     results = []
     errors = []
-    with tempfile.TemporaryDirectory() as tmpdir:
+
+    # Ensure backup directory is created outside /data/data (e.g. /data/local/tmp or /storage/emulated/0)
+    backup_base = None
+    for cand_base in ("/data/local/tmp", "/storage/emulated/0/Download"):
+        p = pathlib.Path(cand_base)
+        if p.exists() and os.access(str(p), os.W_OK):
+            backup_base = str(p)
+            break
+        elif p.exists():
+            _run_as_root(f"chmod 777 {shlex.quote(str(p))} 2>/dev/null || true")
+            backup_base = str(p)
+            break
+
+    with tempfile.TemporaryDirectory(dir=backup_base) as tmpdir:
         tmp_path = pathlib.Path(tmpdir)
         for t in targets:
             try:
