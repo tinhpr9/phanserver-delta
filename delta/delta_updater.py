@@ -632,10 +632,17 @@ def restore_zip_data(zip_path: str | pathlib.Path, target_pkg: Optional[str] = N
                 os.chmod(tar_cache_path, 0o666)
 
                 parent_dest = str(pathlib.Path(meta_dest).parent)
+                base_folder_name = pathlib.Path(meta_dest).name
                 restore_folder_script = f"""
                 set -e
                 mkdir -p {shlex.quote(parent_dest)}
-                tar -xzf {shlex.quote(tar_cache_path)} -C {shlex.quote(parent_dest)}
+                mkdir -p {shlex.quote(meta_dest)}
+                TOP_ENTRY=$(tar -tf {shlex.quote(tar_cache_path)} 2>/dev/null | head -n 1 | cut -d/ -f1)
+                if [ "$TOP_ENTRY" = "{base_folder_name}" ]; then
+                    tar -xzf {shlex.quote(tar_cache_path)} -C {shlex.quote(parent_dest)}
+                else
+                    tar -xzf {shlex.quote(tar_cache_path)} -C {shlex.quote(meta_dest)}
+                fi
                 chmod -R 777 {shlex.quote(meta_dest)} 2>/dev/null || true
                 rm -f {shlex.quote(tar_cache_path)}
                 """
