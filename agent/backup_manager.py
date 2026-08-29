@@ -331,11 +331,16 @@ def upload_to_github_release(
                 },
                 method="POST"
             )
-            with urllib.request.urlopen(up_req, timeout=300) as up_resp:
-                if up_resp.status in (200, 201):
-                    return f"https://github.com/{repo}/releases/download/{tag}/{file_path.name}"
+            last_upload_err = None
+            try:
+                with urllib.request.urlopen(up_req, timeout=300) as up_resp:
+                    if up_resp.status in (200, 201):
+                        return f"https://github.com/{repo}/releases/download/{tag}/{file_path.name}"
+                    last_upload_err = f"HTTP {up_resp.status}"
+            except Exception as ex:
+                last_upload_err = str(ex)
         except Exception as ex:
-            pass
+            last_upload_err = str(ex)
 
     # 2. Fallback to gh CLI
     gh_bin = shutil.which("gh") or "/data/data/com.termux/files/usr/bin/gh"
@@ -344,7 +349,10 @@ def upload_to_github_release(
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         if proc.returncode == 0:
             return f"https://github.com/{repo}/releases/download/{tag}/{file_path.name}"
-        raise BackupError(f"Lỗi khi tải lên GitHub Release qua gh: {proc.stderr.strip() or proc.stdout.strip()}")
+        raise BackupError(f"Lỗi khi tải lên GitHub Release (REST: {last_upload_err}, gh: {proc.stderr.strip() or proc.stdout.strip()})")
+
+    if last_upload_err:
+        raise BackupError(f"Lỗi khi tải lên GitHub Release qua REST: {last_upload_err}")
 
     raise BackupError("Không tìm thấy GitHub Token hoặc lệnh 'gh' trên thiết bị để upload Release.")
 
