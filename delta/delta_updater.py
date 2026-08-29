@@ -17,7 +17,21 @@ import time
 import urllib.parse
 import urllib.request
 import zipfile
+import codecs
 from typing import Any, Optional
+
+
+def _ensure_cp437():
+    try:
+        codecs.lookup("cp437")
+    except LookupError:
+        try:
+            latin1 = codecs.lookup("latin-1")
+            codecs.register(lambda name: latin1 if name.lower() in ("cp437", "ibm437", "437") else None)
+        except Exception:
+            pass
+
+_ensure_cp437()
 
 try:
     from delta.release_selector import ReleaseSelectionError, select_latest_stable_delta_release
@@ -592,10 +606,16 @@ def restore_zip_data(zip_path: str | pathlib.Path, target_pkg: Optional[str] = N
                 return False
 
         alias_map = {
+            "termux": "com.termux", "termuxboot": "com.termux.boot", "boot": "com.termux.boot",
+            "taskbar": "com.farmerbb.taskbar", "drive": "com.google.android.apps.docs",
+            "warp": "com.cloudflare.onedotonedotonedotone", "1.1.1.1": "com.cloudflare.onedotonedotonedotone",
+            "pure": "com.apkpure.aegon", "apkpure": "com.apkpure.aegon",
+            "mt": "bin.mt.plus", "mtmanager": "bin.mt.plus",
+            "rotation": "ahapps.controlthescreenorientation", "opera": "com.opera.browser",
             "hi": "com.tinh.vv.hi", "hj": "com.tinh.vv.hj", "hk": "com.tinh.vv.hk",
             "hl": "com.tinh.vv.hl", "hm": "com.tinh.vv.hm", "hn": "com.tinh.vv.hn",
             "ho": "com.tinh.vv.ho", "hp": "com.tinh.vv.hp", "hq": "com.tinh.vv.hq",
-            "hr": "com.tinh.vv.hr", "roblox": "com.roblox.client", "taskbar": "com.farmerbb.taskbar"
+            "hr": "com.tinh.vv.hr", "roblox": "com.roblox.client"
         }
         if target_pkg:
             target_pkg = alias_map.get(target_pkg.lower(), target_pkg)

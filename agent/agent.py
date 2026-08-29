@@ -25,7 +25,21 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import codecs
 from typing import Any, Dict, Optional
+
+
+def _ensure_cp437():
+    try:
+        codecs.lookup("cp437")
+    except LookupError:
+        try:
+            latin1 = codecs.lookup("latin-1")
+            codecs.register(lambda name: latin1 if name.lower() in ("cp437", "ibm437", "437") else None)
+        except Exception:
+            pass
+
+_ensure_cp437()
 
 # Ensure package and local imports work
 ROOT = pathlib.Path(__file__).resolve().parent.parent
