@@ -395,81 +395,96 @@ def download_asset(
     raise DeltaUpdaterError(f"Unsupported asset URL scheme: {url}")
 
 
-def install_apk(apk_path: str | pathlib.Path) -> None:
-    apk = pathlib.Path(apk_path)
-    if not apk.is_file() or apk.stat().st_size <= 0:
-        raise DeltaUpdaterError(f"APK is missing or empty: {apk}")
+def install_apks(apks: list[pathlib.Path] | pathlib.Path) -> None:
+    """Install one or more APKs, with automatic support for Split APK bundles."""
+    if isinstance(apks, (str, pathlib.Path)):
+        apks = [pathlib.Path(apks)]
+    if not apks:
+        return
+    for apk in apks:
+        if not apk.is_file() or apk.stat().st_size <= 0:
+            raise DeltaUpdaterError(f"APK is missing or empty: {apk}")
     if not root_available():
         raise DeltaUpdaterError(
             "Root access required for pm install. Non-root environment is unsupported for Delta APK installation."
         )
 
-    common_kwargs = {"capture_output": True, "text": True, "timeout": 180}
+    common_kwargs = {"capture_output": True, "text": True, "timeout": 300}
     is_root_process = hasattr(os, "geteuid") and os.geteuid() == 0
-    pm_bin = "pm"
     su_path = None if is_root_process else shutil.which("su")
     if not is_root_process and not su_path:
         raise DeltaUpdaterError("Root access disappeared before APK installation")
 
-    target_install_path = str(apk)
-    tmp_dest = pathlib.Path(f"/data/local/tmp/{apk.name}")
-    copied_to_tmp = False
+    staged_paths: list[str] = []
+    tmp_cleanups: list[pathlib.Path] = []
 
     try:
-        # Package Manager cannot always read shared-storage paths, so stage them
-        # through a root-visible location before installation.
-        if "/storage/" in str(apk) or "/sdcard/" in str(apk):
-            if is_root_process:
-                shutil.copyfile(apk, tmp_dest)
-                os.chmod(tmp_dest, 0o644)
-            else:
-                stage_cmd = (
-                    f"cp {shlex.quote(str(apk))} {shlex.quote(str(tmp_dest))} "
-                    f"&& chmod 644 {shlex.quote(str(tmp_dest))}"
-                )
-                stage_result = subprocess.run([su_path, "-c", stage_cmd], **common_kwargs)
-                stage_output = (
-                    (stage_result.stdout or "") + "\n" + (stage_result.stderr or "")
-                ).strip()
-                if stage_result.returncode != 0:
-                    raise DeltaUpdaterError(
-                        f"Failed to stage {apk.name} for pm install "
-                        f"(rc={stage_result.returncode}): {stage_output[:400]}"
-                    )
-            target_install_path = str(tmp_dest)
-            copied_to_tmp = True
+        for apk in apks:
+            target_path = str(apk)
+            if "/storage/" in str(apk) or "/sdcard/" in str(apk):
+                tmp_dest = pathlib.Path(f"/data/local/tmp/{apk.name}")
+                if is_root_process:
+                    shutil.copyfile(apk, tmp_dest)
+                    os.chmod(tmp_dest, 0o644)
+                else:
+                    stage_cmd = f"cp {shlex.quote(str(apk))} {shlex.quote(str(tmp_dest))} && chmod 644 {shlex.quote(str(tmp_dest))}"
+                    stage_res = subprocess.run([su_path, "-c", stage_cmd], **common_kwargs)
+                    if stage_res.returncode != 0:
+                        raise DeltaUpdaterError(f"Failed to stage {apk.name} for pm install: {stage_res.stderr or stage_res.stdout}")
+                target_path = str(tmp_dest)
+                tmp_cleanups.append(tmp_dest)
+            staged_paths.append(target_path)
 
-        if is_root_process:
-            result = subprocess.run(
-                ["pm", "install", "-r", "-d", target_install_path],
-                **common_kwargs,
-            )
+        if len(staged_paths) == 1:
+            # Single standalone APK install
+            single_path = staged_paths[0]
+            if is_root_process:
+                result = subprocess.run(["pm", "install", "-r", "-d", single_path], **common_kwargs)
+            else:
+                result = subprocess.run([su_path, "-c", f"exec pm install -r -d {shlex.quote(single_path)}"], **common_kwargs)
         else:
-            install_cmd = (
-                f"exec pm install -r -d "
-                f"{shlex.quote(target_install_path)}"
-            )
-            result = subprocess.run([su_path, "-c", install_cmd], **common_kwargs)
+            # Multiple Split APK install (App Bundle) via Android PM Session Install
+            install_script = f"""
+            set -e
+            SESSION_ID=$(pm install-create -r -d 2>/dev/null | grep -oE '[0-9]+' | head -n 1)
+            if [ -n "$SESSION_ID" ]; then
+                IDX=0
+                for f in {' '.join(shlex.quote(p) for p in staged_paths)}; do
+                    pm install-write -S $(stat -c "%s" "$f") "$SESSION_ID" "split_$IDX" "$f"
+                    IDX=$((IDX+1))
+                done
+                pm install-commit "$SESSION_ID"
+            else
+                pm install-multiple -r -d {' '.join(shlex.quote(p) for p in staged_paths)}
+            fi
+            """
+            if is_root_process:
+                result = subprocess.run(["sh", "-c", install_script], **common_kwargs)
+            else:
+                result = subprocess.run([su_path, "-c", install_script], **common_kwargs)
 
         output = ((result.stdout or "") + "\n" + (result.stderr or "")).strip()
         if result.returncode != 0 or "Success" not in output:
             raise DeltaUpdaterError(
-                f"pm install failed for {apk.name} (rc={result.returncode}): {output[:400]}"
+                f"pm install failed for {', '.join(a.name for a in apks)} (rc={result.returncode}): {output[:400]}"
             )
     finally:
-        if copied_to_tmp:
+        for tmp_dest in tmp_cleanups:
             try:
                 if is_root_process:
                     tmp_dest.unlink(missing_ok=True)
                 else:
-                    subprocess.run(
-                        [su_path, "-c", f"rm -f {shlex.quote(str(tmp_dest))}"],
-                        capture_output=True,
-                        text=True,
-                        timeout=30,
-                    )
+                    subprocess.run([su_path, "-c", f"rm -f {shlex.quote(str(tmp_dest))}"], capture_output=True, timeout=10)
             except Exception:
                 pass
+
+
+def install_apk(apk: pathlib.Path | list[pathlib.Path]) -> None:
+    if isinstance(apk, list):
+        install_apks(apk)
+    else:
+        install_apks([apk])
+
 
 def _validate_zip_member(member: zipfile.ZipInfo) -> None:
     normalized = member.filename.replace("\\", "/")
@@ -810,23 +825,24 @@ def run_delta_update(
             print(f"[VERIFY] asset {index}/{len(assets)} {asset['name']}: SHA-256 OK", flush=True)
             staged.append((asset, target))
 
-        install_queue: list[pathlib.Path] = []
+        install_batches: list[tuple[str, list[pathlib.Path]]] = []
         for index, (asset, target) in enumerate(staged, 1):
             if asset["kind"] == "apk":
-                install_queue.append(target)
+                install_batches.append((asset["name"], [target]))
             else:
                 extract_dir = tx_root / f"extract_{index:04d}"
                 extracted = extract_zip_apks(target, extract_dir)
-                install_queue.extend(extracted)
-                print(
-                    f"[EXTRACT] {asset['name']}: {len(extracted)} APK(s) verified",
-                    flush=True,
-                )
+                if extracted:
+                    install_batches.append((asset["name"], extracted))
+                    print(
+                        f"[EXTRACT] {asset['name']}: {len(extracted)} APK(s) verified",
+                        flush=True,
+                    )
 
-        installed_count = len(install_queue)
-        for index, apk in enumerate(install_queue, 1):
-            print(f"[INSTALL] {index}/{len(install_queue)} {apk.name}", flush=True)
-            install_apk(apk)
+        installed_count = sum(len(b[1]) for b in install_batches)
+        for index, (pkg_label, apks) in enumerate(install_batches, 1):
+            print(f"[INSTALL] {index}/{len(install_batches)} {pkg_label} ({len(apks)} APK/Splits)", flush=True)
+            install_apk(apks)
 
         # Restore application data from ZIP bundles if present
         restored_count = 0

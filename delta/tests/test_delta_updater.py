@@ -214,7 +214,7 @@ class TestDeltaUpdater(unittest.TestCase):
             download_dir=download_root,
         )
         self.assertEqual(result["installed_count"], 3)
-        self.assertEqual(mock_install.call_count, 3)
+        self.assertEqual(mock_install.call_count, 2)
         self.assertEqual(list(download_root.iterdir()), [])
 
     @mock.patch("delta.delta_updater.install_apk")
