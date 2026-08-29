@@ -18,11 +18,18 @@ class BackupError(RuntimeError):
     pass
 
 
+def _get_pm_bin() -> str:
+    if os.path.exists("/system/bin/pm"):
+        return "/system/bin/pm"
+    return shutil.which("pm") or "pm"
+
+
 def find_package_name(keyword_or_pkg: str) -> str:
     """Find the exact package name on Android matching keyword or full package name."""
     keyword_or_pkg = keyword_or_pkg.strip()
+    pm_bin = _get_pm_bin()
     # Check if exact package exists
-    cmd = ["pm", "list", "packages", keyword_or_pkg]
+    cmd = [pm_bin, "list", "packages", keyword_or_pkg]
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
         for line in proc.stdout.splitlines():
@@ -33,7 +40,7 @@ def find_package_name(keyword_or_pkg: str) -> str:
         pass
 
     # Search loosely
-    loose_cmd = ["pm", "list", "packages"]
+    loose_cmd = [pm_bin, "list", "packages"]
     try:
         proc = subprocess.run(loose_cmd, capture_output=True, text=True, timeout=5)
         matches = []
@@ -42,7 +49,6 @@ def find_package_name(keyword_or_pkg: str) -> str:
             if keyword_or_pkg.lower() in pkg.lower():
                 matches.append(pkg)
         if matches:
-            # Return shortest or first matching package
             matches.sort(key=len)
             return matches[0]
     except Exception:
@@ -71,7 +77,7 @@ def find_package_name(keyword_or_pkg: str) -> str:
 def create_app_backup(package_name: str, output_dir: pathlib.Path) -> pathlib.Path:
     """Extract APKs and Data directory for package_name and create a bundle ZIP."""
     # 1. Get APK paths
-    pm_cmd = ["pm", "path", package_name]
+    pm_cmd = [_get_pm_bin(), "path", package_name]
     proc = subprocess.run(pm_cmd, capture_output=True, text=True, timeout=5)
     apk_paths = []
     for line in proc.stdout.splitlines():
