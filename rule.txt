@@ -132,4 +132,9 @@ always_on: true
 - **Nguyên Tắc Đơn Giản Hóa Và Chống Điểm Mù Giả Lập (Simplicity & Mock Blindspot Elimination)**: Luôn chọn giải pháp có ít trạng thái trung gian nhất. Không được tin tưởng tuyệt đối vào kết quả mock Unit Test nếu lệnh shell bên dưới phụ thuộc vào các tiện ích môi trường thực tế của Android mà chưa được kiểm chứng trên binary gốc.
 - **Đồng Bộ Song Song Cả Repo Và Hệ Thống Luật (Dual-Channel Sync)**: Bắt buộc áp dụng ngay và đồng bộ điều luật này vào tất cả các kênh lưu trữ SSOT.
 
+## 21. QUY TẮC CÀI ĐẶT HÀNG LOẠT CHỊU LỖI VÀ CHỐNG ĐỔ VỠ TOÀN CỤC VÌ APP ĐƠN LẺ (STRICT_FAULT_TOLERANT_BATCH_INSTALLATION_RULE - Hard Rule)
+- **Cấm Tuyệt Đối Làm Đổ Vỡ Toàn Bộ Phiên Cài Đặt Vì Một Ứng Dụng Đơn Lẻ (Zero Cascade Failures on Single-App Rejections)**: Khi thực hiện cài đặt hoặc cập nhật danh sách nhiều ứng dụng hàng loạt (`all`, `update_delta`, batch manifests), việc một ứng dụng đơn lẻ bị từ chối cấp phép (do trùng System App, xung đột chứng chỉ ký số, hoặc chữ ký không khớp) KHÔNG ĐƯỢC PHÉP làm dừng hoặc hủy bỏ quá trình cài đặt của các ứng dụng còn lại trong chuỗi. Hệ thống BẮT BUỘC phải ghi nhận cảnh báo (`[WARN]`), cách ly ứng dụng bị lỗi, và tiếp tục hoàn tất 100% các ứng dụng hợp lệ còn lại trong danh sách (như Clone APKs, Tools hệ thống).
+- **Tiêu Chuẩn Báo Cáo Kết Quả Hàng Loạt (Batch Summary Evaluation)**: Phiên làm việc chỉ bị coi là thất bại toàn diện nếu TẤT CẢ các ứng dụng trong danh sách đều không thể cài đặt được (0 apps installed). Nếu có ít nhất 1 ứng dụng cài đặt thành công, hệ thống phải xác nhận thành công và báo cáo rõ số lượng app đã hoàn tất.
+- **Đồng Bộ Song Song Cả Repo Và Hệ Thống Luật (Dual-Channel Sync)**: Bắt buộc áp dụng ngay và đồng bộ điều luật này vào tất cả các kênh lưu trữ SSOT.
+
 
