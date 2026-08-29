@@ -25,6 +25,35 @@ def _get_pm_bin() -> str:
     return shutil.which("pm") or "pm"
 
 
+def _run_as_root(cmd: str, timeout: int = 120) -> subprocess.CompletedProcess:
+    """Execute command as root using the real Android system su binary."""
+    is_root = hasattr(os, "geteuid") and os.geteuid() == 0
+    if is_root:
+        return subprocess.run(["sh", "-c", cmd], capture_output=True, text=True, timeout=timeout)
+
+    su_candidates = ["/system/xbin/su", "/system/bin/su", "/sbin/su", "/vendor/bin/su"]
+    which_su = shutil.which("su")
+    if which_su and not which_su.startswith("/data/data/com.termux/"):
+        su_candidates.insert(0, which_su)
+    elif which_su:
+        su_candidates.append(which_su)
+
+    last_res = None
+    for su in su_candidates:
+        if os.path.exists(su):
+            try:
+                res = subprocess.run([su, "-c", cmd], capture_output=True, text=True, timeout=timeout)
+                if res.returncode == 0:
+                    return res
+                last_res = res
+            except Exception:
+                pass
+
+    if last_res is not None:
+        return last_res
+    return subprocess.run(["sh", "-c", cmd], capture_output=True, text=True, timeout=timeout)
+
+
 def find_package_name(keyword_or_pkg: str) -> str:
     """Find the exact package name on Android matching keyword or full package name."""
     keyword_or_pkg = keyword_or_pkg.strip()
@@ -62,18 +91,15 @@ def find_package_name(keyword_or_pkg: str) -> str:
     alias_match = aliases.get(keyword_or_pkg.lower())
 
     pm_bin = _get_pm_bin()
-    is_root = hasattr(os, "geteuid") and os.geteuid() == 0
-    su_path = shutil.which("su")
-
     pkg_lines = []
     try:
         proc = subprocess.run([pm_bin, "list", "packages"], capture_output=True, text=True, timeout=5)
         pkg_lines = proc.stdout.splitlines()
     except Exception:
         pass
-    if not pkg_lines and not is_root and su_path:
+    if not pkg_lines:
         try:
-            proc = subprocess.run([su_path, "-c", f"{pm_bin} list packages"], capture_output=True, text=True, timeout=5)
+            proc = _run_as_root(f"{pm_bin} list packages", timeout=5)
             pkg_lines = proc.stdout.splitlines()
         except Exception:
             pass
@@ -99,11 +125,6 @@ def find_package_name(keyword_or_pkg: str) -> str:
 
 def detect_app_username(package_name: str) -> Optional[str]:
     """Inspect /data/data/<package_name>/shared_prefs and files to discover the logged-in username."""
-    is_root = hasattr(os, "geteuid") and os.geteuid() == 0
-    su_path = shutil.which("su")
-    if not is_root and not su_path:
-        return None
-
     probe_script = f"""
     for f in /data/data/{shlex.quote(package_name)}/shared_prefs/*.xml /data/data/{shlex.quote(package_name)}/files/*.json; do
         if [ -f "$f" ]; then
@@ -112,11 +133,7 @@ def detect_app_username(package_name: str) -> Optional[str]:
     done
     """
     try:
-        if is_root:
-            proc = subprocess.run(["sh", "-c", probe_script], capture_output=True, text=True, timeout=5)
-        else:
-            proc = subprocess.run([su_path, "-c", probe_script], capture_output=True, text=True, timeout=5)
-
+        proc = _run_as_root(probe_script, timeout=5)
         output = proc.stdout or ""
         if output:
             patterns = [
@@ -150,9 +167,6 @@ def create_app_backup(package_name: str, output_dir: pathlib.Path, mode: str = "
     user_tag = f"_{detected_user}" if detected_user else ""
     clean_name = f"{raw_clean_name}{user_tag}"
 
-    is_root = hasattr(os, "geteuid") and os.geteuid() == 0
-    su_path = shutil.which("su")
-
     # 1. Extract APKs if mode is 'full' or 'apk'
     apk_paths = []
     if mode in ("full", "apk"):
@@ -163,9 +177,9 @@ def create_app_backup(package_name: str, output_dir: pathlib.Path, mode: str = "
             pm_out = proc.stdout or ""
         except Exception:
             pass
-        if not pm_out and not is_root and su_path:
+        if not pm_out:
             try:
-                proc = subprocess.run([su_path, "-c", f"{pm_bin} path {shlex.quote(package_name)}"], capture_output=True, text=True, timeout=5)
+                proc = _run_as_root(f"{pm_bin} path {shlex.quote(package_name)}", timeout=5)
                 pm_out = proc.stdout or ""
             except Exception:
                 pass
@@ -193,14 +207,12 @@ def create_app_backup(package_name: str, output_dir: pathlib.Path, mode: str = "
 
     # Extract Data directory for 'full' and 'data' modes
     temp_data_tar = output_dir / "data.tar.gz"
-    su_cmd = f"cd /data/data && tar --exclude='*/cache' --exclude='*/code_cache' --exclude='cache' --exclude='code_cache' -czf {shlex.quote(str(temp_data_tar))} {shlex.quote(package_name)} && chmod 666 {shlex.quote(str(temp_data_tar))} 2>/dev/null || true"
-    if is_root:
-        subprocess.run(["sh", "-c", su_cmd], capture_output=True, timeout=30)
-    else:
-        if su_path:
-            subprocess.run([su_path, "-c", su_cmd], capture_output=True, timeout=30)
+    tar_dest = shlex.quote(str(temp_data_tar))
+    pkg_q = shlex.quote(package_name)
+    su_cmd = f"cd /data/data && (tar -czf {tar_dest} {pkg_q} 2>/dev/null || tar -cf - {pkg_q} 2>/dev/null | gzip > {tar_dest}) && chmod 666 {tar_dest} 2>/dev/null || true"
+    _run_as_root(su_cmd, timeout=120)
 
-    has_data = temp_data_tar.exists() and temp_data_tar.stat().st_size > 100
+    has_data = temp_data_tar.exists() and temp_data_tar.stat().st_size > 50
 
     # Data-Only Mode
     if mode == "data":
