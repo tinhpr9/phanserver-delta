@@ -84,4 +84,12 @@ always_on: true
   3. *Kênh Lưu Trữ Phụ Trợ*: `/storage/emulated/0/Download/rule.txt` và Google Drive (`remote_drive:Rules/`).
 - **Cấm Tuyệt Đối Lệch Pha Quy Tắc (Zero Desynchronization Tolerance)**: Tuyệt đối cấm chỉ cập nhật trên Repo mà quên cập nhật vào Hệ thống luật của AI, hoặc chỉ cập nhật trong AI Prompt mà quên commit lên Repo. Toàn bộ các kênh phải luôn luôn khớp nhau 100% từng từ, từng câu tại mọi thời điểm (SSOT - Single Source of Truth).
 
+## 14. QUY TẮC TUYỆT ĐỐI TIN TẬP VÀ PHẢN ỨNG CẤP CAO KHI NGƯỜI DÙNG BÁO LỖI (STRICT_USER_ALERT_TRUST_AND_DEEP_AUDIT_RULE - Hard Rule)
+- **Tôn Trọng Tuyệt Đối Báo Cáo Của Người Dùng (Absolute Trust in User Incident Reports)**: Khi người dùng thông báo *"không chạy"*, *"đứng im"*, *"chờ lâu"*, hoặc *"vẫn bị lỗi"*, Antigravity PHẢI HIỂU RẰNG người dùng đã quan sát và chờ đợi trong thời gian thực tế rất lâu (5–10+ phút) và sự cố đang thực sự xảy ra 100%. Tuyệt đối cấm xem nhẹ, cấm tự trấn an hoặc phán đoán qua loa.
+- **Kích Hoạt Quy Trình Rà Soát Toàn Diện Tận Gốc (Immediate Full-Stack Lifecycle Deep Audit)**: Ngay khi nhận được phản ánh, Antigravity BẮT BUỘC phải rà soát lại toàn bộ chu trình sống của mã nguồn:
+  1. *Thứ tự thực thi (Execution Ordering)*: Kiểm tra xem các lệnh ngắt/nạp tiến trình (`os.execv`, `sys.exit`, `return`, `pkill`) có nằm trước hoặc chặn các lệnh truyền thông mạng (`send_ack`, `report`, `webhook`) hay không.
+  2. *Biến số và Thư viện (Scope & Import Integrity)*: Kiểm tra 100% tất cả các biến, hàm, thư viện xem có bị thiếu `import` hoặc lệch tầm vực không.
+  3. *Tình trạng treo/nghẽn luồng (Deadlock & Stale State)*: Kiểm tra các điểm có thể gây đứng tiến trình hoặc mất tín hiệu phản hồi.
+- **Phản Hồi Thật Thà & Khắc Phục Tức Thì (Instant Transparent Remediation)**: Tuyệt đối cấm quanh co, biện minh hoặc đổ lỗi. Phải chỉ ra chính xác vị trí lỗi, khắc phục triệt để và đồng bộ quy tắc tức thì.
+
 
