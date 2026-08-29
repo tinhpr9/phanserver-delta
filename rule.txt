@@ -51,3 +51,9 @@ always_on: true
 - **Cấm Chạy Device Agent Trên Máy Chính**: Cấm tuyệt đối chạy `agent.py`, cấm gán `device_id` (như `m77`, `m72`), cấm chạy lệnh cài đặt APK ngầm (`pm install`, `adb install`) hoặc chạy các tác vụ điều khiển nhận lệnh trên máy chính.
 - **Phạm Vi Thực Thi Thiết Bị**: Mọi lệnh nhận cập nhật Delta, cài đặt APK, Backup ứng dụng hoặc phân phối server CHỈ ĐƯỢC PHÉP thực thi trên các máy ảo đám mây từ xa (Ugphone / Cloud Phone) do người dùng chủ động khởi động và cấu hình riêng biệt. Mọi cấu hình hoặc tiến trình giả lập thiết bị trên máy chính phải bị xoá sạch ngay lập tức.
 
+## 9. QUY TẮC TỰ ĐỘNG CẬP NHẬT & BẢO TRÌ KHÔNG CẦN CHẠM TAY (AUTO_UPDATE_AND_ZERO_TOUCH_MAINTENANCE_RULE - Hard Rule)
+- **Tự Động Nâng Cấp Ngầm**: Toàn bộ các Device Agent trên máy ảo từ xa (Ugphone) bắt buộc phải có cơ chế tự động quét phiên bản mới trên GitHub nhánh `fix/delta-stability` định kỳ (~2 phút) hoặc nhận lệnh cập nhật từ Telegram.
+- **Thay Thế Tiến Trình Tại Chỗ (In-Place Process Replacement)**: Khi phát hiện có commit mới trên GitHub, Agent phải tự động kéo mã nguồn mới nhất (`git reset --hard FETCH_HEAD`) và tự nạp lại tiến trình vào RAM bằng `os.execv` mà không bắt người dùng phải mở Termux gõ lệnh `git pull` hay khởi động lại thủ công.
+- **Tiêu Chí Vận Hành Không Chạm Tay (Zero-Touch Ops)**: Mọi sửa đổi, sửa lỗi và tính năng mới khi được Antigravity đẩy lên GitHub phải tự động có hiệu lực trên toàn bộ đội máy Ugphone mà không làm gián đoạn hoặc phiền đến người dùng.
+
+
