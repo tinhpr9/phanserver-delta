@@ -28,35 +28,15 @@ def _get_pm_bin() -> str:
 def find_package_name(keyword_or_pkg: str) -> str:
     """Find the exact package name on Android matching keyword or full package name."""
     keyword_or_pkg = keyword_or_pkg.strip()
-    pm_bin = _get_pm_bin()
-    # Check if exact package exists
-    cmd = [pm_bin, "list", "packages", keyword_or_pkg]
-    try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
-        for line in proc.stdout.splitlines():
-            clean = line.strip().replace("package:", "")
-            if clean == keyword_or_pkg:
-                return clean
-    except Exception:
-        pass
-
-    # Search loosely
-    loose_cmd = [pm_bin, "list", "packages"]
-    try:
-        proc = subprocess.run(loose_cmd, capture_output=True, text=True, timeout=5)
-        matches = []
-        for line in proc.stdout.splitlines():
-            pkg = line.strip().replace("package:", "")
-            if keyword_or_pkg.lower() in pkg.lower():
-                matches.append(pkg)
-        if matches:
-            matches.sort(key=len)
-            return matches[0]
-    except Exception:
-        pass
+    if not keyword_or_pkg:
+        raise BackupError("Tên gói hoặc từ khóa ứng dụng không được để trống.")
 
     # Common aliases
     aliases = {
+        "termux": "com.termux",
+        "termuxboot": "com.termux.boot",
+        "boot": "com.termux.boot",
+        "termux:boot": "com.termux.boot",
         "taskbar": "com.farmerbb.taskbar",
         "drive": "com.google.android.apps.docs",
         "warp": "com.cloudflare.onedotonedotonedotone",
@@ -80,6 +60,37 @@ def find_package_name(keyword_or_pkg: str) -> str:
         "hr": "com.tinh.vv.hr",
     }
     alias_match = aliases.get(keyword_or_pkg.lower())
+
+    pm_bin = _get_pm_bin()
+    is_root = hasattr(os, "geteuid") and os.geteuid() == 0
+    su_path = shutil.which("su")
+
+    pkg_lines = []
+    try:
+        proc = subprocess.run([pm_bin, "list", "packages"], capture_output=True, text=True, timeout=5)
+        pkg_lines = proc.stdout.splitlines()
+    except Exception:
+        pass
+    if not pkg_lines and not is_root and su_path:
+        try:
+            proc = subprocess.run([su_path, "-c", f"{pm_bin} list packages"], capture_output=True, text=True, timeout=5)
+            pkg_lines = proc.stdout.splitlines()
+        except Exception:
+            pass
+
+    installed = [line.strip().replace("package:", "") for line in pkg_lines if line.strip()]
+
+    if keyword_or_pkg in installed:
+        return keyword_or_pkg
+    if alias_match and alias_match in installed:
+        return alias_match
+
+    # Search loosely
+    matches = [pkg for pkg in installed if keyword_or_pkg.lower() in pkg.lower()]
+    if matches:
+        matches.sort(key=len)
+        return matches[0]
+
     if alias_match:
         return alias_match
 
@@ -139,12 +150,27 @@ def create_app_backup(package_name: str, output_dir: pathlib.Path, mode: str = "
     user_tag = f"_{detected_user}" if detected_user else ""
     clean_name = f"{raw_clean_name}{user_tag}"
 
+    is_root = hasattr(os, "geteuid") and os.geteuid() == 0
+    su_path = shutil.which("su")
+
     # 1. Extract APKs if mode is 'full' or 'apk'
     apk_paths = []
     if mode in ("full", "apk"):
-        pm_cmd = [_get_pm_bin(), "path", package_name]
-        proc = subprocess.run(pm_cmd, capture_output=True, text=True, timeout=5)
-        for line in proc.stdout.splitlines():
+        pm_bin = _get_pm_bin()
+        pm_out = ""
+        try:
+            proc = subprocess.run([pm_bin, "path", package_name], capture_output=True, text=True, timeout=5)
+            pm_out = proc.stdout or ""
+        except Exception:
+            pass
+        if not pm_out and not is_root and su_path:
+            try:
+                proc = subprocess.run([su_path, "-c", f"{pm_bin} path {shlex.quote(package_name)}"], capture_output=True, text=True, timeout=5)
+                pm_out = proc.stdout or ""
+            except Exception:
+                pass
+
+        for line in pm_out.splitlines():
             if line.startswith("package:"):
                 apk_paths.append(pathlib.Path(line.replace("package:", "").strip()))
 
@@ -167,12 +193,10 @@ def create_app_backup(package_name: str, output_dir: pathlib.Path, mode: str = "
 
     # Extract Data directory for 'full' and 'data' modes
     temp_data_tar = output_dir / "data.tar.gz"
-    su_cmd = f"cd /data/data && tar --exclude='*/cache' --exclude='*/code_cache' --exclude='cache' --exclude='code_cache' -czf {shlex.quote(str(temp_data_tar))} {shlex.quote(package_name)}"
-    is_root = hasattr(os, "geteuid") and os.geteuid() == 0
+    su_cmd = f"cd /data/data && tar --exclude='*/cache' --exclude='*/code_cache' --exclude='cache' --exclude='code_cache' -czf {shlex.quote(str(temp_data_tar))} {shlex.quote(package_name)} && chmod 666 {shlex.quote(str(temp_data_tar))} 2>/dev/null || true"
     if is_root:
         subprocess.run(["sh", "-c", su_cmd], capture_output=True, timeout=30)
     else:
-        su_path = shutil.which("su")
         if su_path:
             subprocess.run([su_path, "-c", su_cmd], capture_output=True, timeout=30)
 
