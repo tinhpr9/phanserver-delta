@@ -205,7 +205,10 @@ def handle_incoming_batch_action(
             )
             return True
         try:
-            from . import backup_manager
+            try:
+                from agent import backup_manager
+            except ImportError:
+                import backup_manager
             pkg_target = message.get("package") or "taskbar"
             tag_target = message.get("release_tag") or "Backup"
             backup_res = backup_manager.run_backup_and_upload(pkg_target, tag=tag_target)
