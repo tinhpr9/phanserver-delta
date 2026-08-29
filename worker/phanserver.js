@@ -272,25 +272,38 @@ export async function handleUpdate(update, env, fleetState) {
   }
 
   if (input.match(/^\/backup(?:\s|$)/)) {
-    const parts = input.split(/\s+/);
-    if (parts.length < 2 || parts.length > 4) {
-      await telegram(env, "sendMessage", { chat_id: chatId, text: "Cú pháp: /backup <device1,device2...> [app] [full|apk|data]" });
+    const raw = input.replace(/^\/backup\s*/, "").trim();
+    if (!raw) {
+      await telegram(env, "sendMessage", { chat_id: chatId, text: "Cú pháp: /backup <device1,device2...> [app1,app2... hoặc all] [data|apk|full]" });
       return;
     }
-    const targetStr = parts[1];
-    const pkg = parts[2] || "taskbar";
-    const mode = (parts[3] || "full").toLowerCase();
+    const tokens = raw.split(/\s+/);
+    const targetStr = tokens[0];
+    let mode = "full";
+    let pkgStr = "taskbar";
+    
+    if (tokens.length > 1) {
+      const lastToken = tokens[tokens.length - 1].toLowerCase();
+      if (["data", "apk", "full"].includes(lastToken)) {
+        mode = lastToken;
+        pkgStr = tokens.slice(1, -1).join(" ") || "taskbar";
+      } else {
+        pkgStr = tokens.slice(1).join(" ");
+      }
+    }
+    pkgStr = pkgStr.replace(/\s*,\s*/g, ",").trim() || "taskbar";
+
     try {
       const ids = await resolveAndValidateTelegramTargets(targetStr, env, fleetState);
       const result = await fleetStateCall(env, fleetState, "/aot/hub/control", {
         method: "POST",
-        body: { protocol: "fleet-batch-v1", kind: "backup_app", target_device_ids: ids, package: pkg, mode, release_tag: "Backup", telegram_chat_id: chatId }
+        body: { protocol: "fleet-batch-v1", kind: "backup_app", target_device_ids: ids, package: pkgStr, mode, release_tag: "Backup", telegram_chat_id: chatId }
       });
       if (!result?.response?.ok) throw new Error(result?.data?.error || "backup_queue_failed");
       const modeLabel = mode === "apk" ? "Chỉ APK" : (mode === "data" ? "Chỉ Data cấu hình" : "Đầy đủ APK + Data");
       await telegram(env, "sendMessage", {
         chat_id: chatId,
-        text: `📦 <b>ĐÃ XẾP LỆNH SAO LƯU (${modeLabel.toUpperCase()})</b>\nThiết bị: <code>${ids.join(", ")}</code>\nỨng dụng: <code>${pkg}</code>\nChế độ: <b>${modeLabel}</b>\nThiết bị sẽ đóng gói và upload lên GitHub Release (Tag: Backup) ở heartbeat kế tiếp.`,
+        text: `📦 <b>ĐÃ XẾP LỆNH SAO LƯU (${modeLabel.toUpperCase()})</b>\nThiết bị: <code>${ids.join(", ")}</code>\nỨng dụng: <code>${pkgStr}</code>\nChế độ: <b>${modeLabel}</b>\nThiết bị sẽ đóng gói và upload lên GitHub Release (Tag: Backup) ở heartbeat kế tiếp.`,
         parse_mode: "HTML"
       });
     } catch (error) {

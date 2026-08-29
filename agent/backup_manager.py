@@ -309,20 +309,45 @@ def run_backup_and_upload(
     repo: str = "tinhpr9/phanserver-delta",
     tag: str = "Backup"
 ) -> dict[str, Any]:
-    """Orchestrate finding package, packaging APK, Data, or both, and uploading to GitHub Release."""
-    package_name = find_package_name(keyword_or_pkg)
+    """Orchestrate finding package(s), packaging APK, Data, or both, and uploading to GitHub Release."""
+    raw = keyword_or_pkg.strip()
+    if raw.lower() in ("all", "clones"):
+        targets = ["hi", "hj", "hk", "hl", "hm", "hn", "ho", "hp", "hq", "hr", "roblox"]
+    elif "," in raw:
+        targets = [p.strip() for p in raw.split(",") if p.strip()]
+    else:
+        targets = [raw]
+
+    results = []
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp_path = pathlib.Path(tmpdir)
-        bundle_file = create_app_backup(package_name, tmp_path, mode=mode)
-        download_url = upload_to_github_release(bundle_file, repo=repo, tag=tag)
-        return {
-            "ok": True,
-            "package_name": package_name,
-            "mode": mode,
-            "filename": bundle_file.name,
-            "download_url": download_url,
-            "tag": tag,
-        }
+        for t in targets:
+            try:
+                pkg_name = find_package_name(t)
+                bundle_file = create_app_backup(pkg_name, tmp_path, mode=mode)
+                download_url = upload_to_github_release(bundle_file, repo=repo, tag=tag)
+                results.append({
+                    "ok": True,
+                    "package_name": pkg_name,
+                    "mode": mode,
+                    "filename": bundle_file.name,
+                    "download_url": download_url,
+                })
+            except Exception as e:
+                print(f"[WARN] Backup failed for target {t}: {e}", flush=True)
+
+    if not results:
+        raise BackupError(f"Không thể sao lưu bất kỳ gói ứng dụng nào trong danh sách: {keyword_or_pkg}")
+
+    return {
+        "ok": True,
+        "mode": mode,
+        "tag": tag,
+        "count": len(results),
+        "results": results,
+        "filename": ", ".join(r["filename"] for r in results),
+        "download_url": results[0]["download_url"] if results else None
+    }
 
 
 if __name__ == "__main__":
