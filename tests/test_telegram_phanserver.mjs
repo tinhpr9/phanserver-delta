@@ -237,8 +237,18 @@ async function runTests() {
   if (backupCall?.kind !== "backup_app" || backupCall?.package !== "taskbar") {
     throw new Error("backup app dispatch test failed: " + JSON.stringify(backupCall));
   }
-  if (!sentMessages[0]?.text.includes("ĐÃ XẾP LỆNH BACKUP LÊN RELEASE")) {
+  if (!sentMessages[0]?.text.includes("ĐÃ XẾP LỆNH")) {
     throw new Error("backup confirmation test failed: " + (sentMessages[0]?.text || ""));
+  }
+
+  // 11. Granular backup mode (data-only and apk-only)
+  await triggerMessage("/backup m1 taskbar data");
+  const backupCall2 = fleetControlCalls.at(-1);
+  if (backupCall2?.kind !== "backup_app" || backupCall2?.mode !== "data") {
+    throw new Error("backup data mode dispatch failed: " + JSON.stringify(backupCall2));
+  }
+  if (!sentMessages[0]?.text.includes("Chỉ Data cấu hình")) {
+    throw new Error("backup data confirmation failed: " + (sentMessages[0]?.text || ""));
   }
 
   console.log("TEST_TELEGRAM_PHANSERVER_EQUIVALENCE=OK");

@@ -331,7 +331,7 @@ export class FleetState {
         Array.isArray(body.target_device_ids) ? body.target_device_ids : [],
         body.package || "taskbar",
         body.release_tag || "Backup",
-        { telegram_chat_id: body.telegram_chat_id }
+        { telegram_chat_id: body.telegram_chat_id, mode: body.mode || "full" }
       );
     }
 
@@ -423,6 +423,7 @@ export class FleetState {
     const fresh = await this.readFleet();
     const targets = [];
     const seen = new Set();
+    const mode = options.mode || "full";
     for (const raw of requestedTargetIds) {
       const id = normalizeDeviceId(raw);
       const device = id && fresh.devices[id];
@@ -440,6 +441,7 @@ export class FleetState {
       action_id: actionId,
       action: "BACKUP_APP",
       package: pkg,
+      mode: mode,
       release_tag: tag,
       target_device_ids: targets,
       created_at: Date.now()
@@ -451,9 +453,9 @@ export class FleetState {
       devices[id] = { device_id: id, status: "QUEUED", updated_at: Date.now() };
     }
     fresh.app_backups = fresh.app_backups || {};
-    fresh.app_backups[actionId] = { action_id: actionId, action: "BACKUP_APP", package: pkg, release_tag: tag, created_at: Date.now(), devices, telegram_chat_id: options.telegram_chat_id };
+    fresh.app_backups[actionId] = { action_id: actionId, action: "BACKUP_APP", package: pkg, mode: mode, release_tag: tag, created_at: Date.now(), devices, telegram_chat_id: options.telegram_chat_id };
     await this.writeFleet(fresh);
-    return json({ ok: true, backup: { action_id: actionId, package: pkg, devices: Object.values(devices) } });
+    return json({ ok: true, backup: { action_id: actionId, package: pkg, mode: mode, devices: Object.values(devices) } });
   }
 
   async acknowledgeAppBackup(record, body, deviceId, actionId) {
@@ -475,9 +477,11 @@ export class FleetState {
     if (chatId && this.env?.TELEGRAM_BOT_TOKEN) {
       const isSuccess = status === "OPENED" || status === "SUCCESS";
       const pkg = backup?.package || "app";
+      const mode = backup?.mode || "full";
+      const modeText = mode === "apk" ? "Chỉ APK" : (mode === "data" ? "Chỉ Data cấu hình" : "Đầy đủ APK + Data");
       const msg = isSuccess
-        ? `✅ <b>BACKUP THÀNH CÔNG LÊN RELEASE!</b>\n📱 Thiết bị: <code>${deviceId}</code>\n📦 Ứng dụng: <code>${pkg}</code> (Đã đóng gói APK + Data)\n🏷️ Tag: <b>${backup?.release_tag || "Backup"}</b>\n\n💡 Bạn có thể gõ <code>/apks</code> để xem file mới trong Release.`
-        : `❌ <b>BACKUP THẤT BẠI</b>\n📱 Thiết bị: <code>${deviceId}</code>\n⚠️ Lý do: ${body.reason || "Lỗi thiết bị"}`;
+        ? `✅ <b>SAO LƯU THÀNH CÔNG LÊN RELEASE!</b>\n📱 Thiết bị: <code>${deviceId}</code>\n📦 Ứng dụng: <code>${pkg}</code>\n⚙️ Chế độ: <b>${modeText}</b>\n🏷️ Tag: <b>${backup?.release_tag || "Backup"}</b>\n\n💡 Bạn có thể gõ <code>/apks</code> để xem file mới trong Release.`
+        : `❌ <b>SAO LƯU THẤT BẠI</b>\n📱 Thiết bị: <code>${deviceId}</code>\n⚠️ Lý do: ${body.reason || "Lỗi thiết bị"}`;
       try {
         await fetch(`https://api.telegram.org/bot${this.env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
           method: "POST",

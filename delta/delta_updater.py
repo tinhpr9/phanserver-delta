@@ -771,22 +771,24 @@ def run_delta_update(
                     flush=True,
                 )
 
-        if not install_queue:
-            raise DeltaUpdaterError("UPDATE_DELTA verified release but found zero APKs")
-
+        installed_count = len(install_queue)
         for index, apk in enumerate(install_queue, 1):
             print(f"[INSTALL] {index}/{len(install_queue)} {apk.name}", flush=True)
             install_apk(apk)
-        installed_count = len(install_queue)
 
         # Restore application data from ZIP bundles if present
+        restored_count = 0
         for _, target in staged:
             if target.name.lower().endswith(".zip"):
                 try:
                     if restore_zip_data(target):
+                        restored_count += 1
                         print(f"[RESTORE] App data restored successfully from {target.name}", flush=True)
                 except Exception as ex:
                     print(f"[WARN] Failed to restore data from {target.name}: {ex}", flush=True)
+
+        if installed_count == 0 and restored_count == 0:
+            raise DeltaUpdaterError("UPDATE_DELTA verified release but found zero APKs and zero restorable data packages")
 
     return {
         "ok": True,

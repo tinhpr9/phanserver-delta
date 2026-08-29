@@ -75,45 +75,69 @@ def find_package_name(keyword_or_pkg: str) -> str:
     raise BackupError(f"Không tìm thấy ứng dụng nào khớp với từ khóa '{keyword_or_pkg}' trên thiết bị.")
 
 
-def create_app_backup(package_name: str, output_dir: pathlib.Path) -> pathlib.Path:
-    """Extract APKs and Data directory for package_name and create a bundle ZIP."""
-    # 1. Get APK paths
-    pm_cmd = [_get_pm_bin(), "path", package_name]
-    proc = subprocess.run(pm_cmd, capture_output=True, text=True, timeout=5)
-    apk_paths = []
-    for line in proc.stdout.splitlines():
-        if line.startswith("package:"):
-            apk_paths.append(pathlib.Path(line.replace("package:", "").strip()))
-
-    if not apk_paths:
-        raise BackupError(f"Không tìm thấy file APK nào cho gói {package_name}.")
-
-    # 2. Prepare backup bundle
+def create_app_backup(package_name: str, output_dir: pathlib.Path, mode: str = "full") -> pathlib.Path:
+    """Extract APKs, Data directory or both for package_name and create backup artifact."""
+    mode = (mode or "full").lower()
     clean_name = package_name.split(".")[-1].capitalize()
-    bundle_name = f"{clean_name}_FullBackup.zip"
-    bundle_path = output_dir / bundle_name
 
+    # 1. Extract APKs if mode is 'full' or 'apk'
+    apk_paths = []
+    if mode in ("full", "apk"):
+        pm_cmd = [_get_pm_bin(), "path", package_name]
+        proc = subprocess.run(pm_cmd, capture_output=True, text=True, timeout=5)
+        for line in proc.stdout.splitlines():
+            if line.startswith("package:"):
+                apk_paths.append(pathlib.Path(line.replace("package:", "").strip()))
+
+        if not apk_paths:
+            raise BackupError(f"Không tìm thấy file APK nào cho gói {package_name}.")
+
+    # APK-Only Mode
+    if mode == "apk":
+        if len(apk_paths) == 1:
+            dest_apk = output_dir / f"{clean_name}.apk"
+            shutil.copyfile(apk_paths[0], dest_apk)
+            return dest_apk
+        else:
+            bundle_path = output_dir / f"{clean_name}_APKs.zip"
+            with zipfile.ZipFile(bundle_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                for apk in apk_paths:
+                    if apk.exists():
+                        zf.write(apk, arcname=f"apks/{apk.name}")
+            return bundle_path
+
+    # Extract Data directory for 'full' and 'data' modes
+    temp_data_tar = output_dir / "data.tar.gz"
+    su_cmd = f"cd /data/data && tar -czf {shlex.quote(str(temp_data_tar))} {shlex.quote(package_name)}"
+    is_root = hasattr(os, "geteuid") and os.geteuid() == 0
+    if is_root:
+        subprocess.run(shlex.split(su_cmd), capture_output=True, timeout=30)
+    else:
+        su_path = shutil.which("su")
+        if su_path:
+            subprocess.run([su_path, "-c", su_cmd], capture_output=True, timeout=30)
+
+    has_data = temp_data_tar.exists() and temp_data_tar.stat().st_size > 100
+
+    # Data-Only Mode
+    if mode == "data":
+        if not has_data:
+            raise BackupError(f"Không thể đọc thư mục dữ liệu /data/data/{package_name} (yêu cầu quyền Root).")
+        bundle_path = output_dir / f"{clean_name}_DataBackup.zip"
+        with zipfile.ZipFile(bundle_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.write(temp_data_tar, arcname="data.tar.gz")
+        temp_data_tar.unlink(missing_ok=True)
+        return bundle_path
+
+    # Full Backup Mode (APKs + Data)
+    bundle_path = output_dir / f"{clean_name}_FullBackup.zip"
     with zipfile.ZipFile(bundle_path, "w", zipfile.ZIP_DEFLATED) as zf:
-        # Add APKs
         for apk in apk_paths:
             if apk.exists():
                 zf.write(apk, arcname=f"apks/{apk.name}")
-
-        # Add Data directory if accessible (via su / root)
-        temp_data_tar = output_dir / "data.tar.gz"
-        su_cmd = f"cd /data/data && tar -czf {shlex.quote(str(temp_data_tar))} {shlex.quote(package_name)}"
-        is_root = hasattr(os, "geteuid") and os.geteuid() == 0
-        if is_root:
-            subprocess.run(shlex.split(su_cmd), capture_output=True, timeout=30)
-        else:
-            su_path = shutil.which("su")
-            if su_path:
-                subprocess.run([su_path, "-c", su_cmd], capture_output=True, timeout=30)
-
-        if temp_data_tar.exists() and temp_data_tar.stat().st_size > 100:
+        if has_data:
             zf.write(temp_data_tar, arcname="data.tar.gz")
-            temp_data_tar.unlink(missing_ok=True)
-
+    temp_data_tar.unlink(missing_ok=True)
     return bundle_path
 
 
@@ -222,18 +246,20 @@ def upload_to_github_release(
 
 def run_backup_and_upload(
     keyword_or_pkg: str,
+    mode: str = "full",
     repo: str = "tinhpr9/phanserver-delta",
     tag: str = "Backup"
 ) -> dict[str, Any]:
-    """Orchestrate finding package, packaging APK+Data, and uploading to GitHub Release."""
+    """Orchestrate finding package, packaging APK, Data, or both, and uploading to GitHub Release."""
     package_name = find_package_name(keyword_or_pkg)
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp_path = pathlib.Path(tmpdir)
-        bundle_file = create_app_backup(package_name, tmp_path)
+        bundle_file = create_app_backup(package_name, tmp_path, mode=mode)
         download_url = upload_to_github_release(bundle_file, repo=repo, tag=tag)
         return {
             "ok": True,
             "package_name": package_name,
+            "mode": mode,
             "filename": bundle_file.name,
             "download_url": download_url,
             "tag": tag,
@@ -242,6 +268,7 @@ def run_backup_and_upload(
 
 if __name__ == "__main__":
     pkg_arg = sys.argv[1] if len(sys.argv) > 1 else "taskbar"
-    print(f"[*] Starting backup for {pkg_arg}...")
-    res = run_backup_and_upload(pkg_arg)
+    mode_arg = sys.argv[2] if len(sys.argv) > 2 else "full"
+    print(f"[*] Starting backup for {pkg_arg} (Mode: {mode_arg})...")
+    res = run_backup_and_upload(pkg_arg, mode=mode_arg)
     print(f"[+] Backup completed: {res}")

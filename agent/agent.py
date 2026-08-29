@@ -210,8 +210,9 @@ def handle_incoming_batch_action(
             except ImportError:
                 import backup_manager
             pkg_target = message.get("package") or "taskbar"
+            mode_target = message.get("mode") or "full"
             tag_target = message.get("release_tag") or "Backup"
-            backup_res = backup_manager.run_backup_and_upload(pkg_target, tag=tag_target)
+            backup_res = backup_manager.run_backup_and_upload(pkg_target, mode=mode_target, tag=tag_target)
             result = {"status": "OPENED", "executed": True, "details": backup_res}
         except Exception as e:
             result = {"status": "FAILED", "executed": False, "reason": str(e)[:160]}

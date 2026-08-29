@@ -271,22 +271,25 @@ export async function handleUpdate(update, env, fleetState) {
 
   if (input.match(/^\/backup(?:\s|$)/)) {
     const parts = input.split(/\s+/);
-    if (parts.length < 2 || parts.length > 3) {
-      await telegram(env, "sendMessage", { chat_id: chatId, text: "Cú pháp: /backup <device1,device2...> [app_or_package]" });
+    if (parts.length < 2 || parts.length > 4) {
+      await telegram(env, "sendMessage", { chat_id: chatId, text: "Cú pháp: /backup <device1,device2...> [app] [full|apk|data]" });
       return;
     }
     const targetStr = parts[1];
     const pkg = parts[2] || "taskbar";
+    const mode = (parts[3] || "full").toLowerCase();
     try {
       const ids = await resolveAndValidateTelegramTargets(targetStr, env, fleetState);
       const result = await fleetStateCall(env, fleetState, "/aot/hub/control", {
         method: "POST",
-        body: { protocol: "fleet-batch-v1", kind: "backup_app", target_device_ids: ids, package: pkg, release_tag: "Backup", telegram_chat_id: chatId }
+        body: { protocol: "fleet-batch-v1", kind: "backup_app", target_device_ids: ids, package: pkg, mode, release_tag: "Backup", telegram_chat_id: chatId }
       });
       if (!result?.response?.ok) throw new Error(result?.data?.error || "backup_queue_failed");
+      const modeLabel = mode === "apk" ? "Chỉ APK" : (mode === "data" ? "Chỉ Data cấu hình" : "Đầy đủ APK + Data");
       await telegram(env, "sendMessage", {
         chat_id: chatId,
-        text: `📦 ĐÃ XẾP LỆNH BACKUP LÊN RELEASE\nThiết bị: ${ids.join(", ")}\nỨng dụng: ${pkg}\nThiết bị sẽ đóng gói APK + Data và upload lên GitHub Release (Tag: Backup) ở heartbeat kế tiếp.`
+        text: `📦 <b>ĐÃ XẾP LỆNH SAO LƯU (${modeLabel.toUpperCase()})</b>\nThiết bị: <code>${ids.join(", ")}</code>\nỨng dụng: <code>${pkg}</code>\nChế độ: <b>${modeLabel}</b>\nThiết bị sẽ đóng gói và upload lên GitHub Release (Tag: Backup) ở heartbeat kế tiếp.`,
+        parse_mode: "HTML"
       });
     } catch (error) {
       await telegram(env, "sendMessage", { chat_id: chatId, text: "Lỗi BACKUP_APP: " + String(error.message || error) });
