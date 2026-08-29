@@ -405,7 +405,7 @@ def create_folder_backup(folder_name: str, folder_path: str, output_dir: pathlib
     """Compress an Android folder (e.g. /sdcard/Delta or /sdcard/Download/Shouko) into a backup bundle."""
     clean_name = folder_name.capitalize()
     bundle_path = output_dir / f"{clean_name}_FolderBackup.zip"
-    temp_tar = pathlib.Path(f"/data/local/tmp/{clean_name}_folder.tar.gz")
+    temp_tar = output_dir / f".temp_{clean_name}_folder.tar.gz"
     temp_tar.unlink(missing_ok=True)
 
     tar_dest = shlex.quote(str(temp_tar))
