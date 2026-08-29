@@ -191,8 +191,23 @@ export class FleetState {
     existing.capabilities = Array.isArray(body?.capabilities) ? body.capabilities : [AOT_ALLOCATE_SERVER_CAPABILITY, "update_delta"];
     record.devices[deviceId] = existing;
 
-    const command = (record.pending_actions[deviceId] || []).find(item => !item.acknowledged_at) || null;
-    if (command) command.delivered_at = Date.now();
+    const now = Date.now();
+    const actions = record.pending_actions[deviceId] || [];
+    for (const item of actions) {
+      if (!item.acknowledged_at && item.delivered_at && now - item.delivered_at > 90000) {
+        item.acknowledged_at = now;
+        item.expired = true;
+      }
+    }
+    const command = actions.find(item => !item.acknowledged_at) || null;
+    if (command) {
+      command.delivered_at = command.delivered_at || now;
+      command.delivery_count = (command.delivery_count || 0) + 1;
+      if (command.delivery_count > 3 && now - command.delivered_at > 60000) {
+        command.acknowledged_at = now;
+        command.expired = true;
+      }
+    }
     await this.writeFleet(record);
     return json({ ok: true, device_id: deviceId, command });
   }
