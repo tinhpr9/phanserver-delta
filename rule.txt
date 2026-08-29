@@ -110,4 +110,13 @@ always_on: true
 - **Yêu Cầu Chỉ Định Đích Danh Khi Khôi Phục Tài Khoản (Explicit Identification for Account Restoration)**: Dữ liệu tài khoản cá nhân CHỈ ĐƯỢC PHÉP khôi phục khi người dùng chủ động yêu cầu đích danh bằng Tên tài khoản (Username), Số thứ tự tệp (Index), hoặc Từ khóa nhận diện cụ thể kèm App đích (Target App/Package).
 - **Đồng Bộ Song Song Cả Repo Và Hệ Thống Luật (Dual-Channel Sync)**: Bắt buộc áp dụng ngay và đồng bộ điều luật này vào tất cả các kênh lưu trữ SSOT.
 
+## 18. QUY TẮC BẮT BUỘC RÀ SOÁT CHUYÊN SÂU TOÀN DIỆN SAU MỖI LẦN SỬA ĐỔI (STRICT_MANDATORY_DEEP_AUDIT_AFTER_EVERY_MODIFICATION_RULE - Hard Rule)
+- **Cấm Bàn Giao Khi Chưa Rà Soát Tận Gốc (No Handoff Without Comprehensive Audit)**: Mỗi khi thực hiện bất kỳ sửa đổi nào (dù là một dòng code, một hàm hay một tính năng mới), Antigravity BẮT BUỘC phải thực hiện ngay quy trình rà soát chuyên sâu toàn bộ chu trình sống (Lifecycle Audit) trên tất cả các module liên quan trước khi bàn giao cho người dùng.
+- **4 Trụ Cột Rà Soát Bắt Buộc (4 Mandatory Audit Pillars)**:
+  1. *Toàn Vẹn Phân Tích Cú Pháp (Parsing & Command Grammar)*: Kiểm tra các từ khóa đại diện (`all`, `*`, `clones`, group names, single IDs), phân tách dấu phẩy, khoảng trắng, chữ hoa/thường.
+  2. *Bất Đồng Bộ & Xung Đột Tiến Trình (Concurrency, Async, Ordering & Subprocess)*: Kiểm tra thứ tự các lệnh hệ thống, blocking vs non-blocking, quản lý PID, quyền Root/SELinux.
+  3. *Toàn Vẹn Dữ Liệu & Ranh Giới (Data Boundary & Isolation Integrity)*: Đảm bảo không có hiện tượng nạp đè dữ liệu tài khoản cá nhân, rò rỉ session hay mất mát tệp tin.
+  4. *Thực Nghiệm Toàn Chuỗi 6/6 Suites (Full-Suite Automated Test Pass)*: Bắt buộc chạy lại 100% test suite, xác nhận không có bất kỳ ngoại lệ (regression) nào.
+- **Đồng Bộ Song Song Cả Repo Và Hệ Thống Luật (Dual-Channel Sync)**: Bắt buộc áp dụng ngay và đồng bộ điều luật này vào tất cả các kênh lưu trữ SSOT.
+
 

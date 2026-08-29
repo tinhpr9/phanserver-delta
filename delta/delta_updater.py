@@ -623,6 +623,16 @@ def restore_zip_data(zip_path: str | pathlib.Path, target_pkg: Optional[str] = N
             restore_script = f"""
             set -e
             tar -xzf {shlex.quote(tar_cache_path)} -C /data/data/
+            for pkg_dir in $(tar -tf {shlex.quote(tar_cache_path)} | head -n 1 | cut -d/ -f1); do
+                if [ -n "$pkg_dir" ] && [ -d "/data/data/$pkg_dir" ]; then
+                    OWNER=$(stat -c "%u:%g" "/data/data/$pkg_dir" 2>/dev/null || stat -c "%u:%g" /data/data)
+                    if [ -n "$OWNER" ]; then
+                        chown -R "$OWNER" "/data/data/$pkg_dir"
+                    fi
+                    chmod -R 771 "/data/data/$pkg_dir"
+                    restorecon -R "/data/data/$pkg_dir" 2>/dev/null || true
+                fi
+            done
             rm -f {shlex.quote(tar_cache_path)}
             """
 
