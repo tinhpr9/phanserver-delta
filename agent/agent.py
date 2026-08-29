@@ -240,15 +240,14 @@ def handle_incoming_batch_action(
             )
             return True
         try:
-            upgraded = check_and_apply_auto_update(force=True)
+            upgraded, err_msg = check_and_apply_auto_update(force=True)
             status = "OPENED" if upgraded else "FAILED"
-            reason = None if upgraded else "git_fetch_or_reset_failed"
             send_ack(
                 report_url, secret, device_id, action_id,
-                status=status, reason=reason,
+                status=status, reason=err_msg,
                 executed=upgraded, batch_action="UPGRADE_AGENT",
             )
-            completed[action_id] = {"status": status, "executed": upgraded, "reason": reason}
+            completed[action_id] = {"status": status, "executed": upgraded, "reason": err_msg}
             state_path.parent.mkdir(parents=True, exist_ok=True)
             state_path.write_text(json.dumps(state), encoding="utf-8")
             return True
@@ -263,40 +262,46 @@ def handle_incoming_batch_action(
     return False
 
 
-def check_and_apply_auto_update(branch: str = "fix/delta-stability", force: bool = False) -> bool:
+def check_and_apply_auto_update(branch: str = "fix/delta-stability", force: bool = False) -> tuple[bool, Optional[str]]:
     """Check GitHub remote branch and update / restart process in-place."""
+    import shutil
     root = ROOT
+    git_bin = shutil.which("git") or "/data/data/com.termux/files/usr/bin/git" or "git"
     if not (root / ".git").is_dir():
         print(f"[UPGRADE] Thư mục .git không tồn tại tại {root}", flush=True)
-        return False
+        return False, f"not_a_git_repo: {root}"
     try:
+        fetch_cmd = [git_bin, "-c", "safe.directory=*", "-C", str(root), "fetch", "origin", branch]
         fetch_res = subprocess.run(
-            ["git", "-C", str(root), "fetch", "origin", branch],
+            fetch_cmd,
             capture_output=True, text=True, timeout=30
         )
         if fetch_res.returncode != 0:
-            print(f"[UPGRADE] git fetch thất bại: {fetch_res.stderr.strip()}", flush=True)
-            return False
+            err = (fetch_res.stderr or fetch_res.stdout).strip()[:140]
+            print(f"[UPGRADE] git fetch thất bại: {err}", flush=True)
+            return False, f"fetch_err: {err}"
 
         remote_target = f"origin/{branch}"
         print(f"[UPGRADE] Đang nạp bản cập nhật mới từ GitHub ({remote_target})...", flush=True)
+        reset_cmd = [git_bin, "-c", "safe.directory=*", "-C", str(root), "reset", "--hard", remote_target]
         reset_res = subprocess.run(
-            ["git", "-C", str(root), "reset", "--hard", remote_target],
+            reset_cmd,
             capture_output=True, text=True, timeout=30
         )
         if reset_res.returncode != 0:
-            print(f"[UPGRADE] git reset thất bại: {reset_res.stderr.strip()}", flush=True)
-            return False
+            err = (reset_res.stderr or reset_res.stdout).strip()[:140]
+            print(f"[UPGRADE] git reset thất bại: {err}", flush=True)
+            return False, f"reset_err: {err}"
 
         print("[UPGRADE] Nạp code mới thành công! Đang tự khởi động lại Agent...", flush=True)
         script_file = pathlib.Path(__file__).resolve()
         args = [sys.executable, str(script_file)] + [a for a in sys.argv[1:] if a != str(script_file)]
         time.sleep(1)
         os.execv(sys.executable, args)
-        return True
+        return True, None
     except Exception as e:
         print(f"[UPGRADE] Thất bại: {e}", flush=True)
-    return False
+        return False, f"upgrade_ex: {str(e)[:140]}"
 
 
 def run_agent_loop(
