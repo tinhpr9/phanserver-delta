@@ -119,19 +119,104 @@ def create_app_backup(package_name: str, output_dir: pathlib.Path) -> pathlib.Pa
 def upload_to_github_release(
     file_path: pathlib.Path,
     repo: str = "tinhpr9/phanserver-delta",
-    tag: str = "Backup"
+    tag: str = "Backup",
+    token: Optional[str] = None
 ) -> str:
-    """Upload file to GitHub Release using gh CLI."""
+    """Upload file to GitHub Release using REST API or gh CLI."""
+    file_path = pathlib.Path(file_path)
+    if not file_path.is_file():
+        raise BackupError(f"File không tồn tại: {file_path}")
+
+    auth_token = token or os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if not auth_token:
+        cfg_file = pathlib.Path("/storage/emulated/0/Download/Shouko/agent_config.json")
+        if cfg_file.is_file():
+            try:
+                import json
+                with open(cfg_file, "r", encoding="utf-8") as f:
+                    cfg_data = json.load(f)
+                    auth_token = cfg_data.get("github_token")
+            except Exception:
+                pass
+
+    if not auth_token:
+        try:
+            res = subprocess.run(["gh", "auth", "token"], capture_output=True, text=True, timeout=5)
+            if res.returncode == 0 and res.stdout.strip():
+                auth_token = res.stdout.strip()
+        except Exception:
+            pass
+
+    # 1. Direct Python GitHub REST API upload
+    if auth_token:
+        try:
+            import urllib.request, json
+            rel_url = f"https://api.github.com/repos/{repo}/releases/tags/{tag}"
+            req = urllib.request.Request(
+                rel_url,
+                headers={
+                    "Authorization": f"Bearer {auth_token}",
+                    "Accept": "application/vnd.github+json",
+                    "User-Agent": "phanserver-delta-agent/1.0"
+                }
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                rel_data = json.loads(resp.read().decode("utf-8"))
+
+            # Delete old asset if already exists
+            for asset in rel_data.get("assets", []):
+                if asset.get("name") == file_path.name:
+                    del_url = f"https://api.github.com/repos/{repo}/releases/assets/{asset['id']}"
+                    del_req = urllib.request.Request(
+                        del_url,
+                        headers={
+                            "Authorization": f"Bearer {auth_token}",
+                            "Accept": "application/vnd.github+json",
+                            "User-Agent": "phanserver-delta-agent/1.0"
+                        },
+                        method="DELETE"
+                    )
+                    try:
+                        with urllib.request.urlopen(del_req, timeout=10):
+                            pass
+                    except Exception:
+                        pass
+
+            # Upload new asset
+            upload_url_template = rel_data.get("upload_url", "")
+            base_upload_url = upload_url_template.split("{")[0]
+            target_upload_url = f"{base_upload_url}?name={file_path.name}"
+
+            with open(file_path, "rb") as f:
+                payload = f.read()
+
+            up_req = urllib.request.Request(
+                target_upload_url,
+                data=payload,
+                headers={
+                    "Authorization": f"Bearer {auth_token}",
+                    "Content-Type": "application/zip",
+                    "Accept": "application/vnd.github+json",
+                    "User-Agent": "phanserver-delta-agent/1.0"
+                },
+                method="POST"
+            )
+            with urllib.request.urlopen(up_req, timeout=60) as up_resp:
+                if up_resp.status in (200, 201):
+                    return f"https://github.com/{repo}/releases/download/{tag}/{file_path.name}"
+        except Exception as ex:
+            pass
+
+    # 2. Fallback to gh CLI
     gh_bin = shutil.which("gh") or "/data/data/com.termux/files/usr/bin/gh"
-    if not os.path.exists(gh_bin) and not shutil.which("gh"):
-        raise BackupError("Không tìm thấy lệnh 'gh' (GitHub CLI) trên thiết bị để upload Release.")
+    if os.path.exists(gh_bin) or shutil.which("gh"):
+        cmd = [gh_bin, "release", "upload", tag, str(file_path), "--repo", repo, "--clobber"]
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        if proc.returncode == 0:
+            return f"https://github.com/{repo}/releases/download/{tag}/{file_path.name}"
+        raise BackupError(f"Lỗi khi tải lên GitHub Release qua gh: {proc.stderr.strip() or proc.stdout.strip()}")
 
-    cmd = [gh_bin, "release", "upload", tag, str(file_path), "--repo", repo, "--clobber"]
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-    if proc.returncode != 0:
-        raise BackupError(f"Lỗi khi tải lên GitHub Release: {proc.stderr.strip() or proc.stdout.strip()}")
-
-    return f"https://github.com/{repo}/releases/download/{tag}/{file_path.name}"
+    raise BackupError("Không tìm thấy GitHub Token hoặc lệnh 'gh' trên thiết bị để upload Release.")
 
 
 def run_backup_and_upload(
