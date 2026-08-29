@@ -178,7 +178,8 @@ def handle_incoming_batch_action(
             return True
         try:
             selection = message.get("selection")
-            delta_updater.run_delta_update(selection=selection)
+            target_pkg = message.get("target_pkg")
+            delta_updater.run_delta_update(selection=selection, target_pkg=target_pkg)
             result = {"status": "OPENED", "executed": True}
         except Exception as e:
             result = {"status": "FAILED", "executed": False, "reason": str(e)[:160]}

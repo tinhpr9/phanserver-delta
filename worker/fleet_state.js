@@ -321,7 +321,7 @@ export class FleetState {
         record,
         Array.isArray(body.target_device_ids) ? body.target_device_ids : [],
         body.selection || "all",
-        { telegram_chat_id: body.telegram_chat_id }
+        { telegram_chat_id: body.telegram_chat_id, target_pkg: body.target_pkg || null }
       );
     }
 
@@ -350,6 +350,7 @@ export class FleetState {
     const fresh = await this.readFleet();
     const targets = [];
     const seen = new Set();
+    const targetPkg = options.target_pkg || null;
     for (const raw of requestedTargetIds) {
       const id = normalizeDeviceId(raw);
       const device = id && fresh.devices[id];
@@ -370,6 +371,7 @@ export class FleetState {
       action_id: actionId,
       action: "UPDATE_DELTA",
       selection: selection,
+      target_pkg: targetPkg,
       target_device_ids: targets,
       created_at: Date.now()
     };
@@ -379,9 +381,9 @@ export class FleetState {
       fresh.pending_actions[id].push({ ...command, target_device_ids: [id] });
       devices[id] = { device_id: id, status: "QUEUED", updated_at: Date.now() };
     }
-    fresh.delta_updates[actionId] = { action_id: actionId, action: "UPDATE_DELTA", created_at: Date.now(), devices, telegram_chat_id: options.telegram_chat_id };
+    fresh.delta_updates[actionId] = { action_id: actionId, action: "UPDATE_DELTA", target_pkg: targetPkg, created_at: Date.now(), devices, telegram_chat_id: options.telegram_chat_id };
     await this.writeFleet(fresh);
-    return json({ ok: true, update: { action_id: actionId, devices: Object.values(devices) } });
+    return json({ ok: true, update: { action_id: actionId, target_pkg: targetPkg, devices: Object.values(devices) } });
   }
 
   async acknowledgeDeltaUpdate(record, body, deviceId, actionId) {
@@ -404,9 +406,10 @@ export class FleetState {
       const chatId = update?.telegram_chat_id || this.env?.TELEGRAM_ADMIN_USER_ID;
       if (chatId && this.env?.TELEGRAM_BOT_TOKEN) {
         const isSuccess = status === "OPENED";
+        const targetPkgText = update?.target_pkg ? `\n🎯 Ứng dụng đích: <code>${update.target_pkg}</code>` : "";
         const msg = isSuccess
-          ? `✅ <b>UPDATE THÀNH CÔNG!</b>\n📱 Thiết bị: <code>${deviceId}</code>\n📦 Đã hoàn tất cài đặt ứng dụng.`
-          : `❌ <b>UPDATE THẤT BẠI</b>\n📱 Thiết bị: <code>${deviceId}</code>\n⚠️ Lý do: ${body.reason || "Lỗi thiết bị"}`;
+          ? `✅ <b>RESTORE / CÀI ĐẶT THÀNH CÔNG!</b>\n📱 Thiết bị: <code>${deviceId}</code>${targetPkgText}\n📦 Đã hoàn tất cài đặt / khôi phục dữ liệu.`
+          : `❌ <b>RESTORE / CÀI ĐẶT THẤT BẠI</b>\n📱 Thiết bị: <code>${deviceId}</code>\n⚠️ Lý do: ${body.reason || "Lỗi thiết bị"}`;
         try {
           await fetch(`https://api.telegram.org/bot${this.env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
             method: "POST",

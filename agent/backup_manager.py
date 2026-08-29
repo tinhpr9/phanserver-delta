@@ -86,10 +86,58 @@ def find_package_name(keyword_or_pkg: str) -> str:
     raise BackupError(f"Không tìm thấy ứng dụng nào khớp với từ khóa '{keyword_or_pkg}' trên thiết bị.")
 
 
+def detect_app_username(package_name: str) -> Optional[str]:
+    """Inspect /data/data/<package_name>/shared_prefs and files to discover the logged-in username."""
+    is_root = hasattr(os, "geteuid") and os.geteuid() == 0
+    su_path = shutil.which("su")
+    if not is_root and not su_path:
+        return None
+
+    probe_script = f"""
+    for f in /data/data/{shlex.quote(package_name)}/shared_prefs/*.xml /data/data/{shlex.quote(package_name)}/files/*.json; do
+        if [ -f "$f" ]; then
+            cat "$f" 2>/dev/null
+        fi
+    done
+    """
+    try:
+        if is_root:
+            proc = subprocess.run(["sh", "-c", probe_script], capture_output=True, text=True, timeout=5)
+        else:
+            proc = subprocess.run([su_path, "-c", probe_script], capture_output=True, text=True, timeout=5)
+
+        output = proc.stdout or ""
+        if output:
+            patterns = [
+                r'name="[Uu]sername"[^>]*>([a-zA-Z0-9_]{3,25})<',
+                r'name="[Uu]serName"[^>]*>([a-zA-Z0-9_]{3,25})<',
+                r'name="account_name"[^>]*>([a-zA-Z0-9_]{3,25})<',
+                r'name="AccountName"[^>]*>([a-zA-Z0-9_]{3,25})<',
+                r'name="displayName"[^>]*>([a-zA-Z0-9_]{3,25})<',
+                r'name="DisplayName"[^>]*>([a-zA-Z0-9_]{3,25})<',
+                r'name="RobloxUser"[^>]*>([a-zA-Z0-9_]{3,25})<',
+                r'"username"\s*:\s*"([a-zA-Z0-9_]{3,25})"',
+                r'"UserName"\s*:\s*"([a-zA-Z0-9_]{3,25})"',
+                r'"name"\s*:\s*"([a-zA-Z0-9_]{3,25})"',
+            ]
+            for pat in patterns:
+                m = re.search(pat, output, re.IGNORECASE)
+                if m:
+                    candidate = m.group(1).strip()
+                    if candidate and candidate.lower() not in ("true", "false", "null", "none", "default", "guest"):
+                        return candidate
+    except Exception:
+        pass
+    return None
+
+
 def create_app_backup(package_name: str, output_dir: pathlib.Path, mode: str = "full") -> pathlib.Path:
     """Extract APKs, Data directory or both for package_name and create backup artifact."""
     mode = (mode or "full").lower()
-    clean_name = package_name.split(".")[-1].capitalize()
+    raw_clean_name = package_name.split(".")[-1].capitalize()
+    detected_user = detect_app_username(package_name)
+    user_tag = f"_{detected_user}" if detected_user else ""
+    clean_name = f"{raw_clean_name}{user_tag}"
 
     # 1. Extract APKs if mode is 'full' or 'apk'
     apk_paths = []

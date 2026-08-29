@@ -543,8 +543,8 @@ def extract_zip_apks(zip_path: str | pathlib.Path, output_dir: str | pathlib.Pat
     return extracted
 
 
-def restore_zip_data(zip_path: str | pathlib.Path) -> bool:
-    """Extract and restore data.tar.gz from bundle ZIP into /data/data/ if root is available."""
+def restore_zip_data(zip_path: str | pathlib.Path, target_pkg: Optional[str] = None) -> bool:
+    """Extract and restore data.tar.gz from bundle ZIP into /data/data/ with optional target package remap."""
     if not root_available():
         return False
     try:
@@ -563,11 +563,50 @@ def restore_zip_data(zip_path: str | pathlib.Path) -> bool:
             su_path = shutil.which("su")
             is_root = hasattr(os, "geteuid") and os.geteuid() == 0
 
-            extract_cmd = f"tar -xzf {shlex.quote(tmp_tar_path)} -C /data/data/"
-            if is_root:
-                subprocess.run(shlex.split(extract_cmd), **common_kwargs)
-            elif su_path:
-                subprocess.run([su_path, "-c", extract_cmd], **common_kwargs)
+            # Normalize target package if alias given (e.g. "ho" -> "com.tinh.vv.ho")
+            alias_map = {
+                "hi": "com.tinh.vv.hi", "hj": "com.tinh.vv.hj", "hk": "com.tinh.vv.hk",
+                "hl": "com.tinh.vv.hl", "hm": "com.tinh.vv.hm", "hn": "com.tinh.vv.hn",
+                "ho": "com.tinh.vv.ho", "hp": "com.tinh.vv.hp", "hq": "com.tinh.vv.hq",
+                "hr": "com.tinh.vv.hr", "roblox": "com.roblox.client", "taskbar": "com.farmerbb.taskbar"
+            }
+            if target_pkg:
+                target_pkg = alias_map.get(target_pkg.lower(), target_pkg)
+
+            if target_pkg:
+                # Cross-clone target restore: extract to temp directory, then sync into target_pkg
+                with tempfile.TemporaryDirectory() as tmp_ext_dir:
+                    extract_cmd = f"tar -xzf {shlex.quote(tmp_tar_path)} -C {shlex.quote(tmp_ext_dir)}"
+                    if is_root:
+                        subprocess.run(shlex.split(extract_cmd), **common_kwargs)
+                    elif su_path:
+                        subprocess.run([su_path, "-c", extract_cmd], **common_kwargs)
+
+                    extracted_subdirs = [p for p in pathlib.Path(tmp_ext_dir).iterdir() if p.is_dir()]
+                    if extracted_subdirs:
+                        src_pkg_dir = extracted_subdirs[0]
+                        dest_pkg_dir = f"/data/data/{target_pkg}"
+                        sync_script = f"""
+                        mkdir -p {shlex.quote(dest_pkg_dir)}
+                        cp -rf {shlex.quote(str(src_pkg_dir))}/* {shlex.quote(dest_pkg_dir)}/ 2>/dev/null || true
+                        OWNER=$(stat -c "%u:%g" {shlex.quote(dest_pkg_dir)} 2>/dev/null || stat -c "%u:%g" /data/data)
+                        if [ -n "$OWNER" ]; then
+                            chown -R $OWNER {shlex.quote(dest_pkg_dir)}
+                        fi
+                        chmod -R 771 {shlex.quote(dest_pkg_dir)}
+                        restorecon -R {shlex.quote(dest_pkg_dir)} 2>/dev/null || true
+                        """
+                        if is_root:
+                            subprocess.run(["sh", "-c", sync_script], **common_kwargs)
+                        elif su_path:
+                            subprocess.run([su_path, "-c", sync_script], **common_kwargs)
+            else:
+                # Standard restore
+                extract_cmd = f"tar -xzf {shlex.quote(tmp_tar_path)} -C /data/data/"
+                if is_root:
+                    subprocess.run(shlex.split(extract_cmd), **common_kwargs)
+                elif su_path:
+                    subprocess.run([su_path, "-c", extract_cmd], **common_kwargs)
 
             try:
                 os.unlink(tmp_tar_path)
@@ -729,6 +768,7 @@ def run_delta_update(
     manifest_source: Optional[str | pathlib.Path | dict] = None,
     download_dir: Optional[str | pathlib.Path] = None,
     selection: Optional[str] = None,
+    target_pkg: Optional[str] = None,
 ) -> dict[str, Any]:
     """Verify every selected APK/ZIP before the first Android install mutation."""
     dl_dir = pathlib.Path(download_dir or DEFAULT_DOWNLOAD_DIR)
@@ -781,7 +821,7 @@ def run_delta_update(
         for _, target in staged:
             if target.name.lower().endswith(".zip"):
                 try:
-                    if restore_zip_data(target):
+                    if restore_zip_data(target, target_pkg=target_pkg):
                         restored_count += 1
                         print(f"[RESTORE] App data restored successfully from {target.name}", flush=True)
                 except Exception as ex:
@@ -797,6 +837,7 @@ def run_delta_update(
         "release_tag": manifest.get("release_tag"),
         "installed_count": installed_count,
         "selection": selection or "all",
+        "target_pkg": target_pkg,
     }
 
 

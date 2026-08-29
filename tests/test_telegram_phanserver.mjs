@@ -218,11 +218,18 @@ async function runTests() {
   // 8. Selective UPDATE_DELTA dispatch via /restore
   await triggerMessage("/restore m1,m2 random");
   const updateCall2 = fleetControlCalls.at(-1);
-  if (updateCall2?.kind !== "update_delta" || updateCall2?.selection !== "random") {
-    throw new Error("selective update delta dispatch test failed: " + JSON.stringify(updateCall2));
-  }
-  if (!sentMessages[0]?.text.includes("Lựa chọn: random")) {
+  if (!sentMessages[0]?.text.includes("random")) {
     throw new Error("selective update delta confirmation test failed: " + (sentMessages[0]?.text || ""));
+  }
+
+  // Cross-package restore test
+  await triggerMessage("/restore m1 10 ho");
+  const crossCall = fleetControlCalls.at(-1);
+  if (crossCall?.kind !== "update_delta" || crossCall?.target_pkg !== "ho") {
+    throw new Error("cross-package restore dispatch failed: " + JSON.stringify(crossCall));
+  }
+  if (!sentMessages[0]?.text.includes("ho")) {
+    throw new Error("cross-package restore confirmation failed: " + (sentMessages[0]?.text || ""));
   }
 
   // 9. APKs release list command

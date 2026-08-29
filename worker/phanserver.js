@@ -244,23 +244,25 @@ export async function handleUpdate(update, env, fleetState) {
 
   if (input.match(/^\/(?:restore|update)(?:\s|$)/)) {
     const parts = input.split(/\s+/);
-    if (parts.length < 2 || parts.length > 3) {
-      await telegram(env, "sendMessage", { chat_id: chatId, text: "Cú pháp: /restore <device1,device2...> [selection] (hoặc /update)" });
+    if (parts.length < 2 || parts.length > 4) {
+      await telegram(env, "sendMessage", { chat_id: chatId, text: "Cú pháp: /restore <device1,device2...> [selection] [target_app] (hoặc /update)" });
       return;
     }
     const targetStr = parts[1];
     const selection = parts[2] || "all";
+    const targetPkg = parts[3] || null;
     try {
       const ids = await resolveAndValidateTelegramTargets(targetStr, env, fleetState);
       const result = await fleetStateCall(env, fleetState, "/aot/hub/control", {
         method: "POST",
-        body: { protocol: "fleet-batch-v1", kind: "update_delta", target_device_ids: ids, selection, telegram_chat_id: chatId }
+        body: { protocol: "fleet-batch-v1", kind: "update_delta", target_device_ids: ids, selection, target_pkg: targetPkg, telegram_chat_id: chatId }
       });
       if (!result?.response?.ok) throw new Error(result?.data?.error || "restore_queue_failed");
-      const selText = selection !== "all" ? ` (Lựa chọn: ${selection})` : "";
+      const selText = selection !== "all" ? ` (Gói: ${selection})` : "";
+      const targetText = targetPkg ? ` ➔ Nạp vào app: <b>${targetPkg}</b>` : "";
       await telegram(env, "sendMessage", {
         chat_id: chatId,
-        text: `📥 <b>ĐÃ XẾP LỆNH RESTORE (UPDATE_DELTA)</b>: <code>${ids.join(", ")}</code>${selText}\nThiết bị sẽ tải và khôi phục ứng dụng + dữ liệu ở heartbeat kế tiếp.`,
+        text: `📥 <b>ĐÃ XẾP LỆNH RESTORE</b>: <code>${ids.join(", ")}</code>${selText}${targetText}\nThiết bị sẽ tải và khôi phục ứng dụng + dữ liệu ở heartbeat kế tiếp.`,
         parse_mode: "HTML"
       });
     } catch (error) {
