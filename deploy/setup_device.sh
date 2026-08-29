@@ -32,8 +32,18 @@ fi
 
 # 2. Cài đặt các gói phụ thuộc bắt buộc
 echo "[2/6] Cài đặt Python, Git, Chứng chỉ SSL..."
-pkg update -y -o Dpkg::Options::="--force-confnew" 2>/dev/null || true
-pkg install -y git python ca-certificates coreutils
+if command -v pkg >/dev/null 2>&1; then
+    if [ "$(id -u)" = "0" ]; then
+        apt-get update -y 2>/dev/null || true
+        apt-get install -y git python ca-certificates coreutils 2>/dev/null || true
+    else
+        pkg update -y -o Dpkg::Options::="--force-confnew" 2>/dev/null || true
+        pkg install -y git python ca-certificates coreutils 2>/dev/null || true
+    fi
+elif command -v apt-get >/dev/null 2>&1; then
+    apt-get update -y 2>/dev/null || true
+    apt-get install -y git python3 ca-certificates coreutils 2>/dev/null || true
+fi
 
 # 3. Kéo mã nguồn mới nhất từ GitHub
 echo "[3/6] Đồng bộ mã nguồn mới nhất..."
