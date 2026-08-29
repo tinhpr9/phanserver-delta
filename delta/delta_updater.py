@@ -457,30 +457,24 @@ def install_apks(apks: list[pathlib.Path] | pathlib.Path) -> None:
                     )
         else:
             # Multiple Split APK install (App Bundle)
-            # Primary: Native pm install-multiple -r -d
-            # Fallback: PM Session Install
             split_files_args = " ".join(shlex.quote(p) for p in staged_paths)
             install_script = f"""
-            OUT=$(pm install-multiple -r -d {split_files_args} 2>&1)
+            OUT=$(pm install-multiple -r -d -t -g {split_files_args} 2>&1)
             RC=$?
-            if [ $RC -eq 0 ] && echo "$OUT" | grep -q "Success"; then
+            if [ $RC -eq 0 ] && echo "$OUT" | grep -qi "Success"; then
                 echo "$OUT"
                 exit 0
             fi
             
-            # Fallback to session install
-            SESSION_ID=$(pm install-create -r -d 2>/dev/null | grep -oE '[0-9]+' | head -n 1)
-            if [ -n "$SESSION_ID" ]; then
-                IDX=0
-                for f in {split_files_args}; do
-                    pm install-write "$SESSION_ID" "split_$IDX" "$f" 2>&1 || true
-                    IDX=$((IDX+1))
-                done
-                pm install-commit "$SESSION_ID" 2>&1
-            else
-                echo "$OUT"
-                exit $RC
+            OUT2=$(pm install -r -d -t -g {split_files_args} 2>&1)
+            RC2=$?
+            if [ $RC2 -eq 0 ] && echo "$OUT2" | grep -qi "Success"; then
+                echo "$OUT2"
+                exit 0
             fi
+            
+            echo "$OUT"
+            exit $RC
             """
             if is_root_process:
                 result = subprocess.run(["sh", "-c", install_script], **common_kwargs)
@@ -873,10 +867,17 @@ def run_delta_update(
                         flush=True,
                     )
 
-        installed_count = sum(len(b[1]) for b in install_batches)
+        installed_count = 0
+        failed_errors: list[str] = []
         for index, (pkg_label, apks) in enumerate(install_batches, 1):
             print(f"[INSTALL] {index}/{len(install_batches)} {pkg_label} ({len(apks)} APK/Splits)", flush=True)
-            install_apk(apks)
+            try:
+                install_apk(apks)
+                installed_count += len(apks)
+            except Exception as ex:
+                err = str(ex)
+                print(f"[WARN] Failed to install {pkg_label}: {err}", flush=True)
+                failed_errors.append(f"{pkg_label}: {err[:120]}")
 
         # Restore application data from ZIP bundles if present
         restored_count = 0
@@ -890,6 +891,8 @@ def run_delta_update(
                     print(f"[WARN] Failed to restore data from {target.name}: {ex}", flush=True)
 
         if installed_count == 0 and restored_count == 0:
+            if failed_errors:
+                raise DeltaUpdaterError(f"Cài đặt thất bại: {'; '.join(failed_errors[:2])}")
             raise DeltaUpdaterError("UPDATE_DELTA verified release but found zero APKs and zero restorable data packages")
 
     return {
