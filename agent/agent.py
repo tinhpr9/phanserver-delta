@@ -407,20 +407,23 @@ def run_agent_loop(
     tick_count = 0
     while True:
         tick_count += 1
-        metrics = collect_metrics()
-        heartbeat_payload = {
-            "device_id": device_id,
-            "device_group": device_group,
-            "version": AGENT_VERSION,
-            "capabilities": CAPABILITIES,
-            "metrics": metrics,
-        }
-        response = send_report_response(report_url, secret, heartbeat_payload)
-        command = response.get("command") if isinstance(response, dict) else None
-        if isinstance(command, dict):
-            handle_incoming_batch_action(
-                command, device_id, report_url, secret, state, state_path, links_path
-            )
+        try:
+            metrics = collect_metrics()
+            heartbeat_payload = {
+                "device_id": device_id,
+                "device_group": device_group,
+                "version": AGENT_VERSION,
+                "capabilities": CAPABILITIES,
+                "metrics": metrics,
+            }
+            response = send_report_response(report_url, secret, heartbeat_payload)
+            command = response.get("command") if isinstance(response, dict) else None
+            if isinstance(command, dict):
+                handle_incoming_batch_action(
+                    command, device_id, report_url, secret, state, state_path, links_path
+                )
+        except Exception as e:
+            print(f"[AGENT] Lỗi trong vòng lặp Heartbeat (tick {tick_count}): {e}", flush=True)
 
         if single_tick:
             break
