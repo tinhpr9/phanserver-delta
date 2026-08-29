@@ -211,12 +211,12 @@ async function runTests() {
   if (updateCall?.kind !== "update_delta" || updateCall?.protocol !== "fleet-batch-v1") {
     throw new Error("update delta dispatch test failed: " + JSON.stringify(updateCall));
   }
-  if (!sentMessages[0]?.text.includes("Đã xếp UPDATE_DELTA")) {
+  if (!sentMessages[0]?.text.includes("RESTORE")) {
     throw new Error("update delta confirmation test failed: " + (sentMessages[0]?.text || ""));
   }
 
-  // 8. Selective UPDATE_DELTA dispatch
-  await triggerMessage("/update m1,m2 random");
+  // 8. Selective UPDATE_DELTA dispatch via /restore
+  await triggerMessage("/restore m1,m2 random");
   const updateCall2 = fleetControlCalls.at(-1);
   if (updateCall2?.kind !== "update_delta" || updateCall2?.selection !== "random") {
     throw new Error("selective update delta dispatch test failed: " + JSON.stringify(updateCall2));

@@ -242,10 +242,10 @@ export async function handleUpdate(update, env, fleetState) {
     return;
   }
 
-  if (input.match(/^\/update(?:\s|$)/)) {
+  if (input.match(/^\/(?:restore|update)(?:\s|$)/)) {
     const parts = input.split(/\s+/);
     if (parts.length < 2 || parts.length > 3) {
-      await telegram(env, "sendMessage", { chat_id: chatId, text: "Cú pháp: /update <device1,device2...> [selection]" });
+      await telegram(env, "sendMessage", { chat_id: chatId, text: "Cú pháp: /restore <device1,device2...> [selection] (hoặc /update)" });
       return;
     }
     const targetStr = parts[1];
@@ -256,14 +256,15 @@ export async function handleUpdate(update, env, fleetState) {
         method: "POST",
         body: { protocol: "fleet-batch-v1", kind: "update_delta", target_device_ids: ids, selection, telegram_chat_id: chatId }
       });
-      if (!result?.response?.ok) throw new Error(result?.data?.error || "update_queue_failed");
+      if (!result?.response?.ok) throw new Error(result?.data?.error || "restore_queue_failed");
       const selText = selection !== "all" ? ` (Lựa chọn: ${selection})` : "";
       await telegram(env, "sendMessage", {
         chat_id: chatId,
-        text: `Đã xếp UPDATE_DELTA: ${ids.join(", ")}${selText}. Thiết bị sẽ nhận lệnh ở heartbeat kế tiếp.`
+        text: `📥 <b>ĐÃ XẾP LỆNH RESTORE (UPDATE_DELTA)</b>: <code>${ids.join(", ")}</code>${selText}\nThiết bị sẽ tải và khôi phục ứng dụng + dữ liệu ở heartbeat kế tiếp.`,
+        parse_mode: "HTML"
       });
     } catch (error) {
-      await telegram(env, "sendMessage", { chat_id: chatId, text: "Lỗi UPDATE_DELTA: " + String(error.message || error) });
+      await telegram(env, "sendMessage", { chat_id: chatId, text: "Lỗi RESTORE: " + String(error.message || error) });
     }
     return;
   }
