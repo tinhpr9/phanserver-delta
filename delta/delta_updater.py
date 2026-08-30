@@ -475,20 +475,20 @@ def install_apks(apks: list[pathlib.Path] | pathlib.Path) -> None:
                 tmp_cleanups.append(tmp_dest)
             staged_paths.append(target_path)
 
-        if len(staged_paths) == 1 or not is_split_apk_bundle(apks):
-            # Install individual standalone APKs one by one
-            for single_path in staged_paths:
-                if is_root_process:
-                    result = subprocess.run(["pm", "install", "-r", "-d", single_path], **common_kwargs)
-                else:
-                    result = subprocess.run([su_path, "-c", f"exec pm install -r -d {shlex.quote(single_path)}"], **common_kwargs)
-                output = ((result.stdout or "") + "\n" + (result.stderr or "")).strip()
-                if result.returncode != 0 or "Success" not in output:
-                    raise DeltaUpdaterError(
-                        f"pm install failed for {pathlib.Path(single_path).name} (rc={result.returncode}): {output[:400]}"
-                    )
+        if len(staged_paths) == 1:
+            # Install individual standalone APK
+            single_path = staged_paths[0]
+            if is_root_process:
+                result = subprocess.run(["pm", "install", "-r", "-d", single_path], **common_kwargs)
+            else:
+                result = subprocess.run([su_path, "-c", f"exec pm install -r -d {shlex.quote(single_path)}"], **common_kwargs)
+            output = ((result.stdout or "") + "\n" + (result.stderr or "")).strip()
+            if result.returncode != 0 or "Success" not in output:
+                raise DeltaUpdaterError(
+                    f"pm install failed for {pathlib.Path(single_path).name} (rc={result.returncode}): {output[:400]}"
+                )
         else:
-            # Multiple Split APK install (App Bundle)
+            # Multiple Split APK install (App Bundle / Multi-split)
             split_files_args = " ".join(shlex.quote(p) for p in staged_paths)
             install_script = f"""
             OUT=$(pm install-multiple -r -d -t -g {split_files_args} 2>&1)
