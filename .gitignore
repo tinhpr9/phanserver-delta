@@ -12,3 +12,8 @@ htmlcov/
 *.prep.*
 *.tmp
 *.bak
+
+# Telegram bridge secrets and local runtime state
+tools/tgbridge/token
+tools/tgbridge/chat_id
+tools/tgbridge/runtime/

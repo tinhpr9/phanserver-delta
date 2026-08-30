@@ -14,15 +14,32 @@ import json
 import os
 import pathlib
 import re
+import shlex
+import shutil
 import socket
 import ssl
 import struct
+import subprocess
 import sys
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import codecs
 from typing import Any, Dict, Optional
+
+
+def _ensure_cp437():
+    try:
+        codecs.lookup("cp437")
+    except LookupError:
+        try:
+            latin1 = codecs.lookup("latin-1")
+            codecs.register(lambda name: latin1 if name.lower() in ("cp437", "ibm437", "437") else None)
+        except Exception:
+            pass
+
+_ensure_cp437()
 
 # Ensure package and local imports work
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -77,7 +94,7 @@ def collect_metrics() -> dict[str, Any]:
     return metrics
 
 
-def send_report(report_url: str, secret: str, payload: dict[str, Any]) -> bool:
+def send_report_response(report_url: str, secret: str, payload: dict[str, Any]) -> Optional[dict[str, Any]]:
     try:
         data = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(
@@ -90,9 +107,16 @@ def send_report(report_url: str, secret: str, payload: dict[str, Any]) -> bool:
             },
         )
         with urllib.request.urlopen(req, timeout=10) as resp:
-            return resp.status in (200, 201)
-    except Exception as e:
-        return False
+            if resp.status not in (200, 201):
+                return None
+            data = json.loads(resp.read().decode("utf-8"))
+            return data if isinstance(data, dict) else None
+    except (OSError, urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError):
+        return None
+
+
+def send_report(report_url: str, secret: str, payload: dict[str, Any]) -> bool:
+    return send_report_response(report_url, secret, payload) is not None
 
 
 def send_ack(
@@ -103,12 +127,13 @@ def send_ack(
     status: str,
     reason: Optional[str] = None,
     executed: bool = False,
+    batch_action: str = "ALLOCATE_SERVER",
 ) -> bool:
     parsed = urllib.parse.urlparse(report_url)
     ack_url = urllib.parse.urlunparse((parsed.scheme, parsed.netloc, "/aot/ack", "", "", ""))
     payload = {
         "protocol": PROTOCOL_VERSION,
-        "batch_action": "ALLOCATE_SERVER",
+        "batch_action": batch_action,
         "device_id": device_id,
         "action_id": action_id,
         "status": status,
@@ -157,14 +182,340 @@ def handle_incoming_batch_action(
         return True
 
     if action == "UPDATE_DELTA":
+        completed = state.setdefault("update_action_results", {})
+        cached = completed.get(action_id)
+        if isinstance(cached, dict):
+            send_ack(
+                report_url, secret, device_id, action_id,
+                status=str(cached.get("status", "FAILED")),
+                reason=cached.get("reason"),
+                executed=cached.get("executed") is True,
+                batch_action="UPDATE_DELTA",
+            )
+            return True
         try:
-            res = delta_updater.run_delta_update()
-            send_ack(report_url, secret, device_id, action_id, status="OPENED", executed=True)
+            selection = message.get("selection")
+            target_pkg = message.get("target_pkg")
+            delta_updater.run_delta_update(selection=selection, target_pkg=target_pkg)
+            result = {"status": "OPENED", "executed": True}
         except Exception as e:
-            send_ack(report_url, secret, device_id, action_id, status="FAILED", reason=str(e), executed=False)
+            result = {"status": "FAILED", "executed": False, "reason": str(e)[:160]}
+        completed[action_id] = result
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+        send_ack(
+            report_url, secret, device_id, action_id,
+            status=result["status"], reason=result.get("reason"),
+            executed=result["executed"], batch_action="UPDATE_DELTA",
+        )
+        return True
+
+    if action == "BACKUP_APP":
+        completed = state.setdefault("backup_action_results", {})
+        cached = completed.get(action_id)
+        if isinstance(cached, dict):
+            send_ack(
+                report_url, secret, device_id, action_id,
+                status=str(cached.get("status", "FAILED")),
+                reason=cached.get("reason"),
+                executed=cached.get("executed") is True,
+                batch_action="BACKUP_APP",
+            )
+            return True
+        try:
+            try:
+                from agent import backup_manager
+            except ImportError:
+                import backup_manager
+            pkg_target = message.get("package") or "taskbar"
+            mode_target = message.get("mode") or "full"
+            tag_target = message.get("release_tag") or "Backup"
+            token_target = message.get("github_token") or message.get("token")
+            backup_res = backup_manager.run_backup_and_upload(pkg_target, mode=mode_target, tag=tag_target, token=token_target)
+            result = {"status": "OPENED", "executed": True, "details": backup_res}
+        except Exception as e:
+            result = {"status": "FAILED", "executed": False, "reason": str(e)[:160]}
+        completed[action_id] = result
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+        send_ack(
+            report_url, secret, device_id, action_id,
+            status=result["status"], reason=result.get("reason"),
+            executed=result["executed"], batch_action="BACKUP_APP",
+        )
+        return True
+
+    if action == "UPGRADE_AGENT":
+        completed = state.setdefault("upgrade_action_results", {})
+        cached = completed.get(action_id)
+        if isinstance(cached, dict):
+            send_ack(
+                report_url, secret, device_id, action_id,
+                status=str(cached.get("status", "OPENED")),
+                reason=cached.get("reason"),
+                executed=cached.get("executed") is True,
+                batch_action="UPGRADE_AGENT",
+            )
+            return True
+        try:
+            upgraded, err_msg = check_and_apply_auto_update(force=True)
+            status = "OPENED" if upgraded else "FAILED"
+            send_ack(
+                report_url, secret, device_id, action_id,
+                status=status, reason=err_msg,
+                executed=upgraded, batch_action="UPGRADE_AGENT",
+            )
+            completed[action_id] = {"status": status, "executed": upgraded, "reason": err_msg}
+            state_path.parent.mkdir(parents=True, exist_ok=True)
+            state_path.write_text(json.dumps(state), encoding="utf-8")
+
+            if upgraded:
+                print("[UPGRADE] Nạp code mới thành công! Đang tự khởi động lại Agent...", flush=True)
+                time.sleep(1)
+                script_file = pathlib.Path(__file__).resolve()
+                args = [sys.executable, str(script_file)] + [a for a in sys.argv[1:] if a != str(script_file)]
+                os.execv(sys.executable, args)
+            return True
+        except Exception as e:
+            send_ack(
+                report_url, secret, device_id, action_id,
+                status="FAILED", reason=str(e)[:160],
+                executed=False, batch_action="UPGRADE_AGENT",
+            )
+            return False
+
+    if action == "SET_CONFIG":
+        completed = state.setdefault("set_config_action_results", {})
+        cached = completed.get(action_id)
+        if isinstance(cached, dict):
+            send_ack(
+                report_url, secret, device_id, action_id,
+                status=str(cached.get("status", "OPENED")),
+                reason=cached.get("reason"),
+                executed=cached.get("executed") is True,
+                batch_action="SET_CONFIG",
+            )
+            return True
+        try:
+            cfg_updates = message.get("config") or {}
+            cfg_path = pathlib.Path("/storage/emulated/0/Download/Shouko/agent_config.json")
+            cfg_path.parent.mkdir(parents=True, exist_ok=True)
+            existing_cfg = {}
+            if cfg_path.is_file():
+                try:
+                    existing_cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+                except Exception:
+                    pass
+            existing_cfg.update(cfg_updates)
+            cfg_path.write_text(json.dumps(existing_cfg, indent=2), encoding="utf-8")
+            status = "OPENED"
+            err_msg = None
+            executed = True
+        except Exception as e:
+            status = "FAILED"
+            err_msg = str(e)[:160]
+            executed = False
+
+        completed[action_id] = {"status": status, "executed": executed, "reason": err_msg}
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+        send_ack(
+            report_url, secret, device_id, action_id,
+            status=status, reason=err_msg,
+            executed=executed, batch_action="SET_CONFIG",
+        )
+        return True
+
+    if action == "ENABLE_DEV_MODE":
+        completed = state.setdefault("dev_mode_action_results", {})
+        cached = completed.get(action_id)
+        if isinstance(cached, dict):
+            send_ack(
+                report_url, secret, device_id, action_id,
+                status=str(cached.get("status", "OPENED")),
+                reason=cached.get("reason"),
+                executed=cached.get("executed") is True,
+                batch_action="ENABLE_DEV_MODE",
+            )
+            return True
+        try:
+            try:
+                from agent.backup_manager import _run_as_root
+            except ImportError:
+                try:
+                    from backup_manager import _run_as_root
+                except ImportError:
+                    _run_as_root = None
+            dev_cmd = """
+            settings put global development_settings_enabled 1
+            settings put global adb_enabled 1
+            settings put global force_allow_on_external 1
+            settings put global force_resizable_activities 1
+            settings put global enable_freeform_support 1
+            settings put global force_desktop_mode_on_external_displays 1
+            WIDTH=$(wm size 2>/dev/null | awk '{print $NF}' | cut -d'x' -f1)
+            if [ -n "$WIDTH" ] && [ "$WIDTH" -gt 0 ] 2>/dev/null; then
+                DPI=$((WIDTH * 160 / 700))
+                [ "$DPI" -gt 50 ] && [ "$DPI" -lt 1000 ] && wm density "$DPI" 2>/dev/null || true
+            fi
+            am start -a android.settings.APPLICATION_DEVELOPMENT_SETTINGS 2>/dev/null || true
+            """
+            if _run_as_root:
+                res = _run_as_root(dev_cmd, timeout=15)
+                success = res.returncode == 0
+                reason = None if success else res.stderr.strip()
+            else:
+                proc = subprocess.run(["sh", "-c", dev_cmd], capture_output=True, text=True, timeout=15)
+                success = proc.returncode == 0
+                reason = None if success else proc.stderr.strip()
+            status = "OPENED" if success else "FAILED"
+            result = {"status": status, "executed": success, "reason": reason}
+        except Exception as e:
+            result = {"status": "FAILED", "executed": False, "reason": str(e)[:160]}
+        completed[action_id] = result
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+        send_ack(
+            report_url, secret, device_id, action_id,
+            status=result["status"], reason=result.get("reason"),
+            executed=result["executed"], batch_action="ENABLE_DEV_MODE",
+        )
+        return True
+
+    if action == "WRITE_SCRIPT":
+        completed = state.setdefault("script_action_results", {})
+        cached = completed.get(action_id)
+        if isinstance(cached, dict):
+            send_ack(
+                report_url, secret, device_id, action_id,
+                status=str(cached.get("status", "FAILED")),
+                reason=cached.get("reason"),
+                executed=cached.get("executed") is True,
+                batch_action="WRITE_SCRIPT",
+            )
+            return True
+        try:
+            filename = message.get("filename") or "sae"
+            content = message.get("content") or ""
+            autoexec_dirs = [
+                pathlib.Path("/storage/emulated/0/Delta/Autoexecute"),
+                pathlib.Path("/sdcard/Delta/Autoexecute"),
+                pathlib.Path.home() / "Delta" / "Autoexecute",
+            ]
+            target_dir = None
+            for d in autoexec_dirs:
+                try:
+                    d.mkdir(parents=True, exist_ok=True)
+                    if d.is_dir():
+                        target_dir = d
+                        break
+                except Exception:
+                    continue
+            if not target_dir:
+                target_dir = autoexec_dirs[0]
+                target_dir.mkdir(parents=True, exist_ok=True)
+
+            target_file = target_dir / filename
+            target_file.write_text(content, encoding="utf-8")
+            try:
+                os.chmod(target_file, 0o666)
+            except Exception:
+                pass
+            result = {"status": "OPENED", "executed": True}
+        except Exception as e:
+            result = {"status": "FAILED", "executed": False, "reason": str(e)[:160]}
+        completed[action_id] = result
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+        send_ack(
+            report_url, secret, device_id, action_id,
+            status=result["status"], reason=result.get("reason"),
+            executed=result["executed"], batch_action="WRITE_SCRIPT",
+        )
+        return True
+
+    if action == "CLEAN_SCRIPT":
+        completed = state.setdefault("script_action_results", {})
+        cached = completed.get(action_id)
+        if isinstance(cached, dict):
+            send_ack(
+                report_url, secret, device_id, action_id,
+                status=str(cached.get("status", "FAILED")),
+                reason=cached.get("reason"),
+                executed=cached.get("executed") is True,
+                batch_action="CLEAN_SCRIPT",
+            )
+            return True
+        try:
+            filename = message.get("filename") or "all"
+            target_dirs = [
+                pathlib.Path("/storage/emulated/0/Delta/Autoexecute"),
+                pathlib.Path("/sdcard/Delta/Autoexecute"),
+            ]
+            for td in target_dirs:
+                if td.is_dir():
+                    if filename.lower() == "all":
+                        for f in td.iterdir():
+                            if f.is_file():
+                                try:
+                                    f.unlink()
+                                except Exception:
+                                    pass
+                    else:
+                        tf = td / filename
+                        if tf.is_file():
+                            tf.unlink()
+            result = {"status": "OPENED", "executed": True}
+        except Exception as e:
+            result = {"status": "FAILED", "executed": False, "reason": str(e)[:160]}
+        completed[action_id] = result
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+        send_ack(
+            report_url, secret, device_id, action_id,
+            status=result["status"], reason=result.get("reason"),
+            executed=result["executed"], batch_action="CLEAN_SCRIPT",
+        )
         return True
 
     return False
+
+
+def check_and_apply_auto_update(branch: str = "fix/delta-stability", force: bool = False) -> tuple[bool, Optional[str]]:
+    """Check GitHub remote branch and update code on disk."""
+    import shutil
+    root = ROOT
+    git_bin = shutil.which("git") or "/data/data/com.termux/files/usr/bin/git" or "git"
+    if not (root / ".git").is_dir():
+        print(f"[UPGRADE] Thư mục .git không tồn tại tại {root}", flush=True)
+        return False, f"not_a_git_repo: {root}"
+    try:
+        fetch_cmd = [git_bin, "-c", "safe.directory=*", "-C", str(root), "fetch", "origin", branch]
+        fetch_res = subprocess.run(
+            fetch_cmd,
+            capture_output=True, text=True, timeout=30
+        )
+        if fetch_res.returncode != 0:
+            err = (fetch_res.stderr or fetch_res.stdout).strip()[:140]
+            print(f"[UPGRADE] git fetch thất bại: {err}", flush=True)
+            return False, f"fetch_err: {err}"
+
+        remote_target = f"origin/{branch}"
+        print(f"[UPGRADE] Đang nạp bản cập nhật mới từ GitHub ({remote_target})...", flush=True)
+        reset_cmd = [git_bin, "-c", "safe.directory=*", "-C", str(root), "reset", "--hard", remote_target]
+        reset_res = subprocess.run(
+            reset_cmd,
+            capture_output=True, text=True, timeout=30
+        )
+        if reset_res.returncode != 0:
+            err = (reset_res.stderr or reset_res.stdout).strip()[:140]
+            print(f"[UPGRADE] git reset thất bại: {err}", flush=True)
+            return False, f"reset_err: {err}"
+
+        return True, None
+    except Exception as e:
+        print(f"[UPGRADE] Thất bại: {e}", flush=True)
+        return False, f"upgrade_ex: {str(e)[:140]}"
 
 
 def run_agent_loop(
@@ -192,19 +543,30 @@ def run_agent_loop(
 
     print(f"[*] Starting phanserver-delta agent: ID={device_id}, Group={device_group}, URL={report_url}", flush=True)
 
+    tick_count = 0
     while True:
-        metrics = collect_metrics()
-        heartbeat_payload = {
-            "device_id": device_id,
-            "device_group": device_group,
-            "version": AGENT_VERSION,
-            "capabilities": CAPABILITIES,
-            "metrics": metrics,
-        }
-        send_report(report_url, secret, heartbeat_payload)
+        tick_count += 1
+        try:
+            metrics = collect_metrics()
+            heartbeat_payload = {
+                "device_id": device_id,
+                "device_group": device_group,
+                "version": AGENT_VERSION,
+                "capabilities": CAPABILITIES,
+                "metrics": metrics,
+            }
+            response = send_report_response(report_url, secret, heartbeat_payload)
+            command = response.get("command") if isinstance(response, dict) else None
+            if isinstance(command, dict):
+                handle_incoming_batch_action(
+                    command, device_id, report_url, secret, state, state_path, links_path
+                )
+        except Exception as e:
+            print(f"[AGENT] Lỗi trong vòng lặp Heartbeat (tick {tick_count}): {e}", flush=True)
 
         if single_tick:
             break
+
         time.sleep(30)
 
 

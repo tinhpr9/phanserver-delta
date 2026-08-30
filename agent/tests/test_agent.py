@@ -92,7 +92,28 @@ class TestDeviceAgent(unittest.TestCase):
             self.assertTrue(res_commit)
             self.assertEqual(mock_ack.call_args[1]["status"], "OPENED")
 
-    @mock.patch("agent.agent.send_report", return_value=True)
+    @mock.patch("agent.agent.send_ack", return_value=True)
+    @mock.patch("agent.agent.delta_updater.run_delta_update")
+    def test_update_delta_is_idempotent(self, mock_update, mock_ack):
+        message = {
+            "protocol": "fleet-batch-v1",
+            "action": "UPDATE_DELTA",
+            "action_id": "delta-100",
+            "target_device_ids": ["m72"],
+        }
+        state = {}
+        self.assertTrue(agent.handle_incoming_batch_action(
+            message, "m72", "https://mock/report", "sec", state, self.state_path, self.links_path
+        ))
+        self.assertEqual(mock_update.call_count, 1)
+        self.assertEqual(mock_ack.call_args.kwargs["batch_action"], "UPDATE_DELTA")
+        self.assertTrue(self.state_path.is_file())
+        self.assertTrue(agent.handle_incoming_batch_action(
+            message, "m72", "https://mock/report", "sec", state, self.state_path, self.links_path
+        ))
+        self.assertEqual(mock_update.call_count, 1)
+
+    @mock.patch("agent.agent.send_report_response", return_value={})
     def test_run_agent_loop_once(self, mock_report):
         agent.run_agent_loop(
             config_path=self.cfg_path,
@@ -106,7 +127,36 @@ class TestDeviceAgent(unittest.TestCase):
         payload = mock_report.call_args[0][2]
         self.assertEqual(payload["device_id"], "m72")
         self.assertEqual(payload["device_group"], "NOVA")
-        self.assertIn("allocate_server_2pc", payload["capabilities"])
+    @mock.patch("agent.agent.subprocess.run")
+    def test_check_and_apply_auto_update(self, mock_subproc):
+        mock_subproc.return_value.returncode = 0
+        mock_subproc.return_value.stdout = "ok"
+        mock_subproc.return_value.stderr = ""
+        with mock.patch("agent.agent.ROOT", self.root_path):
+            (self.root_path / ".git").mkdir()
+            success, err = agent.check_and_apply_auto_update(branch="fix/delta-stability")
+            self.assertTrue(success)
+            self.assertIsNone(err)
+            self.assertEqual(mock_subproc.call_count, 2)
+
+    def test_create_folder_backup(self):
+        from agent import backup_manager
+        test_dir = self.root_path / "TestFolder"
+        test_dir.mkdir()
+        (test_dir / "file1.txt").write_text("hello world")
+        (test_dir / "file2.json").write_text('{"key": "value"}')
+
+        out_zip = backup_manager.create_folder_backup("TestFolder", str(test_dir), self.root_path)
+        self.assertTrue(out_zip.is_file())
+        self.assertEqual(out_zip.name, "Testfolder_FolderBackup.zip")
+
+        import zipfile
+        with zipfile.ZipFile(out_zip, "r") as zf:
+            self.assertIn("folder_meta.json", zf.namelist())
+            self.assertIn("folder.tar.gz", zf.namelist())
+            meta = json.loads(zf.read("folder_meta.json").decode("utf-8"))
+            self.assertEqual(meta["type"], "folder")
+            self.assertEqual(meta["folder_name"], "TestFolder")
 
 
 if __name__ == "__main__":

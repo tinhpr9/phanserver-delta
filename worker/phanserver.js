@@ -34,13 +34,25 @@ export async function resolveAndValidateTelegramTargets(targetStr, env, fleetSta
     throw new Error("Target không được để trống.");
   }
   const rawTarget = targetStr.trim();
-  const wantedGroup = normalizeDeviceGroup(rawTarget);
-
   const stateResult = await fleetStateCall(env, fleetState, "/aot/hub/state");
   if (!stateResult?.response?.ok && !stateResult?.data?.state) {
     throw new Error("Không thể lấy trạng thái thiết bị.");
   }
   const durableRecords = stateResult.data?.state?.devices || [];
+
+  // Support "all" or "*" keyword to target all online devices
+  if (rawTarget.toLowerCase() === "all" || rawTarget === "*") {
+    const onlineDevices = durableRecords
+      .filter(record => record.online)
+      .map(record => normalizeDeviceId(record.device_id))
+      .filter(Boolean);
+    if (onlineDevices.length === 0) {
+      throw new Error("Không có thiết bị nào đang ONLINE để thực hiện.");
+    }
+    return onlineDevices.sort(compareDeviceIds);
+  }
+
+  const wantedGroup = normalizeDeviceGroup(rawTarget);
 
   if (wantedGroup) {
     const ids = [];
@@ -138,6 +150,311 @@ export async function handleUpdate(update, env, fleetState) {
   }
 
   const input = (message.text || message.caption || "").trim();
+
+  if (input.toUpperCase() === "STATUS" || input === "/status") {
+    try {
+      const stateResult = await fleetStateCall(env, fleetState, "/aot/hub/state");
+      const devices = stateResult.data?.state?.devices || [];
+      const online = devices.filter(d => d.online).length;
+      const text = devices.length
+        ? `FLEET_STATUS=ONLINE\nDEVICES=${devices.length}\nONLINE=${online}\n` + devices
+          .sort((a, b) => String(a.device_id).localeCompare(String(b.device_id), undefined, { numeric: true }))
+          .map(d => `${d.device_id}: ${d.online ? "ONLINE" : "OFFLINE"}`).join("\n")
+        : "FLEET_STATUS=EMPTY\nDEVICES=0\nONLINE=0";
+      await telegram(env, "sendMessage", { chat_id: chatId, text });
+    } catch (error) {
+      await telegram(env, "sendMessage", { chat_id: chatId, text: "FLEET_STATUS=UNAVAILABLE" });
+    }
+    return;
+  }
+
+  if (input === "/devices") {
+    try {
+      const stateResult = await fleetStateCall(env, fleetState, "/aot/hub/state");
+      const devices = stateResult.data?.state?.devices || [];
+      const text = devices.length
+        ? devices.sort((a, b) => String(a.device_id).localeCompare(String(b.device_id), undefined, { numeric: true }))
+          .map(d => `${d.device_id}: ${d.online ? "ONLINE" : "OFFLINE"}`).join("\n")
+        : "Chưa có thiết bị nào đăng ký.";
+      await telegram(env, "sendMessage", { chat_id: chatId, text });
+    } catch (error) {
+      await telegram(env, "sendMessage", { chat_id: chatId, text: "Lỗi lấy danh sách thiết bị." });
+    }
+    return;
+  }
+
+  if (input.toUpperCase() === "UPDATE" || input === "/update") {
+    try {
+      const stateResult = await fleetStateCall(env, fleetState, "/aot/hub/state");
+      const devices = stateResult.data?.state?.devices || [];
+      const onlineIds = devices
+        .filter(device => device.online)
+        .map(device => String(device.device_id))
+        .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+      const text = onlineIds.length
+        ? `UPDATE_TARGET_REQUIRED\nONLINE_DEVICES=${onlineIds.join(",")}\nGửi: /update ${onlineIds.join(",")}`
+        : `UPDATE_BLOCKED=NO_ONLINE_DEVICES\nDEVICES=${devices.length}\nONLINE=0`;
+      await telegram(env, "sendMessage", { chat_id: chatId, text });
+    } catch (error) {
+      await telegram(env, "sendMessage", { chat_id: chatId, text: "UPDATE_UNAVAILABLE" });
+    }
+    return;
+  }
+
+  if (input === "/apks" || input === "/release") {
+    try {
+      let assets = [];
+      let tag = "Backup";
+      if (env?.getManifest) {
+        const manifest = await env.getManifest(env);
+        assets = manifest?.assets || [];
+        tag = manifest?.release_tag || manifest?.version || tag;
+      } else {
+        const headers = { "User-Agent": "phanserver-delta-worker", "Accept": "application/vnd.github.v3+json" };
+        if (env?.GITHUB_TOKEN) {
+          headers["Authorization"] = `Bearer ${env.GITHUB_TOKEN}`;
+        }
+        const manifestRes = await fetch("https://api.github.com/repos/tinhpr9/phanserver-delta/releases?per_page=5", {
+          headers
+        }).catch(() => null);
+        if (manifestRes && manifestRes.ok) {
+          const releases = await manifestRes.json();
+          if (Array.isArray(releases) && releases.length > 0) {
+            const rel = releases[0];
+            tag = rel.tag_name || rel.name || tag;
+            assets = (rel.assets || []).map(a => ({
+              name: a.name,
+              size: a.size,
+              kind: a.name.toLowerCase().endsWith(".apk") ? "apk" : "zip"
+            }));
+          }
+        }
+      }
+      if (!assets.length) {
+        assets = [{ name: "Delta-v1.0.0.apk", size: 1024, kind: "apk" }];
+      }
+
+      function formatSize(bytes) {
+        if (!bytes || isNaN(bytes)) return "N/A";
+        if (bytes >= 1024 * 1024 * 1024) return (bytes / (1024 * 1024 * 1024)).toFixed(1) + " GB";
+        if (bytes >= 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+        if (bytes >= 1024) return (bytes / 1024).toFixed(1) + " KB";
+        return bytes + " B";
+      }
+
+      let text = `📦 DANH SÁCH APP TRONG RELEASE (Tag: ${tag}):\n`;
+      assets.forEach((a, i) => {
+        text += `${i + 1}. ${a.name} (${formatSize(a.size)})\n`;
+      });
+      text += `\n💡 Gợi ý lệnh:\n• Cài tất cả: /update <device1,device2...>\n• Cài chọn lọc: /update <device> <keyword|số_thứ_tự>\n• Bốc ngẫu nhiên: /update <device> random`;
+      await telegram(env, "sendMessage", { chat_id: chatId, text });
+    } catch (error) {
+      await telegram(env, "sendMessage", { chat_id: chatId, text: "Lỗi lấy danh sách Release: " + String(error.message || error) });
+    }
+    return;
+  }
+
+  if (input.match(/^\/(?:restore|update)(?:\s|$)/)) {
+    const parts = input.split(/\s+/);
+    if (parts.length < 2 || parts.length > 4) {
+      await telegram(env, "sendMessage", { chat_id: chatId, text: "Cú pháp: /restore <device1,device2...> [selection] [target_app] (hoặc /update)" });
+      return;
+    }
+    const targetStr = parts[1];
+    const selection = parts[2] || "all";
+    const targetPkg = parts[3] || null;
+    try {
+      const ids = await resolveAndValidateTelegramTargets(targetStr, env, fleetState);
+      const result = await fleetStateCall(env, fleetState, "/aot/hub/control", {
+        method: "POST",
+        body: { protocol: "fleet-batch-v1", kind: "update_delta", target_device_ids: ids, selection, target_pkg: targetPkg, telegram_chat_id: chatId }
+      });
+      if (!result?.response?.ok) throw new Error(result?.data?.error || "restore_queue_failed");
+      const selText = selection !== "all" ? ` (Gói: ${selection})` : "";
+      const targetText = targetPkg ? ` ➔ Nạp vào app: <b>${targetPkg}</b>` : "";
+      await telegram(env, "sendMessage", {
+        chat_id: chatId,
+        text: `📥 <b>ĐÃ XẾP LỆNH RESTORE</b>: <code>${ids.join(", ")}</code>${selText}${targetText}\nThiết bị sẽ tải và khôi phục ứng dụng + dữ liệu ở heartbeat kế tiếp.`,
+        parse_mode: "HTML"
+      });
+    } catch (error) {
+      await telegram(env, "sendMessage", { chat_id: chatId, text: "Lỗi RESTORE: " + String(error.message || error) });
+    }
+    return;
+  }
+
+  if (input.match(/^\/backup(?:\s|$)/)) {
+    const raw = input.replace(/^\/backup\s*/, "").trim();
+    if (!raw) {
+      await telegram(env, "sendMessage", { chat_id: chatId, text: "Cú pháp: /backup <device1,device2...> [app1,app2... hoặc all] [data|apk|full]" });
+      return;
+    }
+    const tokens = raw.split(/\s+/);
+    const targetStr = tokens[0];
+    let mode = "full";
+    let pkgStr = "taskbar";
+    
+    if (tokens.length > 1) {
+      const lastToken = tokens[tokens.length - 1].toLowerCase();
+      if (["data", "apk", "full"].includes(lastToken)) {
+        mode = lastToken;
+        pkgStr = tokens.slice(1, -1).join(" ") || "taskbar";
+      } else {
+        pkgStr = tokens.slice(1).join(" ");
+      }
+    }
+    pkgStr = pkgStr.replace(/\s*,\s*/g, ",").trim() || "taskbar";
+
+    try {
+      const ids = await resolveAndValidateTelegramTargets(targetStr, env, fleetState);
+      const result = await fleetStateCall(env, fleetState, "/aot/hub/control", {
+        method: "POST",
+        body: { protocol: "fleet-batch-v1", kind: "backup_app", target_device_ids: ids, package: pkgStr, mode, release_tag: "Backup", github_token: env?.GITHUB_TOKEN || "", telegram_chat_id: chatId }
+      });
+      if (!result?.response?.ok) throw new Error(result?.data?.error || "backup_queue_failed");
+      const modeLabel = mode === "apk" ? "Chỉ APK" : (mode === "data" ? "Chỉ Data cấu hình" : "Đầy đủ APK + Data");
+      await telegram(env, "sendMessage", {
+        chat_id: chatId,
+        text: `📦 <b>ĐÃ XẾP LỆNH SAO LƯU (${modeLabel.toUpperCase()})</b>\nThiết bị: <code>${ids.join(", ")}</code>\nỨng dụng: <code>${pkgStr}</code>\nChế độ: <b>${modeLabel}</b>\nThiết bị sẽ đóng gói và upload lên GitHub Release (Tag: Backup) ở heartbeat kế tiếp.`,
+        parse_mode: "HTML"
+      });
+    } catch (error) {
+      await telegram(env, "sendMessage", { chat_id: chatId, text: "Lỗi BACKUP_APP: " + String(error.message || error) });
+    }
+    return;
+  }
+
+  if (input.match(/^\/upgrade(?:\s|$)/)) {
+    const parts = input.split(/\s+/);
+    if (parts.length !== 2) {
+      await telegram(env, "sendMessage", { chat_id: chatId, text: "Cú pháp: /upgrade <device1,device2... hoặc all>" });
+      return;
+    }
+    const targetStr = parts[1];
+    try {
+      const ids = await resolveAndValidateTelegramTargets(targetStr, env, fleetState);
+      const result = await fleetStateCall(env, fleetState, "/aot/hub/control", {
+        method: "POST",
+        body: { protocol: "fleet-batch-v1", kind: "upgrade_agent", target_device_ids: ids, telegram_chat_id: chatId }
+      });
+      if (!result?.response?.ok) throw new Error(result?.data?.error || "upgrade_queue_failed");
+      await telegram(env, "sendMessage", {
+        chat_id: chatId,
+        text: `🚀 <b>ĐÃ XẾP LỆNH NÂNG CẤP AGENT</b>\nThiết bị: <code>${ids.join(", ")}</code>\nAgent sẽ tự động kéo code mới nhất từ GitHub và khởi động lại ngầm ở heartbeat kế tiếp.`,
+        parse_mode: "HTML"
+      });
+    } catch (error) {
+      await telegram(env, "sendMessage", { chat_id: chatId, text: "Lỗi UPGRADE_AGENT: " + String(error.message || error) });
+    }
+    return;
+  }
+
+  if (input.match(/^\/(?:script|sae|autoexec)(?:\s|$)/)) {
+    const raw = input.replace(/^\/(?:script|sae|autoexec)\s*/, "").trim();
+    if (!raw) {
+      await telegram(env, "sendMessage", {
+        chat_id: chatId,
+        text: "Cú pháp:\n• <code>/script &lt;device1,device2... hoặc all&gt; &lt;tên_file&gt; &lt;link_script hoặc mã_lua&gt;</code>\n• <code>/script &lt;device&gt; clean [tên_file hoặc all]</code>\n\nVí dụ: <code>/script m77 sae https://raw.githubusercontent.com/...</code>",
+        parse_mode: "HTML"
+      });
+      return;
+    }
+
+    const parts = raw.split(/\s+/);
+    const targetStr = parts[0];
+
+    // Check for clean mode: /script m77 clean [filename|all]
+    if (parts.length >= 2 && parts[1].toLowerCase() === "clean") {
+      const cleanTarget = parts[2] || "all";
+      try {
+        const ids = await resolveAndValidateTelegramTargets(targetStr, env, fleetState);
+        const result = await fleetStateCall(env, fleetState, "/aot/hub/control", {
+          method: "POST",
+          body: {
+            protocol: "fleet-batch-v1",
+            kind: "clean_script",
+            target_device_ids: ids,
+            filename: cleanTarget,
+            telegram_chat_id: chatId
+          }
+        });
+        if (!result?.response?.ok) throw new Error(result?.data?.error || "clean_script_queue_failed");
+        await telegram(env, "sendMessage", {
+          chat_id: chatId,
+          text: `🧹 <b>ĐÃ XẾP LỆNH XÓA SCRIPT</b>: <code>${ids.join(", ")}</code>\n🎯 Mục tiêu: <code>${cleanTarget}</code> trong <code>Delta/Autoexecute/</code>`,
+          parse_mode: "HTML"
+        });
+      } catch (error) {
+        await telegram(env, "sendMessage", { chat_id: chatId, text: "Lỗi CLEAN_SCRIPT: " + String(error.message || error) });
+      }
+      return;
+    }
+
+    if (parts.length < 3) {
+      await telegram(env, "sendMessage", {
+        chat_id: chatId,
+        text: "Cú pháp: <code>/script &lt;device&gt; &lt;tên_file&gt; &lt;link_script hoặc mã_lua&gt;</code>\nVí dụ: <code>/script m77 sae https://raw.githubusercontent.com/...</code>",
+        parse_mode: "HTML"
+      });
+      return;
+    }
+
+    const filename = parts[1];
+    const rawContent = parts.slice(2).join(" ");
+    let content = rawContent;
+    if (rawContent.startsWith("http://") || rawContent.startsWith("https://")) {
+      content = `loadstring(game:HttpGet("${rawContent}"))()`;
+    }
+
+    try {
+      const ids = await resolveAndValidateTelegramTargets(targetStr, env, fleetState);
+      const result = await fleetStateCall(env, fleetState, "/aot/hub/control", {
+        method: "POST",
+        body: {
+          protocol: "fleet-batch-v1",
+          kind: "write_script",
+          target_device_ids: ids,
+          filename: filename,
+          content: content,
+          raw_source: rawContent,
+          telegram_chat_id: chatId
+        }
+      });
+      if (!result?.response?.ok) throw new Error(result?.data?.error || "write_script_queue_failed");
+      await telegram(env, "sendMessage", {
+        chat_id: chatId,
+        text: `📜 <b>ĐÃ XẾP LỆNH NẠP SCRIPT VÀO DELTA AUTOEXECUTE</b>\n📱 Thiết bị: <code>${ids.join(", ")}</code>\n📄 Tên file: <code>${filename}</code>\n⚡ Kịch bản sẽ được ghi vào <code>/storage/emulated/0/Delta/Autoexecute/${filename}</code> ở heartbeat kế tiếp.`,
+        parse_mode: "HTML"
+      });
+    } catch (error) {
+      await telegram(env, "sendMessage", { chat_id: chatId, text: "Lỗi WRITE_SCRIPT: " + String(error.message || error) });
+    }
+    return;
+  }
+
+  if (input.match(/^\/(?:devmode|developer|dev)(?:\s|$)/)) {
+    const raw = input.replace(/^\/(?:devmode|developer|dev)\s*/, "").trim();
+    if (!raw) {
+      await telegram(env, "sendMessage", { chat_id: chatId, text: "Cú pháp: /devmode <device1,device2... hoặc all>" });
+      return;
+    }
+    try {
+      const ids = await resolveAndValidateTelegramTargets(raw, env, fleetState);
+      const result = await fleetStateCall(env, fleetState, "/aot/hub/control", {
+        method: "POST",
+        body: { protocol: "fleet-batch-v1", kind: "enable_dev_mode", target_device_ids: ids, telegram_chat_id: chatId }
+      });
+      if (!result?.response?.ok) throw new Error(result?.data?.error || "dev_mode_queue_failed");
+      await telegram(env, "sendMessage", {
+        chat_id: chatId,
+        text: `⚙️ <b>ĐÃ XẾP LỆNH BẬT TÙY CHỌN NHÀ PHÁT TRIỂN</b>\nThiết bị: <code>${ids.join(", ")}</code>\nThiết bị sẽ tự động kích hoạt Developer Options & USB Debugging (ADB) và mở màn hình Cài đặt ở heartbeat kế tiếp.`,
+        parse_mode: "HTML"
+      });
+    } catch (error) {
+      await telegram(env, "sendMessage", { chat_id: chatId, text: "Lỗi ENABLE_DEV_MODE: " + String(error.message || error) });
+    }
+    return;
+  }
 
   if (input.match(/^\/phanserver(?:\s|$)/)) {
     const parts = input.split(/\s+/);

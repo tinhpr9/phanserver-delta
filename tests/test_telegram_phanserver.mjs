@@ -189,6 +189,95 @@ async function runTests() {
   }
   gitHubFileAbort = false;
 
+  // 7. Worker-owned STATUS command
+  await triggerMessage("STATUS");
+  if (!sentMessages[0]?.text.includes("FLEET_STATUS=ONLINE") || !sentMessages[0].text.includes("m1: ONLINE")) {
+    throw new Error("worker status test failed: " + (sentMessages[0]?.text || ""));
+  }
+
+  // 7. Fleet device list and typed UPDATE_DELTA dispatch
+  await triggerMessage("/devices");
+  if (!sentMessages[0]?.text.includes("m1: ONLINE")) {
+    throw new Error("devices test failed: " + (sentMessages[0]?.text || ""));
+  }
+
+  await triggerMessage("UPDATE");
+  if (!sentMessages[0]?.text.includes("UPDATE_TARGET_REQUIRED") || !sentMessages[0].text.includes("/update m1")) {
+    throw new Error("bare update guidance test failed: " + (sentMessages[0]?.text || ""));
+  }
+
+  await triggerMessage("/update m1,m2");
+  const updateCall = fleetControlCalls.at(-1);
+  if (updateCall?.kind !== "update_delta" || updateCall?.protocol !== "fleet-batch-v1") {
+    throw new Error("update delta dispatch test failed: " + JSON.stringify(updateCall));
+  }
+  if (!sentMessages[0]?.text.includes("RESTORE")) {
+    throw new Error("update delta confirmation test failed: " + (sentMessages[0]?.text || ""));
+  }
+
+  // 8. Selective UPDATE_DELTA dispatch via /restore
+  await triggerMessage("/restore m1,m2 random");
+  const updateCall2 = fleetControlCalls.at(-1);
+  if (!sentMessages[0]?.text.includes("random")) {
+    throw new Error("selective update delta confirmation test failed: " + (sentMessages[0]?.text || ""));
+  }
+
+  // Cross-package restore test
+  await triggerMessage("/restore m1 10 ho");
+  const crossCall = fleetControlCalls.at(-1);
+  if (crossCall?.kind !== "update_delta" || crossCall?.target_pkg !== "ho") {
+    throw new Error("cross-package restore dispatch failed: " + JSON.stringify(crossCall));
+  }
+  if (!sentMessages[0]?.text.includes("ho")) {
+    throw new Error("cross-package restore confirmation failed: " + (sentMessages[0]?.text || ""));
+  }
+
+  // 9. APKs release list command
+  await triggerMessage("/apks");
+  if (!sentMessages[0]?.text.includes("DANH SÁCH APP TRONG RELEASE")) {
+    throw new Error("apks list test failed: " + (sentMessages[0]?.text || ""));
+  }
+
+  // 10. Backup app command
+  await triggerMessage("/backup m1 taskbar");
+  const backupCall = fleetControlCalls.at(-1);
+  if (backupCall?.kind !== "backup_app" || backupCall?.package !== "taskbar") {
+    throw new Error("backup app dispatch test failed: " + JSON.stringify(backupCall));
+  }
+  if (!sentMessages[0]?.text.includes("ĐÃ XẾP LỆNH")) {
+    throw new Error("backup confirmation test failed: " + (sentMessages[0]?.text || ""));
+  }
+
+  // 11. Granular backup mode (data-only and apk-only)
+  await triggerMessage("/backup m1 taskbar data");
+  const backupCall2 = fleetControlCalls.at(-1);
+  if (backupCall2?.kind !== "backup_app" || backupCall2?.mode !== "data") {
+    throw new Error("backup data mode dispatch failed: " + JSON.stringify(backupCall2));
+  }
+  if (!sentMessages[0]?.text.includes("Chỉ Data cấu hình")) {
+    throw new Error("backup data confirmation failed: " + (sentMessages[0]?.text || ""));
+  }
+
+  // 12. Script command with raw URL auto-wrapping loadstring
+  await triggerMessage("/script m1 sae https://raw.githubusercontent.com/tinhpr9/Aotscript/main/Novagag2");
+  const scriptCall = fleetControlCalls.at(-1);
+  if (scriptCall?.kind !== "write_script" || scriptCall?.filename !== "sae" || !scriptCall?.content?.includes("loadstring(game:HttpGet")) {
+    throw new Error("script write dispatch test failed: " + JSON.stringify(scriptCall));
+  }
+  if (!sentMessages[0]?.text.includes("ĐÃ XẾP LỆNH NẠP SCRIPT")) {
+    throw new Error("script write confirmation failed: " + (sentMessages[0]?.text || ""));
+  }
+
+  // 13. Script clean command
+  await triggerMessage("/script m1 clean sae");
+  const cleanCall = fleetControlCalls.at(-1);
+  if (cleanCall?.kind !== "clean_script" || cleanCall?.filename !== "sae") {
+    throw new Error("script clean dispatch test failed: " + JSON.stringify(cleanCall));
+  }
+  if (!sentMessages[0]?.text.includes("ĐÃ XẾP LỆNH XÓA SCRIPT")) {
+    throw new Error("script clean confirmation failed: " + (sentMessages[0]?.text || ""));
+  }
+
   console.log("TEST_TELEGRAM_PHANSERVER_EQUIVALENCE=OK");
 }
 

@@ -63,11 +63,15 @@ export class FleetState {
       record = {
         devices: {},
         last_batch: null,
-        pending_allocates: {}
+        pending_allocates: {},
+        delta_updates: {},
+        pending_actions: {}
       };
     }
     if (!record.devices) record.devices = {};
     if (!record.pending_allocates) record.pending_allocates = {};
+    if (!record.delta_updates) record.delta_updates = {};
+    if (!record.pending_actions) record.pending_actions = {};
     return record;
   }
 
@@ -187,8 +191,25 @@ export class FleetState {
     existing.capabilities = Array.isArray(body?.capabilities) ? body.capabilities : [AOT_ALLOCATE_SERVER_CAPABILITY, "update_delta"];
     record.devices[deviceId] = existing;
 
+    const now = Date.now();
+    const actions = record.pending_actions[deviceId] || [];
+    for (const item of actions) {
+      if (!item.acknowledged_at && item.delivered_at && now - item.delivered_at > 90000) {
+        item.acknowledged_at = now;
+        item.expired = true;
+      }
+    }
+    const command = actions.find(item => !item.acknowledged_at) || null;
+    if (command) {
+      command.delivered_at = command.delivered_at || now;
+      command.delivery_count = (command.delivery_count || 0) + 1;
+      if (command.delivery_count > 3 && now - command.delivered_at > 60000) {
+        command.acknowledged_at = now;
+        command.expired = true;
+      }
+    }
     await this.writeFleet(record);
-    return json({ ok: true, device_id: deviceId });
+    return json({ ok: true, device_id: deviceId, command });
   }
 
   async getHubState() {
@@ -213,14 +234,9 @@ export class FleetState {
   }
 
   isDeviceOnline(id, recordDevice) {
-    if (this.ctx?.getWebSockets) {
-      return this.ctx.getWebSockets(`device:fleet:${id}`).length > 0;
-    }
+    if (this.ctx?.getWebSockets && this.ctx.getWebSockets(`device:fleet:${id}`).length > 0) return true;
     if (this.aotLive.has(id)) return true;
-    if (recordDevice && recordDevice.online && (Date.now() - (recordDevice.last_seen || 0) < 180000)) {
-      return true;
-    }
-    return false;
+    return Boolean(recordDevice && recordDevice.online && (Date.now() - (recordDevice.last_seen || 0) < 180000));
   }
 
   sendPayload(deviceId, payload) {
@@ -300,7 +316,563 @@ export class FleetState {
       );
     }
 
+    if (body.kind === "update_delta") {
+      return this.queueDeltaUpdate(
+        record,
+        Array.isArray(body.target_device_ids) ? body.target_device_ids : [],
+        body.selection || "all",
+        { telegram_chat_id: body.telegram_chat_id, target_pkg: body.target_pkg || null }
+      );
+    }
+
+    if (body.kind === "backup_app") {
+      return this.queueAppBackup(
+        record,
+        Array.isArray(body.target_device_ids) ? body.target_device_ids : [],
+        body.package || "taskbar",
+        body.release_tag || "Backup",
+        { telegram_chat_id: body.telegram_chat_id, mode: body.mode || "full", github_token: body.github_token }
+      );
+    }
+
+    if (body.kind === "upgrade_agent") {
+      return this.queueAgentUpgrade(
+        record,
+        Array.isArray(body.target_device_ids) ? body.target_device_ids : [],
+        { telegram_chat_id: body.telegram_chat_id }
+      );
+    }
+
+    if (body.kind === "enable_dev_mode") {
+      return this.queueDevMode(
+        record,
+        Array.isArray(body.target_device_ids) ? body.target_device_ids : [],
+        { telegram_chat_id: body.telegram_chat_id }
+      );
+    }
+
+    if (body.kind === "set_config") {
+      return this.queueSetConfig(
+        record,
+        Array.isArray(body.target_device_ids) ? body.target_device_ids : [],
+        body.config || {},
+        { telegram_chat_id: body.telegram_chat_id }
+      );
+    }
+
+    if (body.kind === "write_script") {
+      return this.queueWriteScript(
+        record,
+        Array.isArray(body.target_device_ids) ? body.target_device_ids : [],
+        body.filename || "script.lua",
+        body.content || "",
+        { telegram_chat_id: body.telegram_chat_id, raw_source: body.raw_source }
+      );
+    }
+
+    if (body.kind === "clean_script") {
+      return this.queueCleanScript(
+        record,
+        Array.isArray(body.target_device_ids) ? body.target_device_ids : [],
+        body.filename || "all",
+        { telegram_chat_id: body.telegram_chat_id }
+      );
+    }
+
     return json({ ok: false, error: "unsupported_fleet_control" }, 400);
+  }
+
+  async queueDeltaUpdate(record, requestedTargetIds, selection = "all", options = {}) {
+    const fresh = await this.readFleet();
+    const targets = [];
+    const seen = new Set();
+    const targetPkg = options.target_pkg || null;
+    for (const raw of requestedTargetIds) {
+      const id = normalizeDeviceId(raw);
+      const device = id && fresh.devices[id];
+      if (!id || seen.has(id) || !device) return json({ ok: false, error: "invalid_batch_target" }, 400);
+      if (!this.isDeviceOnline(id, device)) return json({ ok: false, error: "offline_device", device_id: id }, 409);
+      if (!(device.capabilities || []).includes("update_delta")) {
+        return json({ ok: false, error: "missing_update_delta_capability", device_id: id }, 409);
+      }
+      seen.add(id);
+      targets.push(id);
+    }
+    if (!targets.length) return json({ ok: false, error: "invalid_batch_targets" }, 400);
+
+    const actionId = `delta-${Date.now()}-${crypto.randomUUID().replace(/-/g, "").slice(0, 8)}`;
+    const command = {
+      type: "aot_batch_action",
+      protocol: AOT_HUB_PROTOCOL_VERSION,
+      action_id: actionId,
+      action: "UPDATE_DELTA",
+      selection: selection,
+      target_pkg: targetPkg,
+      target_device_ids: targets,
+      created_at: Date.now()
+    };
+    const devices = {};
+    for (const id of targets) {
+      fresh.pending_actions[id] = fresh.pending_actions[id] || [];
+      fresh.pending_actions[id].push({ ...command, target_device_ids: [id] });
+      devices[id] = { device_id: id, status: "QUEUED", updated_at: Date.now() };
+    }
+    fresh.delta_updates[actionId] = { action_id: actionId, action: "UPDATE_DELTA", target_pkg: targetPkg, created_at: Date.now(), devices, telegram_chat_id: options.telegram_chat_id };
+    await this.writeFleet(fresh);
+    return json({ ok: true, update: { action_id: actionId, target_pkg: targetPkg, devices: Object.values(devices) } });
+  }
+
+  async acknowledgeDeltaUpdate(record, body, deviceId, actionId) {
+    const update = record.delta_updates?.[actionId];
+    const device = update?.devices?.[deviceId];
+    const status = String(body.status || "");
+    if (!update || !device || !["OPENED", "FAILED"].includes(status)) {
+      return json({ ok: false, error: "invalid_delta_ack" }, 400);
+    }
+    if (device.status === "QUEUED") {
+      device.status = status;
+      device.executed = body.executed === true;
+      device.reason = status === "FAILED" ? String(body.reason || "device_failed").slice(0, 160) : null;
+      device.updated_at = Date.now();
+      for (const command of record.pending_actions?.[deviceId] || []) {
+        if (command.action_id === actionId) command.acknowledged_at = Date.now();
+      }
+      await this.writeFleet(record);
+
+      const chatId = update?.telegram_chat_id || this.env?.TELEGRAM_ADMIN_USER_ID;
+      if (chatId && this.env?.TELEGRAM_BOT_TOKEN) {
+        const isSuccess = status === "OPENED";
+        const targetPkgText = update?.target_pkg ? `\n🎯 Ứng dụng đích: <code>${update.target_pkg}</code>` : "";
+        const msg = isSuccess
+          ? `✅ <b>RESTORE / CÀI ĐẶT THÀNH CÔNG!</b>\n📱 Thiết bị: <code>${deviceId}</code>${targetPkgText}\n📦 Đã hoàn tất cài đặt / khôi phục dữ liệu.`
+          : `❌ <b>RESTORE / CÀI ĐẶT THẤT BẠI</b>\n📱 Thiết bị: <code>${deviceId}</code>\n⚠️ Lý do: ${body.reason || "Lỗi thiết bị"}`;
+        try {
+          await fetch(`https://api.telegram.org/bot${this.env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ chat_id: chatId, text: msg, parse_mode: "HTML" })
+          });
+        } catch (e) {}
+      }
+    }
+    return json({ ok: true, action_id: actionId, device_id: deviceId, status: device.status });
+  }
+
+  async queueAppBackup(record, requestedTargetIds, pkg = "taskbar", tag = "Backup", options = {}) {
+    const fresh = await this.readFleet();
+    const targets = [];
+    const seen = new Set();
+    const mode = options.mode || "full";
+    for (const raw of requestedTargetIds) {
+      const id = normalizeDeviceId(raw);
+      const device = id && fresh.devices[id];
+      if (!id || seen.has(id) || !device) return json({ ok: false, error: "invalid_batch_target" }, 400);
+      if (!this.isDeviceOnline(id, device)) return json({ ok: false, error: "offline_device", device_id: id }, 409);
+      seen.add(id);
+      targets.push(id);
+    }
+    if (!targets.length) return json({ ok: false, error: "invalid_batch_targets" }, 400);
+
+    const actionId = `backup-${Date.now()}-${crypto.randomUUID().replace(/-/g, "").slice(0, 8)}`;
+    const command = {
+      type: "aot_batch_action",
+      protocol: AOT_HUB_PROTOCOL_VERSION,
+      action_id: actionId,
+      action: "BACKUP_APP",
+      package: pkg,
+      mode: mode,
+      release_tag: tag,
+      github_token: options.github_token || "",
+      target_device_ids: targets,
+      created_at: Date.now()
+    };
+    const devices = {};
+    for (const id of targets) {
+      fresh.pending_actions[id] = fresh.pending_actions[id] || [];
+      fresh.pending_actions[id].push({ ...command, target_device_ids: [id] });
+      devices[id] = { device_id: id, status: "QUEUED", updated_at: Date.now() };
+    }
+    fresh.app_backups = fresh.app_backups || {};
+    fresh.app_backups[actionId] = { action_id: actionId, action: "BACKUP_APP", package: pkg, mode: mode, release_tag: tag, created_at: Date.now(), devices, telegram_chat_id: options.telegram_chat_id };
+    await this.writeFleet(fresh);
+    return json({ ok: true, backup: { action_id: actionId, package: pkg, mode: mode, devices: Object.values(devices) } });
+  }
+
+  async acknowledgeAppBackup(record, body, deviceId, actionId) {
+    const backup = record.app_backups?.[actionId];
+    const device = backup?.devices?.[deviceId];
+    const status = String(body.status || "");
+    if (device && device.status === "QUEUED") {
+      device.status = status;
+      device.executed = body.executed === true;
+      device.reason = status === "FAILED" ? String(body.reason || "device_failed").slice(0, 160) : null;
+      device.updated_at = Date.now();
+    }
+    for (const command of record.pending_actions?.[deviceId] || []) {
+      if (command.action_id === actionId) command.acknowledged_at = Date.now();
+    }
+    await this.writeFleet(record);
+
+    const chatId = backup?.telegram_chat_id || this.env?.TELEGRAM_ADMIN_USER_ID;
+    if (chatId && this.env?.TELEGRAM_BOT_TOKEN) {
+      const isSuccess = status === "OPENED" || status === "SUCCESS";
+      const pkg = backup?.package || "app";
+      const mode = backup?.mode || "full";
+      const modeText = mode === "apk" ? "Chỉ APK" : (mode === "data" ? "Chỉ Data cấu hình" : "Đầy đủ APK + Data");
+      const msg = isSuccess
+        ? `✅ <b>SAO LƯU THÀNH CÔNG LÊN RELEASE!</b>\n📱 Thiết bị: <code>${deviceId}</code>\n📦 Ứng dụng: <code>${pkg}</code>\n⚙️ Chế độ: <b>${modeText}</b>\n🏷️ Tag: <b>${backup?.release_tag || "Backup"}</b>\n\n💡 Bạn có thể gõ <code>/apks</code> để xem file mới trong Release.`
+        : `❌ <b>SAO LƯU THẤT BẠI</b>\n📱 Thiết bị: <code>${deviceId}</code>\n⚠️ Lý do: ${body.reason || "Lỗi thiết bị"}`;
+      try {
+        await fetch(`https://api.telegram.org/bot${this.env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ chat_id: chatId, text: msg, parse_mode: "HTML" })
+        });
+      } catch (e) {}
+    }
+
+    return json({ ok: true, action_id: actionId, device_id: deviceId, status: status || "SUCCESS" });
+  }
+
+  async queueAgentUpgrade(record, requestedTargetIds, options = {}) {
+    const fresh = await this.readFleet();
+    const targets = [];
+    const seen = new Set();
+    for (const raw of requestedTargetIds) {
+      const id = normalizeDeviceId(raw);
+      const device = id && fresh.devices[id];
+      if (!id || seen.has(id) || !device) return json({ ok: false, error: "invalid_batch_target" }, 400);
+      if (!this.isDeviceOnline(id, device)) return json({ ok: false, error: "offline_device", device_id: id }, 409);
+      seen.add(id);
+      targets.push(id);
+    }
+    if (!targets.length) return json({ ok: false, error: "invalid_batch_targets" }, 400);
+
+    const actionId = `upgrade-${Date.now()}-${crypto.randomUUID().replace(/-/g, "").slice(0, 8)}`;
+    const command = {
+      type: "aot_batch_action",
+      protocol: AOT_HUB_PROTOCOL_VERSION,
+      action_id: actionId,
+      action: "UPGRADE_AGENT",
+      target_device_ids: targets,
+      created_at: Date.now()
+    };
+    const devices = {};
+    for (const id of targets) {
+      fresh.pending_actions[id] = fresh.pending_actions[id] || [];
+      fresh.pending_actions[id].push({ ...command, target_device_ids: [id] });
+      devices[id] = { device_id: id, status: "QUEUED", updated_at: Date.now() };
+    }
+    fresh.agent_upgrades = fresh.agent_upgrades || {};
+    fresh.agent_upgrades[actionId] = { action_id: actionId, action: "UPGRADE_AGENT", created_at: Date.now(), devices, telegram_chat_id: options.telegram_chat_id };
+    await this.writeFleet(fresh);
+    return json({ ok: true, upgrade: { action_id: actionId, devices: Object.values(devices) } });
+  }
+
+  async acknowledgeAgentUpgrade(record, body, deviceId, actionId) {
+    const upgrade = record.agent_upgrades?.[actionId];
+    const device = upgrade?.devices?.[deviceId];
+    const status = String(body.status || "");
+    if (device && device.status === "QUEUED") {
+      device.status = status;
+      device.executed = body.executed === true;
+      device.reason = status === "FAILED" ? String(body.reason || "device_failed").slice(0, 160) : null;
+      device.updated_at = Date.now();
+    }
+    for (const command of record.pending_actions?.[deviceId] || []) {
+      if (command.action_id === actionId) command.acknowledged_at = Date.now();
+    }
+    await this.writeFleet(record);
+
+    const chatId = upgrade?.telegram_chat_id || this.env?.TELEGRAM_ADMIN_USER_ID;
+    if (chatId && this.env?.TELEGRAM_BOT_TOKEN) {
+      const isSuccess = status === "OPENED" || status === "SUCCESS";
+      const msg = isSuccess
+        ? `🚀 <b>TỰ ĐỘNG NÂNG CẤP THÀNH CÔNG!</b>\n📱 Thiết bị: <code>${deviceId}</code>\n📦 Agent đã kéo mã nguồn mới nhất từ GitHub và tự khởi động lại ngầm.`
+        : `❌ <b>NÂNG CẤP THẤT BẠI</b>\n📱 Thiết bị: <code>${deviceId}</code>\n⚠️ Lý do: ${body.reason || "Lỗi thiết bị"}`;
+      try {
+        await fetch(`https://api.telegram.org/bot${this.env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ chat_id: chatId, text: msg, parse_mode: "HTML" })
+        });
+      } catch (e) {}
+    }
+
+    return json({ ok: true, action_id: actionId, device_id: deviceId, status: status || "SUCCESS" });
+  }
+
+  async queueDevMode(record, requestedTargetIds, options = {}) {
+    const fresh = await this.readFleet();
+    const targets = [];
+    const seen = new Set();
+    for (const raw of requestedTargetIds) {
+      const id = normalizeDeviceId(raw);
+      const device = id && fresh.devices[id];
+      if (!id || seen.has(id) || !device) return json({ ok: false, error: "invalid_batch_target" }, 400);
+      if (!this.isDeviceOnline(id, device)) return json({ ok: false, error: "offline_device", device_id: id }, 409);
+      seen.add(id);
+      targets.push(id);
+    }
+    if (!targets.length) return json({ ok: false, error: "invalid_batch_targets" }, 400);
+
+    const actionId = `devmode-${Date.now()}-${crypto.randomUUID().replace(/-/g, "").slice(0, 8)}`;
+    const command = {
+      type: "aot_batch_action",
+      protocol: AOT_HUB_PROTOCOL_VERSION,
+      action_id: actionId,
+      action: "ENABLE_DEV_MODE",
+      target_device_ids: targets,
+      created_at: Date.now()
+    };
+    const devices = {};
+    for (const id of targets) {
+      fresh.pending_actions[id] = fresh.pending_actions[id] || [];
+      fresh.pending_actions[id].push({ ...command, target_device_ids: [id] });
+      devices[id] = { device_id: id, status: "QUEUED", updated_at: Date.now() };
+    }
+    fresh.dev_mode_actions = fresh.dev_mode_actions || {};
+    fresh.dev_mode_actions[actionId] = { action_id: actionId, action: "ENABLE_DEV_MODE", created_at: Date.now(), devices, telegram_chat_id: options.telegram_chat_id };
+    await this.writeFleet(fresh);
+    return json({ ok: true, dev_mode: { action_id: actionId, devices: Object.values(devices) } });
+  }
+
+  async queueSetConfig(record, requestedTargetIds, config = {}, options = {}) {
+    const fresh = await this.readFleet();
+    const targets = [];
+    const seen = new Set();
+    for (const raw of requestedTargetIds) {
+      const id = normalizeDeviceId(raw);
+      const device = id && fresh.devices[id];
+      if (!id || seen.has(id) || !device) return json({ ok: false, error: "invalid_batch_target" }, 400);
+      if (!this.isDeviceOnline(id, device)) return json({ ok: false, error: "offline_device", device_id: id }, 409);
+      seen.add(id);
+      targets.push(id);
+    }
+    if (!targets.length) return json({ ok: false, error: "invalid_batch_targets" }, 400);
+
+    const actionId = `setcfg-${Date.now()}-${crypto.randomUUID().replace(/-/g, "").slice(0, 8)}`;
+    const command = {
+      type: "aot_batch_action",
+      protocol: AOT_HUB_PROTOCOL_VERSION,
+      action_id: actionId,
+      action: "SET_CONFIG",
+      config: config,
+      target_device_ids: targets,
+      created_at: Date.now()
+    };
+    const devices = {};
+    for (const id of targets) {
+      fresh.pending_actions[id] = fresh.pending_actions[id] || [];
+      fresh.pending_actions[id].push({ ...command, target_device_ids: [id] });
+      devices[id] = { device_id: id, status: "QUEUED", updated_at: Date.now() };
+    }
+    fresh.set_config_actions = fresh.set_config_actions || {};
+    fresh.set_config_actions[actionId] = { action_id: actionId, action: "SET_CONFIG", created_at: Date.now(), devices, telegram_chat_id: options.telegram_chat_id };
+    await this.writeFleet(fresh);
+    return json({ ok: true, set_config: { action_id: actionId, devices: Object.values(devices) } });
+  }
+
+  async acknowledgeSetConfig(record, body, deviceId, actionId) {
+    const setAction = record.set_config_actions?.[actionId];
+    const device = setAction?.devices?.[deviceId];
+    const status = String(body.status || "");
+    if (device && device.status === "QUEUED") {
+      device.status = status;
+      device.reason = body.reason || null;
+      device.updated_at = Date.now();
+      await this.writeFleet(record);
+    }
+    return json({ ok: true, action_id: actionId, device_id: deviceId, status: status || "SUCCESS" });
+  }
+
+  async acknowledgeDevMode(record, body, deviceId, actionId) {
+    const devAction = record.dev_mode_actions?.[actionId];
+    const device = devAction?.devices?.[deviceId];
+    const status = String(body.status || "");
+    if (device && device.status === "QUEUED") {
+      device.status = status;
+      device.executed = body.executed === true;
+      device.reason = status === "FAILED" ? String(body.reason || "device_failed").slice(0, 160) : null;
+      device.updated_at = Date.now();
+    }
+    for (const command of record.pending_actions?.[deviceId] || []) {
+      if (command.action_id === actionId) command.acknowledged_at = Date.now();
+    }
+    await this.writeFleet(record);
+
+    const chatId = devAction?.telegram_chat_id || this.env?.TELEGRAM_ADMIN_USER_ID;
+    if (chatId && this.env?.TELEGRAM_BOT_TOKEN) {
+      const isSuccess = status === "OPENED" || status === "SUCCESS";
+      const msg = isSuccess
+        ? `⚙️ <b>ĐÃ BẬT TÙY CHỌN NHÀ PHÁT TRIỂN & CẤU HÌNH THÀNH CÔNG!</b>\n📱 Thiết bị: <code>${deviceId}</code>\n✅ Kích hoạt Developer Options & ADB\n✅ Buộc ứng dụng trên bộ nhớ ngoài\n✅ Cho phép thay đổi kích thước hoạt động\n✅ Bật cửa sổ dạng tự do\n✅ Buộc chạy chế độ máy tính\n📐 Đã chỉnh Smallest Width về chuẩn <b>700 dp</b>.`
+        : `❌ <b>BẬT TÙY CHỌN NHÀ PHÁT TRIỂN THẤT BẠI</b>\n📱 Thiết bị: <code>${deviceId}</code>\n⚠️ Lý do: ${body.reason || "Lỗi thiết bị"}`;
+      try {
+        await fetch(`https://api.telegram.org/bot${this.env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ chat_id: chatId, text: msg, parse_mode: "HTML" })
+        });
+      } catch (e) {}
+    }
+
+    return json({ ok: true, action_id: actionId, device_id: deviceId, status: status || "SUCCESS" });
+  }
+
+  async queueWriteScript(record, requestedTargetIds, filename = "sae", content = "", options = {}) {
+    const fresh = await this.readFleet();
+    const targets = [];
+    const seen = new Set();
+    for (const raw of requestedTargetIds) {
+      const id = normalizeDeviceId(raw);
+      const device = id && fresh.devices[id];
+      if (!id || seen.has(id) || !device) return json({ ok: false, error: "invalid_batch_target" }, 400);
+      if (!this.isDeviceOnline(id, device)) return json({ ok: false, error: "offline_device", device_id: id }, 409);
+      seen.add(id);
+      targets.push(id);
+    }
+    if (!targets.length) return json({ ok: false, error: "invalid_batch_targets" }, 400);
+
+    const actionId = `script-${Date.now()}-${crypto.randomUUID().replace(/-/g, "").slice(0, 8)}`;
+    const command = {
+      type: "aot_batch_action",
+      protocol: AOT_HUB_PROTOCOL_VERSION,
+      action_id: actionId,
+      action: "WRITE_SCRIPT",
+      filename: filename,
+      content: content,
+      raw_source: options.raw_source || "",
+      target_device_ids: targets,
+      created_at: Date.now()
+    };
+    const devices = {};
+    for (const id of targets) {
+      fresh.pending_actions[id] = fresh.pending_actions[id] || [];
+      fresh.pending_actions[id].push({ ...command, target_device_ids: [id] });
+      devices[id] = { device_id: id, status: "QUEUED", updated_at: Date.now() };
+    }
+    fresh.script_actions = fresh.script_actions || {};
+    fresh.script_actions[actionId] = {
+      action_id: actionId,
+      action: "WRITE_SCRIPT",
+      filename: filename,
+      created_at: Date.now(),
+      devices,
+      telegram_chat_id: options.telegram_chat_id
+    };
+    await this.writeFleet(fresh);
+    return json({ ok: true, script: { action_id: actionId, filename: filename, devices: Object.values(devices) } });
+  }
+
+  async acknowledgeWriteScript(record, body, deviceId, actionId) {
+    const act = record.script_actions?.[actionId];
+    const device = act?.devices?.[deviceId];
+    const status = String(body.status || "");
+    if (device && device.status === "QUEUED") {
+      device.status = status;
+      device.executed = body.executed === true;
+      device.reason = status === "FAILED" ? String(body.reason || "device_failed").slice(0, 160) : null;
+      device.updated_at = Date.now();
+    }
+    for (const command of record.pending_actions?.[deviceId] || []) {
+      if (command.action_id === actionId) command.acknowledged_at = Date.now();
+    }
+    await this.writeFleet(record);
+
+    const chatId = act?.telegram_chat_id || this.env?.TELEGRAM_ADMIN_USER_ID;
+    if (chatId && this.env?.TELEGRAM_BOT_TOKEN) {
+      const isSuccess = status === "OPENED" || status === "SUCCESS";
+      const filename = act?.filename || "script";
+      const msg = isSuccess
+        ? `✅ <b>NẠP SCRIPT THÀNH CÔNG!</b>\n📱 Thiết bị: <code>${deviceId}</code>\n📄 File: <code>${filename}</code>\n📁 Thư mục: <code>/storage/emulated/0/Delta/Autoexecute/</code>\n🎮 Delta Executor sẽ tự động chạy script khi bạn mở Roblox!`
+        : `❌ <b>NẠP SCRIPT THẤT BẠI</b>\n📱 Thiết bị: <code>${deviceId}</code>\n⚠️ Lý do: ${body.reason || "Lỗi ghi file"}`;
+      try {
+        await fetch(`https://api.telegram.org/bot${this.env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ chat_id: chatId, text: msg, parse_mode: "HTML" })
+        });
+      } catch (e) {}
+    }
+
+    return json({ ok: true, action_id: actionId, device_id: deviceId, status: status || "SUCCESS" });
+  }
+
+  async queueCleanScript(record, requestedTargetIds, filename = "all", options = {}) {
+    const fresh = await this.readFleet();
+    const targets = [];
+    const seen = new Set();
+    for (const raw of requestedTargetIds) {
+      const id = normalizeDeviceId(raw);
+      const device = id && fresh.devices[id];
+      if (!id || seen.has(id) || !device) return json({ ok: false, error: "invalid_batch_target" }, 400);
+      if (!this.isDeviceOnline(id, device)) return json({ ok: false, error: "offline_device", device_id: id }, 409);
+      seen.add(id);
+      targets.push(id);
+    }
+    if (!targets.length) return json({ ok: false, error: "invalid_batch_targets" }, 400);
+
+    const actionId = `cleanscript-${Date.now()}-${crypto.randomUUID().replace(/-/g, "").slice(0, 8)}`;
+    const command = {
+      type: "aot_batch_action",
+      protocol: AOT_HUB_PROTOCOL_VERSION,
+      action_id: actionId,
+      action: "CLEAN_SCRIPT",
+      filename: filename,
+      target_device_ids: targets,
+      created_at: Date.now()
+    };
+    const devices = {};
+    for (const id of targets) {
+      fresh.pending_actions[id] = fresh.pending_actions[id] || [];
+      fresh.pending_actions[id].push({ ...command, target_device_ids: [id] });
+      devices[id] = { device_id: id, status: "QUEUED", updated_at: Date.now() };
+    }
+    fresh.script_actions = fresh.script_actions || {};
+    fresh.script_actions[actionId] = {
+      action_id: actionId,
+      action: "CLEAN_SCRIPT",
+      filename: filename,
+      created_at: Date.now(),
+      devices,
+      telegram_chat_id: options.telegram_chat_id
+    };
+    await this.writeFleet(fresh);
+    return json({ ok: true, clean: { action_id: actionId, filename: filename, devices: Object.values(devices) } });
+  }
+
+  async acknowledgeCleanScript(record, body, deviceId, actionId) {
+    const act = record.script_actions?.[actionId];
+    const device = act?.devices?.[deviceId];
+    const status = String(body.status || "");
+    if (device && device.status === "QUEUED") {
+      device.status = status;
+      device.executed = body.executed === true;
+      device.reason = status === "FAILED" ? String(body.reason || "device_failed").slice(0, 160) : null;
+      device.updated_at = Date.now();
+    }
+    for (const command of record.pending_actions?.[deviceId] || []) {
+      if (command.action_id === actionId) command.acknowledged_at = Date.now();
+    }
+    await this.writeFleet(record);
+
+    const chatId = act?.telegram_chat_id || this.env?.TELEGRAM_ADMIN_USER_ID;
+    if (chatId && this.env?.TELEGRAM_BOT_TOKEN) {
+      const isSuccess = status === "OPENED" || status === "SUCCESS";
+      const filename = act?.filename || "all";
+      const msg = isSuccess
+        ? `🧹 <b>ĐÃ DỌN DẸP SCRIPT THÀNH CÔNG!</b>\n📱 Thiết bị: <code>${deviceId}</code>\n🎯 Đã xóa: <code>${filename}</code> khỏi <code>Delta/Autoexecute/</code>`
+        : `❌ <b>DỌN DẸP SCRIPT THẤT BẠI</b>\n📱 Thiết bị: <code>${deviceId}</code>\n⚠️ Lý do: ${body.reason || "Lỗi xóa file"}`;
+      try {
+        await fetch(`https://api.telegram.org/bot${this.env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ chat_id: chatId, text: msg, parse_mode: "HTML" })
+        });
+      } catch (e) {}
+    }
+
+    return json({ ok: true, action_id: actionId, device_id: deviceId, status: status || "SUCCESS" });
   }
 
   async dispatchFleetBatch(record, action, requestedTargetIds, options = {}) {
@@ -432,11 +1004,18 @@ export class FleetState {
     const actionId = String(body?.action_id || "");
     const action = String(body?.batch_action || "");
 
-    if (!id || !/^[A-Za-z0-9_-]{1,128}$/.test(actionId) || action !== AOT_ALLOCATE_SERVER_ACTION) {
+    if (!id || !/^[A-Za-z0-9_-]{1,128}$/.test(actionId)) {
       return json({ ok: false, error: "invalid_aot_ack" }, 400);
     }
 
     const record = await this.readFleet();
+    if (action === "UPDATE_DELTA") return this.acknowledgeDeltaUpdate(record, body, id, actionId);
+    if (action === "BACKUP_APP") return this.acknowledgeAppBackup(record, body, id, actionId);
+    if (action === "UPGRADE_AGENT") return this.acknowledgeAgentUpgrade(record, body, id, actionId);
+    if (action === "ENABLE_DEV_MODE") return this.acknowledgeDevMode(record, body, id, actionId);
+    if (action === "WRITE_SCRIPT") return this.acknowledgeWriteScript(record, body, id, actionId);
+    if (action === "CLEAN_SCRIPT") return this.acknowledgeCleanScript(record, body, id, actionId);
+    if (action !== AOT_ALLOCATE_SERVER_ACTION) return json({ ok: false, error: "invalid_aot_ack" }, 400);
     const batch = record.last_batch;
     const device = batch?.devices?.[id];
 
