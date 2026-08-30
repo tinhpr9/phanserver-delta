@@ -180,13 +180,18 @@ always_on: true
 - **Cấm Tuyệt Đối Sửa Mù (Zero Blind Code Mutations)**: Nghiêm cấm việc nhảy vào sửa code ngay khi chưa phân tích toàn bộ các nơi đang gọi hoặc phụ thuộc vào module đó, triệt tiêu 100% nguy cơ phát sinh lỗi hồi quy (Regression Bugs).
 - **Đồng Bộ Song Song Cả Repo Và Hệ Thống Luật (Dual-Channel Sync)**: Bắt buộc áp dụng ngay và đồng bộ điều luật này vào tất cả các kênh lưu trữ SSOT.
 
-## 27. QUY TẮC CẤM SUY ĐOÁN DỮ LIỆU CẤU HÌNH VÀ TẬP TIN NGƯỜI DÙNG KHI CHƯA XÁC MINH THỰC TẾ (STRICT_ZERO_ASSUMPTION_AND_VERIFIED_CONFIG_DISCOVERY_RULE - Hard Rule)
+## 27. QUY TẮC CẤM SUY ĐOÁN DỮ LIỆU VÀ CẤM TUYỆT ĐỐI LƯU/DÁN SECRET TRÊN THIẾT BỊ ĐẦU CUỐI/MÁY ẢO THUÊ (STRICT_ZERO_ASSUMPTION_AND_ZERO_CLIENT_SECRET_RULE - Hard Rule)
+- **Cấm Tuyệt Đối Yêu Cầu Người Dùng Dán/Lưu Secret Lên Máy Ảo Thuê Hoặc Thiết Bị Đầu Cuối (Absolute Zero Client Secret Injection - Hard Rule)**:
+  - Nghiêm cấm Antigravity dưới mọi hình thức đưa ra hướng dẫn, câu lệnh hoặc gợi ý người dùng dán, lưu trữ hoặc ghi cứng các thông tin bí mật (như GitHub Token, Private Keys, Password, API Tokens) vào ổ cứng/tệp cấu hình (`agent_config.json`, `.bashrc`, `hosts.yml`) của các máy con, máy ảo đám mây đi thuê (Ugphone, Cloud Phone) hoặc thiết bị dùng chung.
+  - Việc yêu cầu người dùng dán Secret lên máy ảo thuê bị coi là **LỖI VI PHẠM BẢO MẬT CẤP ĐỘ NGUY HIỂM TỐI CAO (Critical Security Hazard)**.
 - **Cấm Tuyệt Đối Tự Suy Đoán Sự Tồn Tại Của Dữ Liệu/Secret Trong Thư Mục Người Dùng (Zero Unverified Config or Secret Assumptions)**:
   - Nghiêm cấm Antigravity tự ý suy đoán rằng trong một thư mục bất kỳ (như `Shouko/`, `Download/`, `Home/`) đã có sẵn mã Token, mật khẩu, file cấu hình hay cookie của người dùng chỉ vì trong mã nguồn có dòng kiểm tra đường dẫn đó.
   - Trước khi khẳng định một thư mục có chứa cấu hình hay hướng dẫn người dùng khôi phục/sao chép, Antigravity BẮT BUỘC phải đối chiếu trực tiếp mã nguồn script cài đặt (`setup_device.sh`) và bằng chứng tệp thực tế.
-- **Nguyên Tắc Thiết Kế Không Điểm Nghẽn Cấu Hình Thiết Bị (Zero Local Secret Dependency Principle)**:
-  - Mọi hoạt động sao lưu, phân phối lệnh hoặc tương tác mạng BẮT BUỘC phải được cấp quyền tập trung từ Máy chủ/Worker (Token Delegation) hoặc có cơ chế tự cấp phát độc lập; TUYỆT ĐỐI KHÔNG bắt người dùng phải cấu hình lại Secret thủ công trên từng máy con mới.
+- **Bắt Buộc Ủy Quyền Tập Trung Từ Máy Chủ Đám Mây (Mandatory Centralized Cloud Secret & Token Delegation)**:
+  - Mọi hoạt động xác thực, đóng gói sao lưu và tải tệp lên GitHub Release BẮT BUỘC phải sử dụng cơ chế cấp quyền tạm thời tự động từ Máy chủ trung tâm (Cloudflare Worker Token Delegation).
+  - Thiết bị đầu cuối (Client/Agent) chỉ nhận quyền tạm thời theo từng phiên lệnh để thực thi và tự động hủy bỏ ngay sau khi hoàn tất; TUYỆT ĐỐI KHÔNG lưu lại bất kỳ dấu vết Secret nào trên máy ảo con.
 - **Đồng Bộ Song Song Cả Repo Và Hệ Thống Luật (Dual-Channel Sync)**: Bắt buộc áp dụng ngay và đồng bộ điều luật này vào tất cả các kênh lưu trữ SSOT.
+
 
 
 
