@@ -299,10 +299,53 @@ def upload_to_github_release(
                     import json
                     with open(cfg_file, "r", encoding="utf-8") as f:
                         cfg_data = json.load(f)
-                        token_cand = cfg_data.get("github_token") or cfg_data.get("token")
+                        token_cand = cfg_data.get("github_token") or cfg_data.get("token") or cfg_data.get("gh_token")
                         if token_cand:
                             auth_token = str(token_cand).strip()
                             break
+                except Exception:
+                    pass
+
+    if not auth_token:
+        # Check gh CLI hosts.yml directly without needing gh in PATH
+        gh_hosts = [
+            pathlib.Path("/data/data/com.termux/files/home/.config/gh/hosts.yml"),
+            pathlib.Path.home() / ".config" / "gh" / "hosts.yml",
+            pathlib.Path("/storage/emulated/0/Download/hosts.yml"),
+            pathlib.Path("/storage/emulated/0/Download/Shouko/hosts.yml"),
+        ]
+        for gh_host in gh_hosts:
+            if gh_host.is_file():
+                try:
+                    for line in gh_host.read_text(encoding="utf-8").splitlines():
+                        if "oauth_token:" in line:
+                            cand = line.split("oauth_token:", 1)[1].strip().strip('"').strip("'")
+                            if cand:
+                                auth_token = cand
+                                break
+                    if auth_token:
+                        break
+                except Exception:
+                    pass
+
+    if not auth_token:
+        # Check .git-credentials
+        git_creds = [
+            pathlib.Path("/data/data/com.termux/files/home/.git-credentials"),
+            pathlib.Path.home() / ".git-credentials",
+        ]
+        for gc in git_creds:
+            if gc.is_file():
+                try:
+                    for line in gc.read_text(encoding="utf-8").splitlines():
+                        if "github.com" in line and "@" in line:
+                            user_pass = line.split("@github.com")[0].split("://")[-1]
+                            token_part = user_pass.split(":")[-1]
+                            if token_part.startswith("ghp_") or token_part.startswith("github_pat_"):
+                                auth_token = token_part
+                                break
+                    if auth_token:
+                        break
                 except Exception:
                     pass
 
