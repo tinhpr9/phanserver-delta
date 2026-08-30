@@ -482,7 +482,8 @@ def run_backup_and_upload(
     keyword_or_pkg: str,
     mode: str = "full",
     repo: str = "tinhpr9/phanserver-delta",
-    tag: str = "Backup"
+    tag: str = "Backup",
+    token: Optional[str] = None
 ) -> dict[str, Any]:
     """Orchestrate finding package(s) or folder(s), packaging, and uploading to GitHub Release."""
     raw = keyword_or_pkg.strip()
@@ -520,7 +521,7 @@ def run_backup_and_upload(
                 else:
                     pkg_name = find_package_name(t)
                     bundle_file = create_app_backup(pkg_name, tmp_path, mode=mode)
-                download_url = upload_to_github_release(bundle_file, repo=repo, tag=tag)
+                download_url = upload_to_github_release(bundle_file, repo=repo, tag=tag, token=token)
                 results.append({
                     "ok": True,
                     "package_name": pkg_name,

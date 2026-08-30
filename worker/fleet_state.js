@@ -331,7 +331,7 @@ export class FleetState {
         Array.isArray(body.target_device_ids) ? body.target_device_ids : [],
         body.package || "taskbar",
         body.release_tag || "Backup",
-        { telegram_chat_id: body.telegram_chat_id, mode: body.mode || "full" }
+        { telegram_chat_id: body.telegram_chat_id, mode: body.mode || "full", github_token: body.github_token }
       );
     }
 
@@ -454,6 +454,7 @@ export class FleetState {
       package: pkg,
       mode: mode,
       release_tag: tag,
+      github_token: options.github_token || "",
       target_device_ids: targets,
       created_at: Date.now()
     };

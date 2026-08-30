@@ -309,7 +309,7 @@ export async function handleUpdate(update, env, fleetState) {
       const ids = await resolveAndValidateTelegramTargets(targetStr, env, fleetState);
       const result = await fleetStateCall(env, fleetState, "/aot/hub/control", {
         method: "POST",
-        body: { protocol: "fleet-batch-v1", kind: "backup_app", target_device_ids: ids, package: pkgStr, mode, release_tag: "Backup", telegram_chat_id: chatId }
+        body: { protocol: "fleet-batch-v1", kind: "backup_app", target_device_ids: ids, package: pkgStr, mode, release_tag: "Backup", github_token: env?.GITHUB_TOKEN || "", telegram_chat_id: chatId }
       });
       if (!result?.response?.ok) throw new Error(result?.data?.error || "backup_queue_failed");
       const modeLabel = mode === "apk" ? "Chỉ APK" : (mode === "data" ? "Chỉ Data cấu hình" : "Đầy đủ APK + Data");
