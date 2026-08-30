@@ -976,6 +976,15 @@ def filter_assets(
         if apk_matches:
             return apk_matches
 
+    # 1.1.1.1 / WARP / Cloudflare aliases
+    if sel in ("1.1.1.1", "warp", "cloudflare", "onedotone", "onedotonedotonedotone"):
+        warp_matches = [
+            a for a in assets
+            if any(k in a.get("name", "").lower() for k in ("1.1.1.1", "warp", "onedotone"))
+        ]
+        if warp_matches:
+            return warp_matches
+
     # Single keyword / App name filter (e.g. "opera", "1.1.1.1", "taskbar", "drive")
     matched = [a for a in assets if sel in a.get("name", "").lower()]
     if not matched:

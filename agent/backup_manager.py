@@ -185,7 +185,12 @@ def detect_app_username(package_name: str) -> Optional[str]:
 def create_app_backup(package_name: str, output_dir: pathlib.Path, mode: str = "full") -> pathlib.Path:
     """Extract APKs, Data directory or both for package_name and create backup artifact."""
     mode = (mode or "full").lower()
-    raw_clean_name = package_name.split(".")[-1].capitalize()
+    known_names = {
+        "com.cloudflare.onedotonedotonedotone": "1.1.1.1_WARP",
+        "com.termux": "Termux",
+        "com.roblox.client": "Roblox",
+    }
+    raw_clean_name = known_names.get(package_name) or package_name.split(".")[-1].capitalize()
     detected_user = detect_app_username(package_name)
     user_tag = f"_{detected_user}" if detected_user else ""
     clean_name = f"{raw_clean_name}{user_tag}"
@@ -209,7 +214,22 @@ def create_app_backup(package_name: str, output_dir: pathlib.Path, mode: str = "
 
         for line in pm_out.splitlines():
             if line.startswith("package:"):
-                apk_paths.append(pathlib.Path(line.replace("package:", "").strip()))
+                cand_apk = pathlib.Path(line.replace("package:", "").strip())
+                if cand_apk not in apk_paths:
+                    apk_paths.append(cand_apk)
+
+        # Check if parent directory contains additional split APK slices
+        if apk_paths:
+            app_dir = apk_paths[0].parent
+            try:
+                find_res = _run_as_root(f"find {shlex.quote(str(app_dir))} -maxdepth 2 -name '*.apk' 2>/dev/null", timeout=5)
+                if find_res.returncode == 0 and find_res.stdout.strip():
+                    for l in find_res.stdout.splitlines():
+                        f_apk = pathlib.Path(l.strip())
+                        if f_apk not in apk_paths:
+                            apk_paths.append(f_apk)
+            except Exception:
+                pass
 
         if not apk_paths:
             raise BackupError(f"Không tìm thấy file APK nào cho gói {package_name}.")
