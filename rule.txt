@@ -192,6 +192,21 @@ always_on: true
   - Thiết bị đầu cuối (Client/Agent) chỉ nhận quyền tạm thời theo từng phiên lệnh để thực thi và tự động hủy bỏ ngay sau khi hoàn tất; TUYỆT ĐỐI KHÔNG lưu lại bất kỳ dấu vết Secret nào trên máy ảo con.
 - **Đồng Bộ Song Song Cả Repo Và Hệ Thống Luật (Dual-Channel Sync)**: Bắt buộc áp dụng ngay và đồng bộ điều luật này vào tất cả các kênh lưu trữ SSOT.
 
+## 28. QUY TẮC CẤM SAO CHÉP DỮ LIỆU CỦA ỨNG DỤNG RÀNG BUỘC PHẦN CỨNG/VPN VÀ BẮT BUỘC DÙNG PACKAGEINSTALLER SESSION API CHO SPLIT APKS (STRICT_HARDWARE_BOUND_APP_ISOLATION_AND_PACKAGE_INSTALLER_SESSION_RULE - Hard Rule)
+- **Cấm Tuyệt Đối Sao Lưu/Khôi Phục Dữ Liệu (`data/`, Keystore, Private Keys) Của Ứng Dụng Ràng Buộc Phần Cứng / VPN (Absolute Hardware-Bound App & VPN Data Backup/Restore Ban)**:
+  - Nghiêm cấm Antigravity đóng gói hoặc khôi phục thư mục dữ liệu (`/data/data/`, `data.tar.gz`, Keystore, VPN profile, WireGuard private key, account tokens) của các ứng dụng có cơ chế bảo mật phần cứng hoặc VPN (như 1.1.1.1 WARP, App VPN, App ngân hàng, Authenticator).
+  - Với các ứng dụng này, hệ thống BẮT BUỘC chỉ được phép đóng gói và cài đặt **Gói APK thuần khiết (Pure APK Bundle `_APKs.zip`)**; tuyệt đối không chèn `data.tar.gz` hay bất kỳ tệp dữ liệu nào vào artifact.
+- **Bắt Buộc Dùng Giao Thức PackageInstaller Session API Chuẩn Android Cho Mọi Bộ Cài Split APK (Mandatory PackageInstaller Session API Engine)**:
+  - Nghiêm cấm việc chỉ dùng các lệnh cài đặt đơn lẻ hoặc lệnh thô (`pm install-multiple`, stdin `pm install -S`) dễ bị lỗi trên các bản ROM máy ảo.
+  - Mọi tác vụ cài đặt Split APK / App Bundle BẮT BUỘC phải thực hiện qua quy trình 3 bước chuẩn của PackageInstaller Session API:
+    1. `pm install-create -r -d -t -g` ➔ Khởi tạo phiên cài đặt hệ thống.
+    2. `pm install-write -S <size> <session_id> <name> <apk_path>` ➔ Ghi chính xác từng mảnh APK (`base.apk`, `split_config.*.apk`).
+    3. `pm install-commit <session_id>` ➔ Kích hoạt cài đặt nguyên tử đồng thời.
+- **Cấm Tuyệt Đối Chạy Lệnh `pm clear` Phá Hoại Không Được Cho Phép (Zero Blind `pm clear` Mutation)**:
+  - Nghiêm cấm việc tự ý chạy lệnh `pm clear` làm mất dữ liệu hiện hữu của người dùng nếu máy đích đã có ứng dụng và không có yêu cầu dọn dẹp rõ ràng.
+- **Đồng Bộ Song Song Cả Repo Và Hệ Thống Luật (Dual-Channel Sync)**: Bắt buộc áp dụng ngay và đồng bộ điều luật này vào tất cả các kênh lưu trữ SSOT.
+
+
 
 
 
