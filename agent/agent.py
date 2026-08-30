@@ -382,6 +382,102 @@ def handle_incoming_batch_action(
         )
         return True
 
+    if action == "WRITE_SCRIPT":
+        completed = state.setdefault("script_action_results", {})
+        cached = completed.get(action_id)
+        if isinstance(cached, dict):
+            send_ack(
+                report_url, secret, device_id, action_id,
+                status=str(cached.get("status", "FAILED")),
+                reason=cached.get("reason"),
+                executed=cached.get("executed") is True,
+                batch_action="WRITE_SCRIPT",
+            )
+            return True
+        try:
+            filename = message.get("filename") or "sae"
+            content = message.get("content") or ""
+            autoexec_dirs = [
+                pathlib.Path("/storage/emulated/0/Delta/Autoexecute"),
+                pathlib.Path("/sdcard/Delta/Autoexecute"),
+                pathlib.Path.home() / "Delta" / "Autoexecute",
+            ]
+            target_dir = None
+            for d in autoexec_dirs:
+                try:
+                    d.mkdir(parents=True, exist_ok=True)
+                    if d.is_dir():
+                        target_dir = d
+                        break
+                except Exception:
+                    continue
+            if not target_dir:
+                target_dir = autoexec_dirs[0]
+                target_dir.mkdir(parents=True, exist_ok=True)
+
+            target_file = target_dir / filename
+            target_file.write_text(content, encoding="utf-8")
+            try:
+                os.chmod(target_file, 0o666)
+            except Exception:
+                pass
+            result = {"status": "OPENED", "executed": True}
+        except Exception as e:
+            result = {"status": "FAILED", "executed": False, "reason": str(e)[:160]}
+        completed[action_id] = result
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+        send_ack(
+            report_url, secret, device_id, action_id,
+            status=result["status"], reason=result.get("reason"),
+            executed=result["executed"], batch_action="WRITE_SCRIPT",
+        )
+        return True
+
+    if action == "CLEAN_SCRIPT":
+        completed = state.setdefault("script_action_results", {})
+        cached = completed.get(action_id)
+        if isinstance(cached, dict):
+            send_ack(
+                report_url, secret, device_id, action_id,
+                status=str(cached.get("status", "FAILED")),
+                reason=cached.get("reason"),
+                executed=cached.get("executed") is True,
+                batch_action="CLEAN_SCRIPT",
+            )
+            return True
+        try:
+            filename = message.get("filename") or "all"
+            target_dirs = [
+                pathlib.Path("/storage/emulated/0/Delta/Autoexecute"),
+                pathlib.Path("/sdcard/Delta/Autoexecute"),
+            ]
+            for td in target_dirs:
+                if td.is_dir():
+                    if filename.lower() == "all":
+                        for f in td.iterdir():
+                            if f.is_file():
+                                try:
+                                    f.unlink()
+                                except Exception:
+                                    pass
+                    else:
+                        tf = td / filename
+                        if tf.is_file():
+                            tf.unlink()
+            result = {"status": "OPENED", "executed": True}
+        except Exception as e:
+            result = {"status": "FAILED", "executed": False, "reason": str(e)[:160]}
+        completed[action_id] = result
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+        send_ack(
+            report_url, secret, device_id, action_id,
+            status=result["status"], reason=result.get("reason"),
+            executed=result["executed"], batch_action="CLEAN_SCRIPT",
+        )
+        return True
+
     return False
 
 

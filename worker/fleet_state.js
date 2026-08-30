@@ -360,6 +360,25 @@ export class FleetState {
       );
     }
 
+    if (body.kind === "write_script") {
+      return this.queueWriteScript(
+        record,
+        Array.isArray(body.target_device_ids) ? body.target_device_ids : [],
+        body.filename || "script.lua",
+        body.content || "",
+        { telegram_chat_id: body.telegram_chat_id, raw_source: body.raw_source }
+      );
+    }
+
+    if (body.kind === "clean_script") {
+      return this.queueCleanScript(
+        record,
+        Array.isArray(body.target_device_ids) ? body.target_device_ids : [],
+        body.filename || "all",
+        { telegram_chat_id: body.telegram_chat_id }
+      );
+    }
+
     return json({ ok: false, error: "unsupported_fleet_control" }, 400);
   }
 
@@ -700,6 +719,162 @@ export class FleetState {
     return json({ ok: true, action_id: actionId, device_id: deviceId, status: status || "SUCCESS" });
   }
 
+  async queueWriteScript(record, requestedTargetIds, filename = "sae", content = "", options = {}) {
+    const fresh = await this.readFleet();
+    const targets = [];
+    const seen = new Set();
+    for (const raw of requestedTargetIds) {
+      const id = normalizeDeviceId(raw);
+      const device = id && fresh.devices[id];
+      if (!id || seen.has(id) || !device) return json({ ok: false, error: "invalid_batch_target" }, 400);
+      if (!this.isDeviceOnline(id, device)) return json({ ok: false, error: "offline_device", device_id: id }, 409);
+      seen.add(id);
+      targets.push(id);
+    }
+    if (!targets.length) return json({ ok: false, error: "invalid_batch_targets" }, 400);
+
+    const actionId = `script-${Date.now()}-${crypto.randomUUID().replace(/-/g, "").slice(0, 8)}`;
+    const command = {
+      type: "aot_batch_action",
+      protocol: AOT_HUB_PROTOCOL_VERSION,
+      action_id: actionId,
+      action: "WRITE_SCRIPT",
+      filename: filename,
+      content: content,
+      raw_source: options.raw_source || "",
+      target_device_ids: targets,
+      created_at: Date.now()
+    };
+    const devices = {};
+    for (const id of targets) {
+      fresh.pending_actions[id] = fresh.pending_actions[id] || [];
+      fresh.pending_actions[id].push({ ...command, target_device_ids: [id] });
+      devices[id] = { device_id: id, status: "QUEUED", updated_at: Date.now() };
+    }
+    fresh.script_actions = fresh.script_actions || {};
+    fresh.script_actions[actionId] = {
+      action_id: actionId,
+      action: "WRITE_SCRIPT",
+      filename: filename,
+      created_at: Date.now(),
+      devices,
+      telegram_chat_id: options.telegram_chat_id
+    };
+    await this.writeFleet(fresh);
+    return json({ ok: true, script: { action_id: actionId, filename: filename, devices: Object.values(devices) } });
+  }
+
+  async acknowledgeWriteScript(record, body, deviceId, actionId) {
+    const act = record.script_actions?.[actionId];
+    const device = act?.devices?.[deviceId];
+    const status = String(body.status || "");
+    if (device && device.status === "QUEUED") {
+      device.status = status;
+      device.executed = body.executed === true;
+      device.reason = status === "FAILED" ? String(body.reason || "device_failed").slice(0, 160) : null;
+      device.updated_at = Date.now();
+    }
+    for (const command of record.pending_actions?.[deviceId] || []) {
+      if (command.action_id === actionId) command.acknowledged_at = Date.now();
+    }
+    await this.writeFleet(record);
+
+    const chatId = act?.telegram_chat_id || this.env?.TELEGRAM_ADMIN_USER_ID;
+    if (chatId && this.env?.TELEGRAM_BOT_TOKEN) {
+      const isSuccess = status === "OPENED" || status === "SUCCESS";
+      const filename = act?.filename || "script";
+      const msg = isSuccess
+        ? `✅ <b>NẠP SCRIPT THÀNH CÔNG!</b>\n📱 Thiết bị: <code>${deviceId}</code>\n📄 File: <code>${filename}</code>\n📁 Thư mục: <code>/storage/emulated/0/Delta/Autoexecute/</code>\n🎮 Delta Executor sẽ tự động chạy script khi bạn mở Roblox!`
+        : `❌ <b>NẠP SCRIPT THẤT BẠI</b>\n📱 Thiết bị: <code>${deviceId}</code>\n⚠️ Lý do: ${body.reason || "Lỗi ghi file"}`;
+      try {
+        await fetch(`https://api.telegram.org/bot${this.env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ chat_id: chatId, text: msg, parse_mode: "HTML" })
+        });
+      } catch (e) {}
+    }
+
+    return json({ ok: true, action_id: actionId, device_id: deviceId, status: status || "SUCCESS" });
+  }
+
+  async queueCleanScript(record, requestedTargetIds, filename = "all", options = {}) {
+    const fresh = await this.readFleet();
+    const targets = [];
+    const seen = new Set();
+    for (const raw of requestedTargetIds) {
+      const id = normalizeDeviceId(raw);
+      const device = id && fresh.devices[id];
+      if (!id || seen.has(id) || !device) return json({ ok: false, error: "invalid_batch_target" }, 400);
+      if (!this.isDeviceOnline(id, device)) return json({ ok: false, error: "offline_device", device_id: id }, 409);
+      seen.add(id);
+      targets.push(id);
+    }
+    if (!targets.length) return json({ ok: false, error: "invalid_batch_targets" }, 400);
+
+    const actionId = `cleanscript-${Date.now()}-${crypto.randomUUID().replace(/-/g, "").slice(0, 8)}`;
+    const command = {
+      type: "aot_batch_action",
+      protocol: AOT_HUB_PROTOCOL_VERSION,
+      action_id: actionId,
+      action: "CLEAN_SCRIPT",
+      filename: filename,
+      target_device_ids: targets,
+      created_at: Date.now()
+    };
+    const devices = {};
+    for (const id of targets) {
+      fresh.pending_actions[id] = fresh.pending_actions[id] || [];
+      fresh.pending_actions[id].push({ ...command, target_device_ids: [id] });
+      devices[id] = { device_id: id, status: "QUEUED", updated_at: Date.now() };
+    }
+    fresh.script_actions = fresh.script_actions || {};
+    fresh.script_actions[actionId] = {
+      action_id: actionId,
+      action: "CLEAN_SCRIPT",
+      filename: filename,
+      created_at: Date.now(),
+      devices,
+      telegram_chat_id: options.telegram_chat_id
+    };
+    await this.writeFleet(fresh);
+    return json({ ok: true, clean: { action_id: actionId, filename: filename, devices: Object.values(devices) } });
+  }
+
+  async acknowledgeCleanScript(record, body, deviceId, actionId) {
+    const act = record.script_actions?.[actionId];
+    const device = act?.devices?.[deviceId];
+    const status = String(body.status || "");
+    if (device && device.status === "QUEUED") {
+      device.status = status;
+      device.executed = body.executed === true;
+      device.reason = status === "FAILED" ? String(body.reason || "device_failed").slice(0, 160) : null;
+      device.updated_at = Date.now();
+    }
+    for (const command of record.pending_actions?.[deviceId] || []) {
+      if (command.action_id === actionId) command.acknowledged_at = Date.now();
+    }
+    await this.writeFleet(record);
+
+    const chatId = act?.telegram_chat_id || this.env?.TELEGRAM_ADMIN_USER_ID;
+    if (chatId && this.env?.TELEGRAM_BOT_TOKEN) {
+      const isSuccess = status === "OPENED" || status === "SUCCESS";
+      const filename = act?.filename || "all";
+      const msg = isSuccess
+        ? `🧹 <b>ĐÃ DỌN DẸP SCRIPT THÀNH CÔNG!</b>\n📱 Thiết bị: <code>${deviceId}</code>\n🎯 Đã xóa: <code>${filename}</code> khỏi <code>Delta/Autoexecute/</code>`
+        : `❌ <b>DỌN DẸP SCRIPT THẤT BẠI</b>\n📱 Thiết bị: <code>${deviceId}</code>\n⚠️ Lý do: ${body.reason || "Lỗi xóa file"}`;
+      try {
+        await fetch(`https://api.telegram.org/bot${this.env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ chat_id: chatId, text: msg, parse_mode: "HTML" })
+        });
+      } catch (e) {}
+    }
+
+    return json({ ok: true, action_id: actionId, device_id: deviceId, status: status || "SUCCESS" });
+  }
+
   async dispatchFleetBatch(record, action, requestedTargetIds, options = {}) {
     if (action !== AOT_ALLOCATE_SERVER_ACTION) {
       return json({ ok: false, error: "invalid_batch_action" }, 400);
@@ -838,6 +1013,8 @@ export class FleetState {
     if (action === "BACKUP_APP") return this.acknowledgeAppBackup(record, body, id, actionId);
     if (action === "UPGRADE_AGENT") return this.acknowledgeAgentUpgrade(record, body, id, actionId);
     if (action === "ENABLE_DEV_MODE") return this.acknowledgeDevMode(record, body, id, actionId);
+    if (action === "WRITE_SCRIPT") return this.acknowledgeWriteScript(record, body, id, actionId);
+    if (action === "CLEAN_SCRIPT") return this.acknowledgeCleanScript(record, body, id, actionId);
     if (action !== AOT_ALLOCATE_SERVER_ACTION) return json({ ok: false, error: "invalid_aot_ack" }, 400);
     const batch = record.last_batch;
     const device = batch?.devices?.[id];

@@ -349,6 +349,89 @@ export async function handleUpdate(update, env, fleetState) {
     return;
   }
 
+  if (input.match(/^\/(?:script|sae|autoexec)(?:\s|$)/)) {
+    const raw = input.replace(/^\/(?:script|sae|autoexec)\s*/, "").trim();
+    if (!raw) {
+      await telegram(env, "sendMessage", {
+        chat_id: chatId,
+        text: "Cú pháp:\n• <code>/script &lt;device1,device2... hoặc all&gt; &lt;tên_file&gt; &lt;link_script hoặc mã_lua&gt;</code>\n• <code>/script &lt;device&gt; clean [tên_file hoặc all]</code>\n\nVí dụ: <code>/script m77 sae https://raw.githubusercontent.com/...</code>",
+        parse_mode: "HTML"
+      });
+      return;
+    }
+
+    const parts = raw.split(/\s+/);
+    const targetStr = parts[0];
+
+    // Check for clean mode: /script m77 clean [filename|all]
+    if (parts.length >= 2 && parts[1].toLowerCase() === "clean") {
+      const cleanTarget = parts[2] || "all";
+      try {
+        const ids = await resolveAndValidateTelegramTargets(targetStr, env, fleetState);
+        const result = await fleetStateCall(env, fleetState, "/aot/hub/control", {
+          method: "POST",
+          body: {
+            protocol: "fleet-batch-v1",
+            kind: "clean_script",
+            target_device_ids: ids,
+            filename: cleanTarget,
+            telegram_chat_id: chatId
+          }
+        });
+        if (!result?.response?.ok) throw new Error(result?.data?.error || "clean_script_queue_failed");
+        await telegram(env, "sendMessage", {
+          chat_id: chatId,
+          text: `🧹 <b>ĐÃ XẾP LỆNH XÓA SCRIPT</b>: <code>${ids.join(", ")}</code>\n🎯 Mục tiêu: <code>${cleanTarget}</code> trong <code>Delta/Autoexecute/</code>`,
+          parse_mode: "HTML"
+        });
+      } catch (error) {
+        await telegram(env, "sendMessage", { chat_id: chatId, text: "Lỗi CLEAN_SCRIPT: " + String(error.message || error) });
+      }
+      return;
+    }
+
+    if (parts.length < 3) {
+      await telegram(env, "sendMessage", {
+        chat_id: chatId,
+        text: "Cú pháp: <code>/script &lt;device&gt; &lt;tên_file&gt; &lt;link_script hoặc mã_lua&gt;</code>\nVí dụ: <code>/script m77 sae https://raw.githubusercontent.com/...</code>",
+        parse_mode: "HTML"
+      });
+      return;
+    }
+
+    const filename = parts[1];
+    const rawContent = parts.slice(2).join(" ");
+    let content = rawContent;
+    if (rawContent.startsWith("http://") || rawContent.startsWith("https://")) {
+      content = `loadstring(game:HttpGet("${rawContent}"))()`;
+    }
+
+    try {
+      const ids = await resolveAndValidateTelegramTargets(targetStr, env, fleetState);
+      const result = await fleetStateCall(env, fleetState, "/aot/hub/control", {
+        method: "POST",
+        body: {
+          protocol: "fleet-batch-v1",
+          kind: "write_script",
+          target_device_ids: ids,
+          filename: filename,
+          content: content,
+          raw_source: rawContent,
+          telegram_chat_id: chatId
+        }
+      });
+      if (!result?.response?.ok) throw new Error(result?.data?.error || "write_script_queue_failed");
+      await telegram(env, "sendMessage", {
+        chat_id: chatId,
+        text: `📜 <b>ĐÃ XẾP LỆNH NẠP SCRIPT VÀO DELTA AUTOEXECUTE</b>\n📱 Thiết bị: <code>${ids.join(", ")}</code>\n📄 Tên file: <code>${filename}</code>\n⚡ Kịch bản sẽ được ghi vào <code>/storage/emulated/0/Delta/Autoexecute/${filename}</code> ở heartbeat kế tiếp.`,
+        parse_mode: "HTML"
+      });
+    } catch (error) {
+      await telegram(env, "sendMessage", { chat_id: chatId, text: "Lỗi WRITE_SCRIPT: " + String(error.message || error) });
+    }
+    return;
+  }
+
   if (input.match(/^\/(?:devmode|developer|dev)(?:\s|$)/)) {
     const raw = input.replace(/^\/(?:devmode|developer|dev)\s*/, "").trim();
     if (!raw) {

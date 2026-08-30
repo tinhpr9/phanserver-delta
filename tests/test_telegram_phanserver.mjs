@@ -258,6 +258,26 @@ async function runTests() {
     throw new Error("backup data confirmation failed: " + (sentMessages[0]?.text || ""));
   }
 
+  // 12. Script command with raw URL auto-wrapping loadstring
+  await triggerMessage("/script m1 sae https://raw.githubusercontent.com/tinhpr9/Aotscript/main/Novagag2");
+  const scriptCall = fleetControlCalls.at(-1);
+  if (scriptCall?.kind !== "write_script" || scriptCall?.filename !== "sae" || !scriptCall?.content?.includes("loadstring(game:HttpGet")) {
+    throw new Error("script write dispatch test failed: " + JSON.stringify(scriptCall));
+  }
+  if (!sentMessages[0]?.text.includes("ĐÃ XẾP LỆNH NẠP SCRIPT")) {
+    throw new Error("script write confirmation failed: " + (sentMessages[0]?.text || ""));
+  }
+
+  // 13. Script clean command
+  await triggerMessage("/script m1 clean sae");
+  const cleanCall = fleetControlCalls.at(-1);
+  if (cleanCall?.kind !== "clean_script" || cleanCall?.filename !== "sae") {
+    throw new Error("script clean dispatch test failed: " + JSON.stringify(cleanCall));
+  }
+  if (!sentMessages[0]?.text.includes("ĐÃ XẾP LỆNH XÓA SCRIPT")) {
+    throw new Error("script clean confirmation failed: " + (sentMessages[0]?.text || ""));
+  }
+
   console.log("TEST_TELEGRAM_PHANSERVER_EQUIVALENCE=OK");
 }
 
