@@ -488,9 +488,39 @@ def install_apks(apks: list[pathlib.Path] | pathlib.Path) -> None:
                     f"pm install failed for {pathlib.Path(single_path).name} (rc={result.returncode}): {output[:400]}"
                 )
         else:
-            # Multiple Split APK install (App Bundle / Multi-split)
+            # Multiple Split APK install (PackageInstaller Session API + fallbacks)
             split_files_args = " ".join(shlex.quote(p) for p in staged_paths)
             install_script = f"""
+            # Protocol 1: PackageInstaller Session API (Google Play Store & SAI standard)
+            SESSION_ID=$(pm install-create -r -d -t -g 2>&1 | grep -oE '[0-9]+' | head -n 1)
+            if [ -n "$SESSION_ID" ]; then
+                ALL_WRITTEN=1
+                IDX=0
+                for APK in {split_files_args}; do
+                    APK_SIZE=$(wc -c < "$APK" 2>/dev/null | tr -d ' \r\n')
+                    if [ -z "$APK_SIZE" ] || [ "$APK_SIZE" -le 0 ]; then
+                        ALL_WRITTEN=0
+                        break
+                    fi
+                    WRITE_OUT=$(pm install-write -S "$APK_SIZE" "$SESSION_ID" "split_$IDX" "$APK" 2>&1)
+                    if ! echo "$WRITE_OUT" | grep -qi "Success"; then
+                        ALL_WRITTEN=0
+                        break
+                    fi
+                    IDX=$((IDX + 1))
+                done
+                if [ $ALL_WRITTEN -eq 1 ]; then
+                    COMMIT_OUT=$(pm install-commit "$SESSION_ID" 2>&1)
+                    if echo "$COMMIT_OUT" | grep -qi "Success"; then
+                        echo "$COMMIT_OUT"
+                        exit 0
+                    fi
+                else
+                    pm install-abandon "$SESSION_ID" 2>/dev/null || true
+                fi
+            fi
+
+            # Protocol 2: pm install-multiple fallback
             OUT=$(pm install-multiple -r -d -t -g {split_files_args} 2>&1)
             RC=$?
             if [ $RC -eq 0 ] && echo "$OUT" | grep -qi "Success"; then
@@ -498,6 +528,7 @@ def install_apks(apks: list[pathlib.Path] | pathlib.Path) -> None:
                 exit 0
             fi
             
+            # Protocol 3: pm install fallback
             OUT2=$(pm install -r -d -t -g {split_files_args} 2>&1)
             RC2=$?
             if [ $RC2 -eq 0 ] && echo "$OUT2" | grep -qi "Success"; then
