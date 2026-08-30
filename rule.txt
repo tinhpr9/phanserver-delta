@@ -219,6 +219,18 @@ always_on: true
   - Agent BẮT BUỘC phải đọc nội dung ảnh và đối chiếu với câu hỏi (ví dụ: người dùng hỏi lỗi chạy script game thì ảnh phải là giao diện game / Console log, không được kết luận dựa trên ảnh chụp màn hình Termux cũ).
 - **Đồng Bộ Song Song Cả Repo Và Hệ Thống Luật (Dual-Channel Sync)**: Bắt buộc áp dụng ngay và đồng bộ điều luật này vào tất cả các kênh lưu trữ SSOT.
 
+## 30. QUY TẮC PHÂN TÁCH BẰNG CHỨNG BA CỘT VÀ CẤM TUYỆT ĐỐI SUY DIỄN THÀNH CÔNG SỚM (STRICT_THREE_COLUMN_EVIDENCE_PARTITIONING_AND_ZERO_PREMATURE_PASS_RULE - Hard Rule)
+- **Cấm Tuyệt Đối Tuyên Bố Thành Công Sớm / Báo Cáo Khống (Absolute Zero Premature PASS Ban)**:
+  - Nghiêm cấm Agent kết luận "hoạt động 100%", "thành công hoàn toàn", "chắc chắn đã xong" khi chỉ mới có bằng chứng của một phần nhỏ (ví dụ: chỉ mới nạp cấu hình, chỉ mới in log tối ưu `[Optimize]`, chỉ mới cài xong APK mà chưa kiểm chứng runtime).
+- **Bắt Buộc Phân Tách 3 Cột Bằng Chứng Khi Đánh Giá Trạng Thái (Mandatory 3-Column Evidence Partitioning)**:
+  - Mọi báo cáo phân tích ảnh màn hình, log console, hoặc kết quả kiểm thử BẮT BUỘC phải phân định rõ 3 thành phần:
+    1. **Bằng chứng đã xác nhận (Verified Evidence)**: Chỉ ghi nhận những gì có dữ liệu/hình ảnh/log chứng minh trực tiếp kèm trích dẫn chính xác.
+    2. **Lỗi cần cô lập nguyên nhân (Isolated Anomalies)**: Mọi dòng đỏ/error/warning phải được ghi nhận là lỗi thật cần điều tra; TUYỆT ĐỐI KHÔNG tự ý bao biện hoặc gạt đi là "lỗi sẵn của game/không quan trọng" khi chưa có bằng chứng cô lập.
+    3. **Tính năng chưa có bằng chứng (Unverified Scope)**: Liệt kê minh bạch toàn bộ các tính năng cốt lõi chưa có dữ liệu chứng minh hoạt động thực tế.
+- **Cấm Ngôn Từ Phóng Đại Vô Căn Cứ (Zero Unsubstantiated Hyperbole)**:
+  - Nghiêm cấm dùng từ ngữ mang tính khẳng định tuyệt đối nếu thiếu bằng chứng ở bất kỳ tầng nào trong 4 tầng (Source, Deployment, Install, Runtime).
+- **Đồng Bộ Song Song Cả Repo Và Hệ Thống Luật (Dual-Channel Sync)**: Bắt buộc áp dụng ngay và đồng bộ điều luật này vào tất cả các kênh lưu trữ SSOT.
+
 
 
 
