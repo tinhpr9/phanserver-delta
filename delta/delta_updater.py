@@ -736,14 +736,8 @@ def restore_zip_data(zip_path: str | pathlib.Path, target_pkg: Optional[str] = N
             target_pkg = alias_map.get(target_pkg.lower(), target_pkg)
 
         # Hardware-Keystore bound apps (e.g. 1.1.1.1 WARP) cannot reuse foreign encryption keys across devices.
+        # Bypass foreign data.tar.gz unpacking without running destructive pm clear on existing installs.
         if target_pkg == "com.cloudflare.onedotonedotonedotone" or (target_pkg and "cloudflare" in target_pkg):
-            is_root_proc = hasattr(os, "geteuid") and os.geteuid() == 0
-            su_bin = find_su_binary()
-            clean_cmd = f"pm clear {shlex.quote(target_pkg)} 2>/dev/null || true"
-            if is_root_proc:
-                subprocess.run(["sh", "-c", clean_cmd], capture_output=True, timeout=10)
-            elif su_bin:
-                subprocess.run([su_bin, "-c", clean_cmd], capture_output=True, timeout=10)
             return True
 
         # Write data.tar.gz to temporary file
