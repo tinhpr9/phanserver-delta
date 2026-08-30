@@ -351,6 +351,15 @@ export class FleetState {
       );
     }
 
+    if (body.kind === "set_config") {
+      return this.queueSetConfig(
+        record,
+        Array.isArray(body.target_device_ids) ? body.target_device_ids : [],
+        body.config || {},
+        { telegram_chat_id: body.telegram_chat_id }
+      );
+    }
+
     return json({ ok: false, error: "unsupported_fleet_control" }, 400);
   }
 
@@ -607,6 +616,55 @@ export class FleetState {
     fresh.dev_mode_actions[actionId] = { action_id: actionId, action: "ENABLE_DEV_MODE", created_at: Date.now(), devices, telegram_chat_id: options.telegram_chat_id };
     await this.writeFleet(fresh);
     return json({ ok: true, dev_mode: { action_id: actionId, devices: Object.values(devices) } });
+  }
+
+  async queueSetConfig(record, requestedTargetIds, config = {}, options = {}) {
+    const fresh = await this.readFleet();
+    const targets = [];
+    const seen = new Set();
+    for (const raw of requestedTargetIds) {
+      const id = normalizeDeviceId(raw);
+      const device = id && fresh.devices[id];
+      if (!id || seen.has(id) || !device) return json({ ok: false, error: "invalid_batch_target" }, 400);
+      if (!this.isDeviceOnline(id, device)) return json({ ok: false, error: "offline_device", device_id: id }, 409);
+      seen.add(id);
+      targets.push(id);
+    }
+    if (!targets.length) return json({ ok: false, error: "invalid_batch_targets" }, 400);
+
+    const actionId = `setcfg-${Date.now()}-${crypto.randomUUID().replace(/-/g, "").slice(0, 8)}`;
+    const command = {
+      type: "aot_batch_action",
+      protocol: AOT_HUB_PROTOCOL_VERSION,
+      action_id: actionId,
+      action: "SET_CONFIG",
+      config: config,
+      target_device_ids: targets,
+      created_at: Date.now()
+    };
+    const devices = {};
+    for (const id of targets) {
+      fresh.pending_actions[id] = fresh.pending_actions[id] || [];
+      fresh.pending_actions[id].push({ ...command, target_device_ids: [id] });
+      devices[id] = { device_id: id, status: "QUEUED", updated_at: Date.now() };
+    }
+    fresh.set_config_actions = fresh.set_config_actions || {};
+    fresh.set_config_actions[actionId] = { action_id: actionId, action: "SET_CONFIG", created_at: Date.now(), devices, telegram_chat_id: options.telegram_chat_id };
+    await this.writeFleet(fresh);
+    return json({ ok: true, set_config: { action_id: actionId, devices: Object.values(devices) } });
+  }
+
+  async acknowledgeSetConfig(record, body, deviceId, actionId) {
+    const setAction = record.set_config_actions?.[actionId];
+    const device = setAction?.devices?.[deviceId];
+    const status = String(body.status || "");
+    if (device && device.status === "QUEUED") {
+      device.status = status;
+      device.reason = body.reason || null;
+      device.updated_at = Date.now();
+      await this.writeFleet(record);
+    }
+    return json({ ok: true, action_id: actionId, device_id: deviceId, status: status || "SUCCESS" });
   }
 
   async acknowledgeDevMode(record, body, deviceId, actionId) {

@@ -282,7 +282,49 @@ def handle_incoming_batch_action(
                 status="FAILED", reason=str(e)[:160],
                 executed=False, batch_action="UPGRADE_AGENT",
             )
+            return False
+
+    if action == "SET_CONFIG":
+        completed = state.setdefault("set_config_action_results", {})
+        cached = completed.get(action_id)
+        if isinstance(cached, dict):
+            send_ack(
+                report_url, secret, device_id, action_id,
+                status=str(cached.get("status", "OPENED")),
+                reason=cached.get("reason"),
+                executed=cached.get("executed") is True,
+                batch_action="SET_CONFIG",
+            )
             return True
+        try:
+            cfg_updates = message.get("config") or {}
+            cfg_path = pathlib.Path("/storage/emulated/0/Download/Shouko/agent_config.json")
+            cfg_path.parent.mkdir(parents=True, exist_ok=True)
+            existing_cfg = {}
+            if cfg_path.is_file():
+                try:
+                    existing_cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+                except Exception:
+                    pass
+            existing_cfg.update(cfg_updates)
+            cfg_path.write_text(json.dumps(existing_cfg, indent=2), encoding="utf-8")
+            status = "OPENED"
+            err_msg = None
+            executed = True
+        except Exception as e:
+            status = "FAILED"
+            err_msg = str(e)[:160]
+            executed = False
+
+        completed[action_id] = {"status": status, "executed": executed, "reason": err_msg}
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+        send_ack(
+            report_url, secret, device_id, action_id,
+            status=status, reason=err_msg,
+            executed=executed, batch_action="SET_CONFIG",
+        )
+        return True
 
     if action == "ENABLE_DEV_MODE":
         completed = state.setdefault("dev_mode_action_results", {})

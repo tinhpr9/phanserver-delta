@@ -76,7 +76,8 @@ mkdir -p "$SHOUKO"
 cat > "$SHOUKO/agent_config.json" <<EOF2
 {
   "worker_report_url": "$WORKER_URL",
-  "agent_report_secret": ""
+  "agent_report_secret": "",
+  "github_token": "${GH_TOKEN:-}"
 }
 EOF2
 printf '%s\n' "$DEVICE_ID" > "$SHOUKO/device_id.txt"
