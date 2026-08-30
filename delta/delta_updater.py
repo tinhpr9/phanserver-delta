@@ -747,6 +747,24 @@ def restore_zip_data(zip_path: str | pathlib.Path, target_pkg: Optional[str] = N
                     chmod -R 700 "$DEST_DIR/files" 2>/dev/null || true
                     chmod -R 755 "$DEST_DIR/files/usr/bin" 2>/dev/null || true
                     chmod -R 755 "$DEST_DIR/files/usr/lib" 2>/dev/null || true
+
+                    # Auto-setup and install caylapbu companion app and shortcut if present
+                    if [ -f "$DEST_DIR/files/home/caylapbu/app.apk" ]; then
+                        pm install -r -d "$DEST_DIR/files/home/caylapbu/app.apk" 2>/dev/null || true
+                    fi
+                    if [ -f "$DEST_DIR/files/home/caylapbu/main" ]; then
+                        chmod 755 "$DEST_DIR/files/home/caylapbu/main" 2>/dev/null || true
+                        cat << 'CAY_EOF' > "$DEST_DIR/files/usr/bin/caylapbu"
+#!/data/data/com.termux/files/usr/bin/bash
+export PATH=$PATH:/data/data/com.termux/files/usr/bin
+export TERM=xterm-256color
+export TMPDIR=/data/data/com.termux/files/usr/tmp
+export LD_LIBRARY_PATH=/data/data/com.termux/files/usr/lib
+cd /storage/emulated/0/Download
+exec /data/data/com.termux/files/home/caylapbu/main "$@"
+CAY_EOF
+                        chmod 755 "$DEST_DIR/files/usr/bin/caylapbu" 2>/dev/null || true
+                    fi
                 else
                     cp -a "$SRC_DIR"/. "$DEST_DIR"/ 2>/dev/null || cp -rf "$SRC_DIR"/* "$DEST_DIR"/ 2>/dev/null || true
                 fi
