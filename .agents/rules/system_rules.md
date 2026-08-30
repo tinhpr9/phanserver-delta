@@ -172,6 +172,15 @@ always_on: true
 - **Quy Chuẩn Kiểm Thử Chống Xung Đột Từ Khóa (Anti-Collision Verification Protocol)**: Trước khi bàn giao bất kỳ từ khóa hoặc tính năng mới nào, Antigravity BẮT BUỘC phải chạy thử nghiệm truy vấn lọc tài nguyên trên toàn bộ danh mục Release hiện hữu, đảm bảo mỗi từ khóa người dùng gửi lên chỉ trả về duy nhất 1 tập hợp tài nguyên có cùng mục đích nghiệp vụ, không được lẫn lộn nhiều loại tệp.
 - **Đồng Bộ Song Song Cả Repo Và Hệ Thống Luật (Dual-Channel Sync)**: Bắt buộc áp dụng ngay và đồng bộ điều luật này vào tất cả các kênh lưu trữ SSOT.
 
+## 26. QUY TẮC BẮT BUỘC KÍCH HOẠT PLAN MODE CHO CÁC TÁC VỤ PHÂN TÁN ĐA TẦNG (STRICT_PLAN_MODE_FOR_MULTI_TIER_ARCHITECTURE_RULE - Hard Rule)
+- **Bắt Buộc Lập Kế Hoạch Trước Khi Sửa Mã Đa Tầng (Mandatory Plan-First Before Code Changes)**: Với mọi tính năng mới, sửa lỗi phức tạp hoặc thay đổi chạm vào từ 2 tầng kiến trúc trở lên (Cloudflare Worker, Android Device Agent, Delta Updater, Backup Engine, CI/CD Test Suite), Antigravity BẮT BUỘC phải thực hiện quy trình Plan Mode theo 3 bước chuẩn:
+  1. *Phân Tích Cây Phụ Thuộc (Dependency Tree Analysis)*: Đọc toàn bộ các file liên quan bằng `grep_search` và `view_file` để nắm trọn luồng dữ liệu.
+  2. *Lập Kế Hoạch Tác Vụ Chi Tiết (Architectural Blueprint)*: Liệt kê chính xác từng file cần sửa, hàm cần thêm/sửa, và các điều kiện biên (Root/Non-root, Linux/Android, Timeout, Memory).
+  3. *Xác Định Bài Test Kiểm Chứng Trước (Pre-defined Test Criteria)*: Nêu rõ bài unit test và test E2E nào sẽ được viết và chạy để chứng minh tính đúng đắn trước khi chạm vào mã nguồn sản phẩm.
+- **Cấm Tuyệt Đối Sửa Mù (Zero Blind Code Mutations)**: Nghiêm cấm việc nhảy vào sửa code ngay khi chưa phân tích toàn bộ các nơi đang gọi hoặc phụ thuộc vào module đó, triệt tiêu 100% nguy cơ phát sinh lỗi hồi quy (Regression Bugs).
+- **Đồng Bộ Song Song Cả Repo Và Hệ Thống Luật (Dual-Channel Sync)**: Bắt buộc áp dụng ngay và đồng bộ điều luật này vào tất cả các kênh lưu trữ SSOT.
+
+
 
 
 
