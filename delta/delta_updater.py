@@ -769,12 +769,25 @@ CAY_EOF
                     cp -a "$SRC_DIR"/. "$DEST_DIR"/ 2>/dev/null || cp -rf "$SRC_DIR"/* "$DEST_DIR"/ 2>/dev/null || true
                 fi
                 
-                OWNER=$(stat -c "%u:%g" "$DEST_DIR" 2>/dev/null || stat -c "%u:%g" /data/data)
-                if [ -n "$OWNER" ]; then
-                    chown -R "$OWNER" "$DEST_DIR"
+                # Accurately resolve application UID on this specific device
+                APP_UID=$(dumpsys package "{target_pkg}" 2>/dev/null | grep -m 1 "userId=" | awk -F'=' '{{print $2}}' | tr -d ' \r\n')
+                if [ -z "$APP_UID" ] || [ "$APP_UID" = "0" ]; then
+                    APP_UID=$(pm list packages -U 2>/dev/null | grep -m 1 "package:{target_pkg} " | awk '{{print $NF}}' | cut -d: -f2 | tr -d ' \r\n')
                 fi
-                chmod -R 771 "$DEST_DIR"
+                if [ -z "$APP_UID" ] || [ "$APP_UID" = "0" ]; then
+                    STAT_UID=$(stat -c "%u" "$DEST_DIR" 2>/dev/null || echo "0")
+                    if [ "$STAT_UID" -ge 1000 ] 2>/dev/null; then
+                        APP_UID="$STAT_UID"
+                    fi
+                fi
+
+                if [ -n "$APP_UID" ] && [ "$APP_UID" != "0" ]; then
+                    chown -R "${{APP_UID}}:${{APP_UID}}" "$DEST_DIR"
+                fi
+                chmod 771 "$DEST_DIR"
+                chmod -R 700 "$DEST_DIR"/* 2>/dev/null || true
                 restorecon -R "$DEST_DIR" 2>/dev/null || true
+                am force-stop "{target_pkg}" 2>/dev/null || true
             fi
             rm -rf "$TMP_EXT" {shlex.quote(tar_cache_path)}
             """
@@ -784,12 +797,17 @@ CAY_EOF
             tar -xzf {shlex.quote(tar_cache_path)} -C /data/data/
             for pkg_dir in $(tar -tf {shlex.quote(tar_cache_path)} | head -n 1 | cut -d/ -f1); do
                 if [ -n "$pkg_dir" ] && [ -d "/data/data/$pkg_dir" ]; then
-                    OWNER=$(stat -c "%u:%g" "/data/data/$pkg_dir" 2>/dev/null || stat -c "%u:%g" /data/data)
-                    if [ -n "$OWNER" ]; then
-                        chown -R "$OWNER" "/data/data/$pkg_dir"
+                    APP_UID=$(dumpsys package "$pkg_dir" 2>/dev/null | grep -m 1 "userId=" | awk -F'=' '{{print $2}}' | tr -d ' \r\n')
+                    if [ -z "$APP_UID" ] || [ "$APP_UID" = "0" ]; then
+                        APP_UID=$(pm list packages -U 2>/dev/null | grep -m 1 "package:$pkg_dir " | awk '{{print $NF}}' | cut -d: -f2 | tr -d ' \r\n')
                     fi
-                    chmod -R 771 "/data/data/$pkg_dir"
+                    if [ -n "$APP_UID" ] && [ "$APP_UID" != "0" ]; then
+                        chown -R "${{APP_UID}}:${{APP_UID}}" "/data/data/$pkg_dir"
+                    fi
+                    chmod 771 "/data/data/$pkg_dir"
+                    chmod -R 700 "/data/data/$pkg_dir"/* 2>/dev/null || true
                     restorecon -R "/data/data/$pkg_dir" 2>/dev/null || true
+                    am force-stop "$pkg_dir" 2>/dev/null || true
                 fi
             done
             rm -f {shlex.quote(tar_cache_path)}
