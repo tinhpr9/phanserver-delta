@@ -231,6 +231,30 @@ always_on: true
   - Nghiêm cấm dùng từ ngữ mang tính khẳng định tuyệt đối nếu thiếu bằng chứng ở bất kỳ tầng nào trong 4 tầng (Source, Deployment, Install, Runtime).
 - **Đồng Bộ Song Song Cả Repo Và Hệ Thống Luật (Dual-Channel Sync)**: Bắt buộc áp dụng ngay và đồng bộ điều luật này vào tất cả các kênh lưu trữ SSOT.
 
+## 31. QUY TẮC CẬP NHẬT CORE AN TOÀN TRÊN WORKTREE CÔ LẬP VÀ BÁO CÁO 5 TRƯỜNG BẰNG CHỨNG (STRICT_ISOLATED_CORE_UPDATE_WORKTREE_AND_FIVE_FIELD_EVIDENCE_RULE - Hard Rule)
+- **Cấm Tuyệt Đối Đột Biến Worktree Hiện Tại Của Người Dùng (Zero In-Place User Worktree Mutation Ban)**:
+  - Nghiêm cấm chạy `git pull`, `git merge`, `git rebase`, `git reset`, hoặc `git clean` trong worktree/workspace hiện tại của người dùng.
+- **Bắt Buộc Xác Minh 4 Lệnh Trước Khi Cập Nhật (Mandatory Pre-Update 4-Command Verification)**:
+  - Trước mọi thao tác cập nhật Core, Agent BẮT BUỘC phải thực thi và kiểm chứng 4 lệnh:
+    1. `pwd`
+    2. `git status --short`
+    3. `git branch --show-current`
+    4. `git worktree list`
+- **Xử Lý Nhánh Không Phải Main Hoặc Diverged (Non-Main or Diverged Branch Handling)**:
+  - Nếu nhánh hiện tại không phải `main` hoặc đã bị phân nhánh (diverged), TUYỆT ĐỐI KHÔNG sửa/chạm vào nó.
+  - Chỉ được thực hiện: `git fetch origin main` và tạo worktree mới, hoàn toàn tách biệt tại một đường dẫn chưa tồn tại (`git worktree add <new_isolated_path> origin/main`).
+- **Khởi Chạy Runtime Trỏ Vào Worktree Mới (Runtime Execution via `ANTIGRAVINY_CORE_PATH`)**:
+  - Sau khi tạo worktree mới, Agent BẮT BUỘC khởi chạy runtime với biến môi trường `ANTIGRAVINY_CORE_PATH` trỏ trực tiếp vào worktree mới đó.
+- **Bắt Buộc Báo Cáo Đủ 5 Trường Bằng Chứng (Mandatory 5-Field Evidence Output)**:
+  - Mọi báo cáo cập nhật Core BẮT BUỘC phải xuất đầy đủ 5 trường bằng chứng:
+    1. `EXACT_SOURCE_PATH`: Đường dẫn thư mục nguồn ban đầu.
+    2. `CURRENT_BRANCH`: Nhánh hiện tại của worktree.
+    3. `NEW_WORKTREE_PATH`: Đường dẫn worktree cô lập mới được tạo.
+    4. `COMMIT`: Commit SHA chính xác của `origin/main` được checkout.
+    5. `KẾT QUẢ CHẠY (RUNTIME_STATUS)`: Kết quả thực thi thực tế khi chạy với `ANTIGRAVINY_CORE_PATH`.
+  - 🚫 *Nếu thiếu bất kỳ bằng chứng nào, Agent BẮT BUỘC phải DỪNG NGAY (`FINAL_STATUS=BLOCKED`), tuyệt đối không đoán mò.*
+- **Đồng Bộ Song Song Cả Repo Và Hệ Thống Luật (Dual-Channel Sync)**: Bắt buộc áp dụng ngay và đồng bộ điều luật này vào tất cả các kênh lưu trữ SSOT.
+
 
 
 
