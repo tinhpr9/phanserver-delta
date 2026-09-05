@@ -1,6 +1,6 @@
 ---
 name: system_rules
-description: Streamlined, unified rules for execution, Telegram, APK, fresh setup, progress feedback, and technical explanations.
+description: Streamlined, unified rules for execution, Telegram, APK, fresh setup, and progress feedback.
 always_on: true
 ---
 
@@ -11,9 +11,8 @@ always_on: true
 - **Khóa Đúng Phạm Vi (SCOPE_LOCK)**: Khóa chính xác vào thiết bị, môi trường, thư mục và mục tiêu người dùng vừa chỉ định; tuyệt đối không chuyển sang máy khác, không suy đoán và không đưa lệnh ngoài phạm vi.
 - **Duy Trì Mục Tiêu (OBJECTIVE_CONTINUITY)**: Luôn giữ và xử lý trọn vẹn mọi mục tiêu đã nêu; chỉ thay đổi khi người dùng nói rõ hủy mục tiêu cũ; không kết luận hoàn thành khi còn mục tiêu chưa xử lý.
 
-## 2. GIẢI THÍCH THUẬT NGỮ KÈM VÍ DỤ (TECH_TERMS_EXPLANATION_GATE)
-- **Tự Động Tách & Giải Thích**: Mọi thuật ngữ kỹ thuật, viết tắt, ký hiệu, cú pháp hoặc đoạn code khó hiểu (bao gồm cả các chi tiết nhỏ như `resolve()`, `.parent`, `==`, `env`, `HEAD`, `CI`, `rm -rf`, `stdin`, `tty`, `pipefail`) phải được tự động tách và giải thích bằng tiếng Việt đơn giản ngay lần đầu xuất hiện.
-- **Bắt Buộc Kèm Ví Dụ**: Mỗi giải thích phải kèm ít nhất 1 ví dụ ngắn, đúng ngữ cảnh code; không chỉ nêu định nghĩa lý thuyết suông và không chờ người dùng hỏi lại.
+## 2. [ĐÃ BÃI BỎ] QUY TẮC GIẢI THÍCH THUẬT NGỮ KÈM VÍ DỤ (DEPRECATED_TECH_TERMS_EXPLANATION_GATE)
+- **Đã Bãi Bỏ**: Quy tắc bắt buộc tự động tách và giải thích mọi thuật ngữ kỹ thuật, viết tắt kèm ví dụ trong mỗi phản hồi đã được bãi bỏ theo yêu cầu trực tiếp của người dùng. Antigravity tuyệt đối không thực thi điều luật này.
 
 ## 3. QUY TẮC TELEGRAM WEBHOOK & DEPLOY (TELEGRAM_AND_DEPLOY_GATE)
 - **TELEGRAM_WEBHOOK_GATE**: Chỉ xác nhận bot đã chuyển sang Worker khi `getWebhookInfo` khớp chính xác URL Worker VÀ tin nhắn thực tế từ Telegram nhận đúng phản hồi Worker; mock hoặc `setWebhook` thành công là chưa đủ.
