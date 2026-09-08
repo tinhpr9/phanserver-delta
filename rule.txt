@@ -254,6 +254,44 @@ always_on: true
   - 🚫 *Nếu thiếu bất kỳ bằng chứng nào, Agent BẮT BUỘC phải DỪNG NGAY (`FINAL_STATUS=BLOCKED`), tuyệt đối không đoán mò.*
 - **Đồng Bộ Song Song Cả Repo Và Hệ Thống Luật (Dual-Channel Sync)**: Bắt buộc áp dụng ngay và đồng bộ điều luật này vào tất cả các kênh lưu trữ SSOT.
 
+## 32. QUY TẮC BẢNG DANH MỤC LỆNH BOT TELEGRAM VÀ PHÂN BIỆT TỪ KHÓA CẬP NHẬT GÓI CLONE (STRICT_TELEGRAM_BOT_COMMAND_CATALOG_AND_UPDATE_ALIAS_RULE - Hard Rule)
+- **Bảng Tra Cứu Toàn Diện Các Lệnh Telegram Bot (Preiumbot / phanserver-delta)**:
+  - Hệ thống và Agent BẮT BUỘC phải tuân thủ và hướng dẫn chính xác các cú pháp lệnh sau:
+    1. **Kiểm Tra Trạng Thái & Thiết Bị**:
+       - `/status` (hoặc `STATUS`): Xem trạng thái hoạt động của Hub và danh sách thiết bị Online/Offline.
+       - `/devices`: Xem danh sách định danh thiết bị đang online (ví dụ: `m77`, `m72`...).
+       - `/apks` (hoặc `/release`): Xem toàn bộ danh sách file APK/ZIP trong Release mới nhất kèm số thứ tự (1, 2, 3...) và dung lượng.
+    2. **Cập Nhật & Khôi Phục Ứng Dụng (`/update` hoặc `/restore`)**:
+       - Cú pháp: `/update <device1,device2... hoặc all> [selection] [target_app]`
+       - **Cập nhật 10 bản clone Roblox mới**:
+         * `/update <device> clone` (hoặc `/update <device> delta_apk`): Tải và cài đặt toàn bộ 10 bản APK clone Roblox (`Delta-2.736..._clone*.apk`, ~1.6 GB).
+       - **Khôi phục thư mục cấu hình / script Delta**:
+         * `/update <device> delta` (hoặc `/update <device> delta_folder`): Tải và bung file cấu hình `Delta_FolderBackup.zip` (7.8 MB) vào `/storage/emulated/0/Delta/`.
+       - **Cài đặt tất cả gói trong Release**:
+         * `/update <device> all`: Cài toàn bộ các ứng dụng trong Release.
+       - **Cài đặt theo số thứ tự từ danh sách `/apks`**:
+         * `/update <device> <số_thứ_tự>` (ví dụ: `/update m77 1` hoặc `/update m77 1,2,5` hoặc `/update m77 1-4`).
+       - **Cài đặt ngẫu nhiên**:
+         * `/update <device> random` hoặc `/update <device> random:3` hoặc `/update <device> clone:random`.
+       - **Cài đặt các ứng dụng cụ thể khác**:
+         * `/update <device> warp` (1.1.1.1 WARP), `/update <device> opera` (Opera Browser), `/update <device> mt` (MT Manager), `/update <device> taskbar` (Taskbar).
+    3. **Sao Lưu Ứng Dụng Lên GitHub (`/backup`)**:
+       - Cú pháp: `/backup <device1,device2... hoặc all> [app1,app2... hoặc all] [data|apk|full]`
+       - Ví dụ: `/backup m77 all full`, `/backup m77 taskbar data`, `/backup m77 delta folder`.
+    4. **Nâng Cấp Nhanh Mã Nguồn Agent (`/upgrade`)**:
+       - Cú pháp: `/upgrade <device1,device2... hoặc all>`
+       - Kéo code Git mới nhất và tự khởi động lại ngầm trong 1 giây.
+    5. **Quản Lý Script Autoexecute Cho Delta (`/script`)**:
+       - Nạp script: `/script <device1,device2... hoặc all> <tên_file> <link_script_hoặc_mã_lua>` (Ví dụ: `/script m77 track https://raw.githubusercontent.com/...`).
+       - Xóa script: `/script <device> clean [tên_file hoặc all]` (Ví dụ: `/script m77 clean all` hoặc `/script m77 clean track`).
+    6. **Phân Phối Server Links (`/phanserver`)**:
+       - Cú pháp: `/phanserver <device1,device2...> <tabs>` (Ví dụ: `/phanserver m77 10`).
+- **Quy Tắc Phân Biệt Tuyệt Đối Từ Khóa `clone` vs `delta` (Strict Clone vs Folder Disambiguation)**:
+  - Khi người dùng muốn cập nhật **10 ứng dụng Roblox clone** (dung lượng ~1.6 GB), BẮT BUỘC dùng từ khóa **`clone`** hoặc **`delta_apk`**.
+  - Từ khóa **`delta`** chỉ dành riêng cho việc khôi phục nhanh tệp cấu hình script **`Delta_FolderBackup.zip`** (7.8 MB).
+  - Nghiêm cấm Agent hướng dẫn nhầm `/update <device> Delta` khi người dùng yêu cầu cài app Roblox clone.
+- **Đồng Bộ Song Song Cả Repo Và Hệ Thống Luật (Dual-Channel Sync)**: Bắt buộc áp dụng ngay và đồng bộ điều luật này vào tất cả các kênh lưu trữ SSOT.
+
 
 
 

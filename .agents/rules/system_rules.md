@@ -206,6 +206,93 @@ always_on: true
   - Nghiêm cấm việc tự ý chạy lệnh `pm clear` làm mất dữ liệu hiện hữu của người dùng nếu máy đích đã có ứng dụng và không có yêu cầu dọn dẹp rõ ràng.
 - **Đồng Bộ Song Song Cả Repo Và Hệ Thống Luật (Dual-Channel Sync)**: Bắt buộc áp dụng ngay và đồng bộ điều luật này vào tất cả các kênh lưu trữ SSOT.
 
+## 29. QUY TẮC ƯU TIÊN KIỂM TRA ẢNH CHỤP MÀN HÌNH THẬT TRÊN THIẾT BỊ VÀ CHỐNG ĐỌC NHẦM BỘ NHỚ ĐỆM TẠM THỜI (STRICT_DEVICE_SCREENSHOT_PRIORITY_AND_TEMP_MEDIA_DISAMBIGUATION_RULE - Hard Rule)
+- **Thứ Tự Ưu Tiên Quét Ảnh Chụp Màn Hình Thật Trên Thiết Bị (Mandatory Device Screenshot Directory Priority)**:
+  - Khi người dùng yêu cầu "xem ảnh mới", "xem ảnh mới nhất", "ảnh lỗi", "ảnh chụp màn hình", Agent BẮT BUỘC phải quét các thư mục ảnh màn hình thực tế trên thiết bị trước theo thứ tự ưu tiên:
+    1. `/storage/emulated/0/Pictures/Screenshots/` và `/sdcard/Pictures/Screenshots/` (Thư mục ảnh chụp màn hình chính của Android).
+    2. `/storage/emulated/0/DCIM/Screenshots/` và `/storage/emulated/0/DCIM/Camera/`.
+    3. Thư mục đệm tạm của phiên chat (`<appDataDir>/brain/<conversation-id>/.tempmediaStorage/`).
+- **Chống Đọc Nhầm Ảnh Cũ / Trùng Hash Trong Bộ Nhớ Đệm (Anti-Stale & Anti-Duplicate Cache Disambiguation)**:
+  - Phải sắp xếp tệp theo thời gian sửa đổi thực tế mới nhất (`ls -lt` / `mtime`).
+  - Nghiêm cấm Agent lấy ngay ảnh từ `.tempmediaStorage/` nếu tệp đó trùng kích thước/hash với các ảnh từ các lượt chat trước hoặc không khớp với ngữ cảnh câu hỏi hiện tại của người dùng.
+- **Đối Chiếu Ngữ Cảnh Ảnh Với Nội Dung Câu Hỏi (Semantic Visual Context Validation)**:
+  - Agent BẮT BUỘC phải đọc nội dung ảnh và đối chiếu với câu hỏi (ví dụ: người dùng hỏi lỗi chạy script game thì ảnh phải là giao diện game / Console log, không được kết luận dựa trên ảnh chụp màn hình Termux cũ).
+- **Đồng Bộ Song Song Cả Repo Và Hệ Thống Luật (Dual-Channel Sync)**: Bắt buộc áp dụng ngay và đồng bộ điều luật này vào tất cả các kênh lưu trữ SSOT.
+
+## 30. QUY TẮC PHÂN TÁCH BẰNG CHỨNG BA CỘT VÀ CẤM TUYỆT ĐỐI SUY DIỄN THÀNH CÔNG SỚM (STRICT_THREE_COLUMN_EVIDENCE_PARTITIONING_AND_ZERO_PREMATURE_PASS_RULE - Hard Rule)
+- **Cấm Tuyệt Đối Tuyên Bố Thành Công Sớm / Báo Cáo Khống (Absolute Zero Premature PASS Ban)**:
+  - Nghiêm cấm Agent kết luận "hoạt động 100%", "thành công hoàn toàn", "chắc chắn đã xong" khi chỉ mới có bằng chứng của một phần nhỏ (ví dụ: chỉ mới nạp cấu hình, chỉ mới in log tối ưu `[Optimize]`, chỉ mới cài xong APK mà chưa kiểm chứng runtime).
+- **Bắt Buộc Phân Tách 3 Cột Bằng Chứng Khi Đánh Giá Trạng Thái (Mandatory 3-Column Evidence Partitioning)**:
+  - Mọi báo cáo phân tích ảnh màn hình, log console, hoặc kết quả kiểm thử BẮT BUỘC phải phân định rõ 3 thành phần:
+    1. **Bằng chứng đã xác nhận (Verified Evidence)**: Chỉ ghi nhận những gì có dữ liệu/hình ảnh/log chứng minh trực tiếp kèm trích dẫn chính xác.
+    2. **Lỗi cần cô lập nguyên nhân (Isolated Anomalies)**: Mọi dòng đỏ/error/warning phải được ghi nhận là lỗi thật cần điều tra; TUYỆT ĐỐI KHÔNG tự ý bao biện hoặc gạt đi là "lỗi sẵn của game/không quan trọng" khi chưa có bằng chứng cô lập.
+    3. **Tính năng chưa có bằng chứng (Unverified Scope)**: Liệt kê minh bạch toàn bộ các tính năng cốt lõi chưa có dữ liệu chứng minh hoạt động thực tế.
+- **Cấm Ngôn Từ Phóng Đại Vô Căn Cứ (Zero Unsubstantiated Hyperbole)**:
+  - Nghiêm cấm dùng từ ngữ mang tính khẳng định tuyệt đối nếu thiếu bằng chứng ở bất kỳ tầng nào trong 4 tầng (Source, Deployment, Install, Runtime).
+- **Đồng Bộ Song Song Cả Repo Và Hệ Thống Luật (Dual-Channel Sync)**: Bắt buộc áp dụng ngay và đồng bộ điều luật này vào tất cả các kênh lưu trữ SSOT.
+
+## 31. QUY TẮC CẬP NHẬT CORE AN TOÀN TRÊN WORKTREE CÔ LẬP VÀ BÁO CÁO 5 TRƯỜNG BẰNG CHỨNG (STRICT_ISOLATED_CORE_UPDATE_WORKTREE_AND_FIVE_FIELD_EVIDENCE_RULE - Hard Rule)
+- **Cấm Tuyệt Đối Đột Biến Worktree Hiện Tại Của Người Dùng (Zero In-Place User Worktree Mutation Ban)**:
+  - Nghiêm cấm chạy `git pull`, `git merge`, `git rebase`, `git reset`, hoặc `git clean` trong worktree/workspace hiện tại của người dùng.
+- **Bắt Buộc Xác Minh 4 Lệnh Trước Khi Cập Nhật (Mandatory Pre-Update 4-Command Verification)**:
+  - Trước mọi thao tác cập nhật Core, Agent BẮT BUỘC phải thực thi và kiểm chứng 4 lệnh:
+    1. `pwd`
+    2. `git status --short`
+    3. `git branch --show-current`
+    4. `git worktree list`
+- **Xử Lý Nhánh Không Phải Main Hoặc Diverged (Non-Main or Diverged Branch Handling)**:
+  - Nếu nhánh hiện tại không phải `main` hoặc đã bị phân nhánh (diverged), TUYỆT ĐỐI KHÔNG sửa/chạm vào nó.
+  - Chỉ được thực hiện: `git fetch origin main` và tạo worktree mới, hoàn toàn tách biệt tại một đường dẫn chưa tồn tại (`git worktree add <new_isolated_path> origin/main`).
+- **Khởi Chạy Runtime Trỏ Vào Worktree Mới (Runtime Execution via `ANTIGRAVINY_CORE_PATH`)**:
+  - Sau khi tạo worktree mới, Agent BẮT BUỘC khởi chạy runtime với biến môi trường `ANTIGRAVINY_CORE_PATH` trỏ trực tiếp vào worktree mới đó.
+- **Bắt Buộc Báo Cáo Đủ 5 Trường Bằng Chứng (Mandatory 5-Field Evidence Output)**:
+  - Mọi báo cáo cập nhật Core BẮT BUỘC phải xuất đầy đủ 5 trường bằng chứng:
+    1. `EXACT_SOURCE_PATH`: Đường dẫn thư mục nguồn ban đầu.
+    2. `CURRENT_BRANCH`: Nhánh hiện tại của worktree.
+    3. `NEW_WORKTREE_PATH`: Đường dẫn worktree cô lập mới được tạo.
+    4. `COMMIT`: Commit SHA chính xác của `origin/main` được checkout.
+    5. `KẾT QUẢ CHẠY (RUNTIME_STATUS)`: Kết quả thực thi thực tế khi chạy với `ANTIGRAVINY_CORE_PATH`.
+  - 🚫 *Nếu thiếu bất kỳ bằng chứng nào, Agent BẮT BUỘC phải DỪNG NGAY (`FINAL_STATUS=BLOCKED`), tuyệt đối không đoán mò.*
+- **Đồng Bộ Song Song Cả Repo Và Hệ Thống Luật (Dual-Channel Sync)**: Bắt buộc áp dụng ngay và đồng bộ điều luật này vào tất cả các kênh lưu trữ SSOT.
+
+## 32. QUY TẮC BẢNG DANH MỤC LỆNH BOT TELEGRAM VÀ PHÂN BIỆT TỪ KHÓA CẬP NHẬT GÓI CLONE (STRICT_TELEGRAM_BOT_COMMAND_CATALOG_AND_UPDATE_ALIAS_RULE - Hard Rule)
+- **Bảng Tra Cứu Toàn Diện Các Lệnh Telegram Bot (Preiumbot / phanserver-delta)**:
+  - Hệ thống và Agent BẮT BUỘC phải tuân thủ và hướng dẫn chính xác các cú pháp lệnh sau:
+    1. **Kiểm Tra Trạng Thái & Thiết Bị**:
+       - `/status` (hoặc `STATUS`): Xem trạng thái hoạt động của Hub và danh sách thiết bị Online/Offline.
+       - `/devices`: Xem danh sách định danh thiết bị đang online (ví dụ: `m77`, `m72`...).
+       - `/apks` (hoặc `/release`): Xem toàn bộ danh sách file APK/ZIP trong Release mới nhất kèm số thứ tự (1, 2, 3...) và dung lượng.
+    2. **Cập Nhật & Khôi Phục Ứng Dụng (`/update` hoặc `/restore`)**:
+       - Cú pháp: `/update <device1,device2... hoặc all> [selection] [target_app]`
+       - **Cập nhật 10 bản clone Roblox mới**:
+         * `/update <device> clone` (hoặc `/update <device> delta_apk`): Tải và cài đặt toàn bộ 10 bản APK clone Roblox (`Delta-2.736..._clone*.apk`, ~1.6 GB).
+       - **Khôi phục thư mục cấu hình / script Delta**:
+         * `/update <device> delta` (hoặc `/update <device> delta_folder`): Tải và bung file cấu hình `Delta_FolderBackup.zip` (7.8 MB) vào `/storage/emulated/0/Delta/`.
+       - **Cài đặt tất cả gói trong Release**:
+         * `/update <device> all`: Cài toàn bộ các ứng dụng trong Release.
+       - **Cài đặt theo số thứ tự từ danh sách `/apks`**:
+         * `/update <device> <số_thứ_tự>` (ví dụ: `/update m77 1` hoặc `/update m77 1,2,5` hoặc `/update m77 1-4`).
+       - **Cài đặt ngẫu nhiên**:
+         * `/update <device> random` hoặc `/update <device> random:3` hoặc `/update <device> clone:random`.
+       - **Cài đặt các ứng dụng cụ thể khác**:
+         * `/update <device> warp` (1.1.1.1 WARP), `/update <device> opera` (Opera Browser), `/update <device> mt` (MT Manager), `/update <device> taskbar` (Taskbar).
+    3. **Sao Lưu Ứng Dụng Lên GitHub (`/backup`)**:
+       - Cú pháp: `/backup <device1,device2... hoặc all> [app1,app2... hoặc all] [data|apk|full]`
+       - Ví dụ: `/backup m77 all full`, `/backup m77 taskbar data`, `/backup m77 delta folder`.
+    4. **Nâng Cấp Nhanh Mã Nguồn Agent (`/upgrade`)**:
+       - Cú pháp: `/upgrade <device1,device2... hoặc all>`
+       - Kéo code Git mới nhất và tự khởi động lại ngầm trong 1 giây.
+    5. **Quản Lý Script Autoexecute Cho Delta (`/script`)**:
+       - Nạp script: `/script <device1,device2... hoặc all> <tên_file> <link_script_hoặc_mã_lua>` (Ví dụ: `/script m77 track https://raw.githubusercontent.com/...`).
+       - Xóa script: `/script <device> clean [tên_file hoặc all]` (Ví dụ: `/script m77 clean all` hoặc `/script m77 clean track`).
+    6. **Phân Phối Server Links (`/phanserver`)**:
+       - Cú pháp: `/phanserver <device1,device2...> <tabs>` (Ví dụ: `/phanserver m77 10`).
+- **Quy Tắc Phân Biệt Tuyệt Đối Từ Khóa `clone` vs `delta` (Strict Clone vs Folder Disambiguation)**:
+  - Khi người dùng muốn cập nhật **10 ứng dụng Roblox clone** (dung lượng ~1.6 GB), BẮT BUỘC dùng từ khóa **`clone`** hoặc **`delta_apk`**.
+  - Từ khóa **`delta`** chỉ dành riêng cho việc khôi phục nhanh tệp cấu hình script **`Delta_FolderBackup.zip`** (7.8 MB).
+  - Nghiêm cấm Agent hướng dẫn nhầm `/update <device> Delta` khi người dùng yêu cầu cài app Roblox clone.
+- **Đồng Bộ Song Song Cả Repo Và Hệ Thống Luật (Dual-Channel Sync)**: Bắt buộc áp dụng ngay và đồng bộ điều luật này vào tất cả các kênh lưu trữ SSOT.
+
 
 
 
