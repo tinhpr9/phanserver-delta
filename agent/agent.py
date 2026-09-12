@@ -128,6 +128,7 @@ def send_ack(
     reason: Optional[str] = None,
     executed: bool = False,
     batch_action: str = "ALLOCATE_SERVER",
+    details: Optional[Any] = None,
 ) -> bool:
     parsed = urllib.parse.urlparse(report_url)
     ack_url = urllib.parse.urlunparse((parsed.scheme, parsed.netloc, "/aot/ack", "", "", ""))
@@ -141,6 +142,8 @@ def send_ack(
     }
     if reason:
         payload["reason"] = reason
+    if details is not None:
+        payload["details"] = details
     return send_report(ack_url, secret, payload)
 
 
@@ -242,6 +245,7 @@ def handle_incoming_batch_action(
             report_url, secret, device_id, action_id,
             status=result["status"], reason=result.get("reason"),
             executed=result["executed"], batch_action="BACKUP_APP",
+            details=result.get("details"),
         )
         return True
 
@@ -475,6 +479,92 @@ def handle_incoming_batch_action(
             report_url, secret, device_id, action_id,
             status=result["status"], reason=result.get("reason"),
             executed=result["executed"], batch_action="CLEAN_SCRIPT",
+        )
+        return True
+
+    if action == "CONTROL_TAILSCALE":
+        completed = state.setdefault("tailscale_action_results", {})
+        cached = completed.get(action_id)
+        if isinstance(cached, dict):
+            send_ack(
+                report_url, secret, device_id, action_id,
+                status=str(cached.get("status", "OPENED")),
+                reason=cached.get("reason"),
+                executed=cached.get("executed") is True,
+                batch_action="CONTROL_TAILSCALE",
+                details=cached.get("details"),
+            )
+            return True
+        try:
+            try:
+                from agent.backup_manager import _run_as_root
+            except ImportError:
+                try:
+                    from backup_manager import _run_as_root
+                except ImportError:
+                    _run_as_root = None
+
+            mode = str(message.get("mode") or "on").lower()
+            if mode == "off":
+                cmd = """
+                settings delete secure always_on_vpn_app 2>/dev/null || true
+                am force-stop com.tailscale.ipn 2>/dev/null || true
+                echo "DISCONNECTED"
+                """
+            elif mode == "status":
+                cmd = """
+                IP=$(ip addr show dev tun0 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d'/' -f1)
+                if [ -n "$IP" ]; then
+                    echo "CONNECTED: $IP"
+                else
+                    if pidof com.tailscale.ipn >/dev/null 2>&1; then
+                        echo "RUNNING"
+                    else
+                        echo "STOPPED"
+                    fi
+                fi
+                """
+            else:
+                # default: "on"
+                cmd = """
+                settings put secure always_on_vpn_app com.tailscale.ipn 2>/dev/null || true
+                settings put secure always_on_vpn_lockdown 0 2>/dev/null || true
+                cmd statusbar click-tile com.tailscale.ipn/.QuickToggleTile 2>/dev/null || true
+                am start -n com.tailscale.ipn/.MainActivity 2>/dev/null || true
+                sleep 2
+                IP=$(ip addr show dev tun0 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d'/' -f1)
+                if [ -n "$IP" ]; then
+                    echo "CONNECTED: $IP"
+                else
+                    echo "TRIGGERED"
+                fi
+                """
+
+            if _run_as_root:
+                res = _run_as_root(cmd, timeout=15)
+                success = res.returncode == 0
+                stdout_text = res.stdout.strip()
+                reason = None if success else res.stderr.strip()
+            else:
+                proc = subprocess.run(["sh", "-c", cmd], capture_output=True, text=True, timeout=15)
+                success = proc.returncode == 0
+                stdout_text = proc.stdout.strip()
+                reason = None if success else proc.stderr.strip()
+
+            status = "OPENED" if success else "FAILED"
+            details = stdout_text if stdout_text else ("OK" if success else None)
+            result = {"status": status, "executed": success, "reason": reason, "details": details}
+        except Exception as e:
+            result = {"status": "FAILED", "executed": False, "reason": str(e)[:160], "details": None}
+
+        completed[action_id] = result
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+        send_ack(
+            report_url, secret, device_id, action_id,
+            status=result["status"], reason=result.get("reason"),
+            executed=result["executed"], batch_action="CONTROL_TAILSCALE",
+            details=result.get("details"),
         )
         return True
 

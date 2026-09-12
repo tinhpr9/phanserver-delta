@@ -57,6 +57,7 @@ phanserver-delta/
 | **Nâng cấp Agent** | `/upgrade m77` hoặc `/upgrade all` | Kéo code Git mới nhất và tự khởi động lại ngầm trong 1 giây. |
 | **Nạp script Lua** | `/script m77 track <link>` | Ghi script vào `/sdcard/Delta/Autoexecute/track` để tự chạy khi mở game. |
 | **Xóa script Lua** | `/script m77 clean all` | Dọn dẹp script khỏi thư mục Autoexecute. |
+| **Điều khiển Tailscale VPN** | `/tailscale m77 on` (hoặc `/vpn m77 on`) | Bật/tắt/kiểm tra IP Tailscale VPN (`on`, `off`, `status`). |
 | **Phân server Roblox** | `/phanserver m77 10` | Phân phối server links cho các tab Roblox bằng giao thức 2PC nguyên tử. |
 
 > [!IMPORTANT]

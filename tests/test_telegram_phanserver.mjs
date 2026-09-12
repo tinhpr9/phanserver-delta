@@ -278,6 +278,34 @@ async function runTests() {
     throw new Error("script clean confirmation failed: " + (sentMessages[0]?.text || ""));
   }
 
+  // 14. Tailscale control command
+  await triggerMessage("/tailscale m1 on");
+  const tailscaleCall1 = fleetControlCalls.at(-1);
+  if (tailscaleCall1?.kind !== "control_tailscale" || tailscaleCall1?.mode !== "on") {
+    throw new Error("tailscale on dispatch test failed: " + JSON.stringify(tailscaleCall1));
+  }
+  if (!sentMessages[0]?.text.includes("BẬT TAILSCALE")) {
+    throw new Error("tailscale on confirmation failed: " + (sentMessages[0]?.text || ""));
+  }
+
+  await triggerMessage("/tailscale m1 off");
+  const tailscaleCall2 = fleetControlCalls.at(-1);
+  if (tailscaleCall2?.kind !== "control_tailscale" || tailscaleCall2?.mode !== "off") {
+    throw new Error("tailscale off dispatch test failed: " + JSON.stringify(tailscaleCall2));
+  }
+  if (!sentMessages[0]?.text.includes("TẮT TAILSCALE")) {
+    throw new Error("tailscale off confirmation failed: " + (sentMessages[0]?.text || ""));
+  }
+
+  await triggerMessage("/vpn m1 status");
+  const tailscaleCall3 = fleetControlCalls.at(-1);
+  if (tailscaleCall3?.kind !== "control_tailscale" || tailscaleCall3?.mode !== "status") {
+    throw new Error("tailscale status dispatch test failed: " + JSON.stringify(tailscaleCall3));
+  }
+  if (!sentMessages[0]?.text.includes("KIỂM TRA TRẠNG THÁI TAILSCALE")) {
+    throw new Error("tailscale status confirmation failed: " + (sentMessages[0]?.text || ""));
+  }
+
   console.log("TEST_TELEGRAM_PHANSERVER_EQUIVALENCE=OK");
 }
 

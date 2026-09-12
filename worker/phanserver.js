@@ -456,6 +456,52 @@ export async function handleUpdate(update, env, fleetState) {
     return;
   }
 
+  if (input.match(/^\/(?:tailscale|vpn)(?:\s|$)/)) {
+    const raw = input.replace(/^\/(?:tailscale|vpn)\s*/, "").trim();
+    if (!raw) {
+      await telegram(env, "sendMessage", {
+        chat_id: chatId,
+        text: "Cú pháp: /tailscale <device1,device2... hoặc all> [on|off|status]\nVí dụ: <code>/tailscale m77 on</code> hoặc <code>/vpn m77 status</code>",
+        parse_mode: "HTML"
+      });
+      return;
+    }
+    const parts = raw.split(/\s+/);
+    const targetStr = parts[0];
+    const mode = (parts[1] || "on").toLowerCase();
+    if (!["on", "off", "status"].includes(mode)) {
+      await telegram(env, "sendMessage", {
+        chat_id: chatId,
+        text: "Chế độ không hợp lệ. Vui lòng chọn: <code>on</code>, <code>off</code>, hoặc <code>status</code> (mặc định: on).",
+        parse_mode: "HTML"
+      });
+      return;
+    }
+    try {
+      const ids = await resolveAndValidateTelegramTargets(targetStr, env, fleetState);
+      const result = await fleetStateCall(env, fleetState, "/aot/hub/control", {
+        method: "POST",
+        body: {
+          protocol: "fleet-batch-v1",
+          kind: "control_tailscale",
+          target_device_ids: ids,
+          mode: mode,
+          telegram_chat_id: chatId
+        }
+      });
+      if (!result?.response?.ok) throw new Error(result?.data?.error || "tailscale_queue_failed");
+      const modeLabel = mode === "off" ? "TẮT" : (mode === "status" ? "KIỂM TRA TRẠNG THÁI" : "BẬT");
+      await telegram(env, "sendMessage", {
+        chat_id: chatId,
+        text: `🌐 <b>ĐÃ XẾP LỆNH ${modeLabel} TAILSCALE</b>\nThiết bị: <code>${ids.join(", ")}</code>\nChế độ: <b>${mode.toUpperCase()}</b>\nThiết bị sẽ tự động thực thi và gửi thông báo kết quả ở heartbeat kế tiếp.`,
+        parse_mode: "HTML"
+      });
+    } catch (error) {
+      await telegram(env, "sendMessage", { chat_id: chatId, text: "Lỗi CONTROL_TAILSCALE: " + String(error.message || error) });
+    }
+    return;
+  }
+
   if (input.match(/^\/phanserver(?:\s|$)/)) {
     const parts = input.split(/\s+/);
     if (parts.length !== 3) {

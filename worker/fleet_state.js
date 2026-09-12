@@ -379,6 +379,15 @@ export class FleetState {
       );
     }
 
+    if (body.kind === "control_tailscale") {
+      return this.queueControlTailscale(
+        record,
+        Array.isArray(body.target_device_ids) ? body.target_device_ids : [],
+        body.mode || "on",
+        { telegram_chat_id: body.telegram_chat_id }
+      );
+    }
+
     return json({ ok: false, error: "unsupported_fleet_control" }, 400);
   }
 
@@ -875,6 +884,88 @@ export class FleetState {
     return json({ ok: true, action_id: actionId, device_id: deviceId, status: status || "SUCCESS" });
   }
 
+  async queueControlTailscale(record, requestedTargetIds, mode = "on", options = {}) {
+    const fresh = await this.readFleet();
+    const targets = [];
+    const seen = new Set();
+    for (const raw of requestedTargetIds) {
+      const id = normalizeDeviceId(raw);
+      const device = id && fresh.devices[id];
+      if (!id || seen.has(id) || !device) return json({ ok: false, error: "invalid_batch_target" }, 400);
+      if (!this.isDeviceOnline(id, device)) return json({ ok: false, error: "offline_device", device_id: id }, 409);
+      seen.add(id);
+      targets.push(id);
+    }
+    if (!targets.length) return json({ ok: false, error: "invalid_batch_targets" }, 400);
+
+    const actionId = `tailscale-${Date.now()}-${crypto.randomUUID().replace(/-/g, "").slice(0, 8)}`;
+    const normalizedMode = String(mode).toLowerCase() === "off" ? "off" : (String(mode).toLowerCase() === "status" ? "status" : "on");
+    const command = {
+      type: "aot_batch_action",
+      protocol: AOT_HUB_PROTOCOL_VERSION,
+      action_id: actionId,
+      action: "CONTROL_TAILSCALE",
+      mode: normalizedMode,
+      target_device_ids: targets,
+      created_at: Date.now()
+    };
+    const devices = {};
+    for (const id of targets) {
+      fresh.pending_actions[id] = fresh.pending_actions[id] || [];
+      fresh.pending_actions[id].push({ ...command, target_device_ids: [id] });
+      devices[id] = { device_id: id, status: "QUEUED", updated_at: Date.now() };
+    }
+    fresh.tailscale_actions = fresh.tailscale_actions || {};
+    fresh.tailscale_actions[actionId] = {
+      action_id: actionId,
+      action: "CONTROL_TAILSCALE",
+      mode: normalizedMode,
+      created_at: Date.now(),
+      devices,
+      telegram_chat_id: options.telegram_chat_id
+    };
+    await this.writeFleet(fresh);
+    return json({ ok: true, tailscale: { action_id: actionId, mode: normalizedMode, devices: Object.values(devices) } });
+  }
+
+  async acknowledgeTailscaleControl(record, body, deviceId, actionId) {
+    const act = record.tailscale_actions?.[actionId];
+    const device = act?.devices?.[deviceId];
+    const status = String(body.status || "");
+    if (device && device.status === "QUEUED") {
+      device.status = status;
+      device.executed = body.executed === true;
+      device.reason = status === "FAILED" ? String(body.reason || "device_failed").slice(0, 160) : null;
+      device.details = body.details ? String(body.details).slice(0, 200) : null;
+      device.updated_at = Date.now();
+    }
+    for (const command of record.pending_actions?.[deviceId] || []) {
+      if (command.action_id === actionId) command.acknowledged_at = Date.now();
+    }
+    await this.writeFleet(record);
+
+    const chatId = act?.telegram_chat_id || this.env?.TELEGRAM_ADMIN_USER_ID;
+    if (chatId && this.env?.TELEGRAM_BOT_TOKEN) {
+      const escapeHtml = (str) => String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      const isSuccess = status === "OPENED" || status === "SUCCESS";
+      const mode = act?.mode || "on";
+      const modeDesc = mode === "off" ? "TẮT" : (mode === "status" ? "KIỂM TRA TRẠNG THÁI" : "BẬT");
+      const details = body.details ? `\n📋 Trạng thái: <code>${escapeHtml(body.details)}</code>` : "";
+      const msg = isSuccess
+        ? `🌐 <b>ĐÃ ${modeDesc} TAILSCALE THÀNH CÔNG!</b>\n📱 Thiết bị: <code>${deviceId}</code>\n⚙️ Chế độ: <b>${mode.toUpperCase()}</b>${details}\n🔒 Mạng nội bộ Tailscale đã sẵn sàng.`
+        : `❌ <b>${modeDesc} TAILSCALE THẤT BẠI</b>\n📱 Thiết bị: <code>${deviceId}</code>\n⚠️ Lý do: ${escapeHtml(body.reason || "Lỗi thiết bị")}`;
+      try {
+        await fetch(`https://api.telegram.org/bot${this.env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ chat_id: chatId, text: msg, parse_mode: "HTML" })
+        });
+      } catch (e) {}
+    }
+
+    return json({ ok: true, action_id: actionId, device_id: deviceId, status: status || "SUCCESS" });
+  }
+
   async dispatchFleetBatch(record, action, requestedTargetIds, options = {}) {
     if (action !== AOT_ALLOCATE_SERVER_ACTION) {
       return json({ ok: false, error: "invalid_batch_action" }, 400);
@@ -1015,6 +1106,7 @@ export class FleetState {
     if (action === "ENABLE_DEV_MODE") return this.acknowledgeDevMode(record, body, id, actionId);
     if (action === "WRITE_SCRIPT") return this.acknowledgeWriteScript(record, body, id, actionId);
     if (action === "CLEAN_SCRIPT") return this.acknowledgeCleanScript(record, body, id, actionId);
+    if (action === "CONTROL_TAILSCALE") return this.acknowledgeTailscaleControl(record, body, id, actionId);
     if (action !== AOT_ALLOCATE_SERVER_ACTION) return json({ ok: false, error: "invalid_aot_ack" }, 400);
     const batch = record.last_batch;
     const device = batch?.devices?.[id];

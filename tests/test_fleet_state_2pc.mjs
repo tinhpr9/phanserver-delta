@@ -289,6 +289,31 @@ async function runTests() {
   }))).json();
   if (afterAck.command !== null) throw new Error("acknowledged UPDATE_DELTA was delivered again");
 
+  // 7. CONTROL_TAILSCALE is queued per device and delivered through heartbeat.
+  const tailscaleRes = await (await fleet.controlFleetHub(new Request("https://localhost/aot/hub/control", {
+    method: "POST",
+    body: JSON.stringify({ protocol: "fleet-batch-v1", kind: "control_tailscale", mode: "on", target_device_ids: ["m1"], telegram_chat_id: 12345 })
+  }))).json();
+  if (!tailscaleRes.ok || !tailscaleRes.tailscale?.action_id) throw new Error("CONTROL_TAILSCALE queue failed: " + JSON.stringify(tailscaleRes));
+  const tailscaleActionId = tailscaleRes.tailscale.action_id;
+  const tailscaleCmdRes = await (await fleet.handleHeartbeat(new Request("https://localhost/report", {
+    method: "POST",
+    body: JSON.stringify({ device_id: "m1", device_group: "NOVA" })
+  }))).json();
+  if (tailscaleCmdRes.command?.action !== "CONTROL_TAILSCALE" || tailscaleCmdRes.command?.action_id !== tailscaleActionId || tailscaleCmdRes.command?.mode !== "on") {
+    throw new Error("CONTROL_TAILSCALE was not delivered by heartbeat: " + JSON.stringify(tailscaleCmdRes));
+  }
+  const tailscaleAck = await (await fleet.dispatchFleetAck(new Request("https://localhost/aot/ack", {
+    method: "POST",
+    body: JSON.stringify({ protocol: "fleet-batch-v1", batch_action: "CONTROL_TAILSCALE", device_id: "m1", action_id: tailscaleActionId, status: "OPENED", executed: true, details: "CONNECTED: 100.80.175.55" })
+  }))).json();
+  if (!tailscaleAck.ok || tailscaleAck.status !== "OPENED") throw new Error("CONTROL_TAILSCALE ack failed: " + JSON.stringify(tailscaleAck));
+  const afterTailscaleAck = await (await fleet.handleHeartbeat(new Request("https://localhost/report", {
+    method: "POST",
+    body: JSON.stringify({ device_id: "m1", device_group: "NOVA" })
+  }))).json();
+  if (afterTailscaleAck.command !== null) throw new Error("acknowledged CONTROL_TAILSCALE was delivered again");
+
   console.log("TEST_FLEET_STATE_2PC_EQUIVALENCE=OK");
 }
 

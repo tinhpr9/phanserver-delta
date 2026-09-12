@@ -113,6 +113,47 @@ class TestDeviceAgent(unittest.TestCase):
         ))
         self.assertEqual(mock_update.call_count, 1)
 
+    @mock.patch("agent.agent.send_ack", return_value=True)
+    @mock.patch("agent.agent.subprocess.run")
+    def test_control_tailscale_on_off_status(self, mock_subproc, mock_ack):
+        mock_subproc.return_value.returncode = 0
+        mock_subproc.return_value.stdout = "CONNECTED: 100.80.175.55"
+        mock_subproc.return_value.stderr = ""
+        state = {}
+        message_on = {
+            "protocol": "fleet-batch-v1",
+            "action": "CONTROL_TAILSCALE",
+            "action_id": "ts-101",
+            "mode": "on",
+            "target_device_ids": ["m72"],
+        }
+        self.assertTrue(agent.handle_incoming_batch_action(
+            message_on, "m72", "https://mock/report", "sec", state, self.state_path, self.links_path
+        ))
+        self.assertEqual(mock_ack.call_args.kwargs["batch_action"], "CONTROL_TAILSCALE")
+        self.assertEqual(mock_ack.call_args.kwargs["status"], "OPENED")
+        self.assertEqual(mock_ack.call_args.kwargs["details"], "CONNECTED: 100.80.175.55")
+
+        # Idempotency test
+        self.assertTrue(agent.handle_incoming_batch_action(
+            message_on, "m72", "https://mock/report", "sec", state, self.state_path, self.links_path
+        ))
+        self.assertEqual(mock_subproc.call_count, 1)
+
+        # Off test
+        mock_subproc.return_value.stdout = "DISCONNECTED"
+        message_off = {
+            "protocol": "fleet-batch-v1",
+            "action": "CONTROL_TAILSCALE",
+            "action_id": "ts-102",
+            "mode": "off",
+            "target_device_ids": ["m72"],
+        }
+        self.assertTrue(agent.handle_incoming_batch_action(
+            message_off, "m72", "https://mock/report", "sec", state, self.state_path, self.links_path
+        ))
+        self.assertEqual(mock_ack.call_args.kwargs["details"], "DISCONNECTED")
+
     @mock.patch("agent.agent.send_report_response", return_value={})
     def test_run_agent_loop_once(self, mock_report):
         agent.run_agent_loop(

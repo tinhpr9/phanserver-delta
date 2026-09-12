@@ -286,6 +286,11 @@ always_on: true
        - Xóa script: `/script <device> clean [tên_file hoặc all]` (Ví dụ: `/script m77 clean all` hoặc `/script m77 clean track`).
     6. **Phân Phối Server Links (`/phanserver`)**:
        - Cú pháp: `/phanserver <device1,device2...> <tabs>` (Ví dụ: `/phanserver m77 10`).
+    7. **Điều Khiển Tailscale VPN (`/tailscale` hoặc `/vpn`)**:
+       - Cú pháp: `/tailscale <device1,device2... hoặc all> [on|off|status]` (hoặc `/vpn <device1,device2... hoặc all> [on|off|status]`).
+       - **Bật VPN**: `/tailscale m77 on` hoặc `/vpn m77 on` (mặc định: `/tailscale m77`). Tự động kích hoạt VPN Always-on, QuickToggleTile và kết nối Tailscale.
+       - **Tắt VPN**: `/tailscale m77 off` hoặc `/vpn m77 off`. Xóa thiết lập Always-on và dừng ứng dụng VPN.
+       - **Kiểm tra trạng thái & IP Tailscale**: `/tailscale m77 status` hoặc `/vpn m77 status`. Báo cáo IP ảo nội bộ Tailscale (`tun0`: 100.x.y.z) về Telegram.
 - **Quy Tắc Phân Biệt Tuyệt Đối Từ Khóa `clone` vs `delta` (Strict Clone vs Folder Disambiguation)**:
   - Khi người dùng muốn cập nhật **10 ứng dụng Roblox clone** (dung lượng ~1.6 GB), BẮT BUỘC dùng từ khóa **`clone`** hoặc **`delta_apk`**.
   - Từ khóa **`delta`** chỉ dành riêng cho việc khôi phục nhanh tệp cấu hình script **`Delta_FolderBackup.zip`** (7.8 MB).
