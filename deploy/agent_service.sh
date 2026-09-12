@@ -11,6 +11,7 @@ start() {
         exit 0
     fi
     echo "Starting phanserver-delta device agent..."
+    termux-wake-lock 2>/dev/null || true
     nohup python3 "$SCRIPT_DIR/agent/agent.py" > "$LOG_FILE" 2>&1 &
     echo $! > "$PID_FILE"
     echo "Agent started with PID $!"

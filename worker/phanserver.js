@@ -157,10 +157,18 @@ export async function handleUpdate(update, env, fleetState) {
       const stateResult = await fleetStateCall(env, fleetState, "/aot/hub/state");
       const devices = stateResult.data?.state?.devices || [];
       const online = devices.filter(d => d.online).length;
+      const formatAgo = (ts) => {
+        if (!ts) return " (chưa kết nối)";
+        const diffSec = Math.floor((Date.now() - ts) / 1000);
+        if (diffSec < 60) return ` (${diffSec}s trước)`;
+        if (diffSec < 3600) return ` (${Math.floor(diffSec / 60)}p trước)`;
+        const hours = Math.floor(diffSec / 3600);
+        return ` (${hours}h trước)`;
+      };
       const text = devices.length
         ? `FLEET_STATUS=ONLINE\nDEVICES=${devices.length}\nONLINE=${online}\n` + devices
           .sort((a, b) => String(a.device_id).localeCompare(String(b.device_id), undefined, { numeric: true }))
-          .map(d => `${d.device_id}: ${d.online ? "ONLINE" : "OFFLINE"}`).join("\n")
+          .map(d => `${d.device_id}: ${d.online ? "ONLINE" : `OFFLINE${formatAgo(d.last_seen)}`}`).join("\n")
         : "FLEET_STATUS=EMPTY\nDEVICES=0\nONLINE=0";
       await telegram(env, "sendMessage", { chat_id: chatId, text });
     } catch (error) {

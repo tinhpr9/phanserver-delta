@@ -50,6 +50,9 @@ start_agent() {
         echo "[!] Không tìm thấy file $AGENT_PY"
         exit 1
     fi
+    # Giữ CPU hoạt động chống ngủ đông / Doze mode
+    termux-wake-lock 2>/dev/null || true
+    su -c "dumpsys deviceidle whitelist +com.termux" 2>/dev/null || true
     cd "$REPO_DIR"
     nohup python3 "$AGENT_PY" > "$LOG_FILE" 2>&1 &
     PID=$!

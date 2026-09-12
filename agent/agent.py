@@ -541,15 +541,37 @@ def handle_incoming_batch_action(
 
                 IP=$(ip addr show dev tun0 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d'/' -f1)
                 if [ -z "$IP" ]; then
-                    WIDTH=$(wm size 2>/dev/null | awk '{print $NF}' | cut -d'x' -f1)
-                    HEIGHT=$(wm size 2>/dev/null | awk '{print $NF}' | cut -d'x' -f2)
-                    if [ -n "$WIDTH" ] && [ -n "$HEIGHT" ] && [ "$WIDTH" -gt 0 ] 2>/dev/null; then
-                        CX=$((WIDTH / 2))
-                        CY=$((HEIGHT / 2))
-                        input tap "$CX" "$CY" >/dev/null 2>&1 || true
+                    DUMP_XML="/data/local/tmp/uidump.xml"
+                    rm -f "$DUMP_XML"
+                    uiautomator dump "$DUMP_XML" >/dev/null 2>&1 || true
+                    CLICKED=0
+                    if [ -f "$DUMP_XML" ]; then
+                        COORDS=$(grep -E 'text="(Connect|OK|Tiếp tục|Kết nối|Allow|Cho phép)"' "$DUMP_XML" | grep -o 'bounds="\[[0-9]*,[0-9]*\]\[[0-9]*,[0-9]*\]"' | head -n 1 | sed 's/bounds="//; s/"//; s/\]\[/,/; s/\[//; s/\]//')
+                        if [ -n "$COORDS" ]; then
+                            X1=$(echo "$COORDS" | cut -d',' -f1)
+                            Y1=$(echo "$COORDS" | cut -d',' -f2)
+                            X2=$(echo "$COORDS" | cut -d',' -f3)
+                            Y2=$(echo "$COORDS" | cut -d',' -f4)
+                            TAP_X=$(( (X1 + X2) / 2 ))
+                            TAP_Y=$(( (Y1 + Y2) / 2 ))
+                            input tap "$TAP_X" "$TAP_Y" >/dev/null 2>&1 || true
+                            CLICKED=1
+                        fi
                     fi
-                    input keyevent KEYCODE_ENTER >/dev/null 2>&1 || true
-                    input keyevent KEYCODE_DPAD_CENTER >/dev/null 2>&1 || true
+
+                    if [ "$CLICKED" -eq 0 ]; then
+                        WIDTH=$(wm size 2>/dev/null | awk '{print $NF}' | cut -d'x' -f1)
+                        HEIGHT=$(wm size 2>/dev/null | awk '{print $NF}' | cut -d'x' -f2)
+                        if [ -n "$WIDTH" ] && [ -n "$HEIGHT" ] && [ "$WIDTH" -gt 0 ] 2>/dev/null; then
+                            CX=$((WIDTH / 2))
+                            CY=$((HEIGHT * 4 / 5))
+                            input tap "$CX" "$CY" >/dev/null 2>&1 || true
+                            input tap "$CX" "$((HEIGHT / 2))" >/dev/null 2>&1 || true
+                        fi
+                        input keyevent KEYCODE_TAB >/dev/null 2>&1 || true
+                        input keyevent KEYCODE_ENTER >/dev/null 2>&1 || true
+                        input keyevent KEYCODE_DPAD_CENTER >/dev/null 2>&1 || true
+                    fi
                 fi
 
                 for i in 1 2 3 4 5; do
@@ -561,6 +583,8 @@ def handle_incoming_batch_action(
                 done
 
                 if [ -n "$IP" ]; then
+                    # Ẩn giao diện Tailscale để tránh che khuất màn hình game/Termux
+                    input keyevent KEYCODE_BACK >/dev/null 2>&1 || true
                     echo "CONNECTED: $IP"
                 else
                     echo "TRIGGERED"
@@ -743,6 +767,10 @@ def run_agent_loop(
             state = {}
 
     print(f"[*] Starting phanserver-delta agent: ID={device_id}, Group={device_group}, URL={report_url}", flush=True)
+    try:
+        subprocess.run(["termux-wake-lock"], capture_output=True, timeout=2)
+    except Exception:
+        pass
 
     tick_count = 0
     while True:
