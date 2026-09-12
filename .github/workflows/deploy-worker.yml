@@ -8,6 +8,7 @@ on:
     paths:
       - 'worker/**'
       - 'wrangler.jsonc'
+      - 'wrangler.toml'
       - 'package.json'
       - '.github/workflows/deploy-worker.yml'
   workflow_dispatch:
@@ -39,3 +40,4 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: deploy --config wrangler.toml
