@@ -298,6 +298,13 @@ always_on: true
   - Nghiêm cấm Agent hướng dẫn nhầm `/update <device> Delta` khi người dùng yêu cầu cài app Roblox clone.
 - **Đồng Bộ Song Song Cả Repo Và Hệ Thống Luật (Dual-Channel Sync)**: Bắt buộc áp dụng ngay và đồng bộ điều luật này vào tất cả các kênh lưu trữ SSOT.
 
+## 33. QUY TẮC TỰ ĐỘNG KÍCH HOẠT NÂNG CẤP HÀNG LOẠT SAU KHI CẬP NHẬT MÃ NGUỒN (STRICT_AUTO_UPGRADE_ALL_AFTER_PUSH_RULE - Hard Rule)
+- **Tự Động Gửi Lệnh Nâng Cấp Toàn Bộ Dàn Máy (Automatic Fleet Upgrade Dispatch on Every Git Push)**:
+  - Mỗi khi hoàn tất việc sửa đổi mã nguồn, vượt qua 100% bộ kiểm thử (6/6 suites), commit và `git push` thành công lên nhánh làm việc từ xa (`fix/delta-stability`), Antigravity BẮT BUỘC phải **TỰ ĐỘNG** gửi lệnh nâng cấp Agent `/upgrade all` (hoặc gửi request trực tiếp đến Hub endpoint `/aot/hub/control` với `kind: "upgrade_agent"` cho toàn bộ các thiết bị đang Online bao gồm `m77`...).
+  - Người dùng tuyệt đối KHÔNG cần phải gõ lệnh nâng cấp thủ công sau mỗi lần push code mới.
+  - Ngay sau khi đẩy mã nguồn mới, Antigravity phải truy vấn danh sách thiết bị online từ `/aot/hub/state` và gửi lệnh nâng cấp ngay trong phiên làm việc.
+- **Đồng Bộ Song Song Cả Repo Và Hệ Thống Luật (Dual-Channel Sync)**: Bắt buộc áp dụng ngay và đồng bộ điều luật này vào tất cả các kênh lưu trữ SSOT.
+
 
 
 
