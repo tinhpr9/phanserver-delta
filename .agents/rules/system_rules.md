@@ -305,6 +305,25 @@ always_on: true
   - Ngay sau khi đẩy mã nguồn mới, Antigravity phải truy vấn danh sách thiết bị online từ `/aot/hub/state` và gửi lệnh nâng cấp ngay trong phiên làm việc.
 - **Đồng Bộ Song Song Cả Repo Và Hệ Thống Luật (Dual-Channel Sync)**: Bắt buộc áp dụng ngay và đồng bộ điều luật này vào tất cả các kênh lưu trữ SSOT.
 
+## 34. QUY TẮC BẮT BUỘC ĐỒNG BỘ SONG HÀNH GOOGLE DRIVE VÀ BỘ NHỚ THIẾT BỊ CHO DỮ LIỆU TÀI KHOẢN/COOKIE (STRICT_DUAL_STORAGE_GOOGLE_DRIVE_AND_LOCAL_ACCOUNT_SYNC_RULE - Hard Rule)
+- **Nhận Diện Chính Xác Môi Trường Thao Tác Từ Ảnh Chụp Màn Hình (Visual Environment Recognition for Target Storage)**:
+  - Khi người dùng gửi ảnh chụp màn hình kèm yêu cầu chỉnh sửa, xóa acc ban, lọc cookie, hoặc thay thế tài khoản (`acc.txt`, `Data_Tong_Cookies.txt`), Agent BẮT BUỘC phải soi kỹ giao diện ứng dụng trong ảnh (đặc biệt là thanh tiêu đề, menu ứng dụng: Google Drive, MT Manager, ZArchiver, Termux...).
+  - Nếu ảnh chụp hiển thị ứng dụng **Google Drive** (ví dụ: có thanh tìm kiếm *"Tìm trong Drive"*, biểu tượng Drive, danh sách tệp đám mây), đích tác động BẮT BUỘC phải bao gồm cả tệp trên Google Drive, không được phép chỉ thao tác trên bộ nhớ cục bộ mà bỏ quên Cloud.
+- **Bắt Buộc Đồng Bộ Song Hành Kép Cả Local Và Cloud (Mandatory Dual-Storage Sync: Local & Cloud)**:
+  - Với bất kỳ thao tác xóa acc bị ban, cập nhật acc mới, lọc cookie trong `acc.txt` và `Data_Tong_Cookies.txt`:
+    1. *Cập nhật bộ nhớ cục bộ (Local Runtime)*: Lưu vào `/storage/emulated/0/Download/Shouko/` để các tiến trình chạy trên thiết bị (MT Manager, bot runtime) đọc được ngay.
+    2. *Đồng bộ trực tiếp lên Google Drive (Cloud SSOT)*: Sử dụng `rclone copyto` đẩy ngay tệp đã làm sạch lên `gdrive:acc.txt` và `gdrive:Data_Tong_Cookies.txt`.
+  - Triệt tiêu 100% tình trạng chỉ sửa cục bộ khiến người dùng hoặc các thiết bị khác khi chạy tool (`ZeroPoint_AIO.py`) chọn phím `y` (tải từ Drive về) bị nạp ngược lại các tài khoản bị ban hoặc dữ liệu rác cũ.
+- **Tuyệt Đối Bảo Toàn File ID Gốc Trên Google Drive (Absolute File ID Preservation Ban on File Re-creation)**:
+  - Khi cập nhật lên Google Drive, BẮT BUỘC phải dùng lệnh ghi đè trực tiếp lên tệp hiện hữu (`rclone copyto <file_cục_bộ> gdrive:<tên_file>`).
+  - NGHIÊM CẤM hành vi xóa tệp trên Drive rồi tải tệp mới lên, vì thao tác xóa sẽ sinh ra File ID mới, làm đứt gãy tính năng tự động tải dữ liệu của các script hệ thống phụ thuộc vào mã định danh cố định (`file_id_acc = 12oxXXlSPvHbB0YRUMQcHhLHiE4gemiVg`, `file_id_data = 1k8B2Vkdu-w3-K-O92vMeC1HQbKGaZb0B`).
+- **Xác Minh Bằng Chứng Hai Đầu Sau Đồng Bộ (Mandatory Dual-End Verification Gate)**:
+  - Sau khi đồng bộ, Agent BẮT BUỘC phải chạy lệnh kiểm chứng trực tiếp cả 2 đầu:
+    1. Kiểm tra kích thước và hash/ID tệp trên Google Drive (`rclone lsf gdrive: --format "sip"`).
+    2. Đọc trực tiếp phần nội dung thay đổi trên Google Drive (`rclone cat gdrive:<file>`) để chứng minh acc bị ban đã thực sự biến mất khỏi Cloud trước khi bàn giao.
+- **Đồng Bộ Song Song Cả Repo Và Hệ Thống Luật (Dual-Channel Sync)**: Bắt buộc áp dụng ngay và đồng bộ điều luật này vào tất cả các kênh lưu trữ SSOT.
+
+
 
 
 
