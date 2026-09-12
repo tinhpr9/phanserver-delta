@@ -1,4 +1,6 @@
 import { handleUpdate, handleCallback } from "../worker/phanserver.js";
+import worker from "../worker/worker.js";
+import { FleetState } from "../worker/fleet_state.js";
 
 let sentMessages = [];
 let answeredCallbacks = [];
@@ -336,6 +338,131 @@ async function runTests() {
   await triggerMessage("/help");
   if (!sentMessages[0]?.text.includes("DANH SÁCH LỆNH PREIUMBOT")) {
     throw new Error("help command output failed: " + (sentMessages[0]?.text || ""));
+  }
+
+  // 18. Anti-bot webhook echo prevention check (Rule 10)
+  sentMessages = [];
+  const beforeControlLen = fleetControlCalls.length;
+  await handleUpdate({
+    message: {
+      from: { id: "123", is_bot: true },
+      chat: { id: 1 },
+      text: "/checkban m1"
+    }
+  }, env);
+  if (sentMessages.length > 0 || fleetControlCalls.length !== beforeControlLen) {
+    throw new Error("anti-bot echo check failed: bot message was not ignored");
+  }
+
+  answeredCallbacks = [];
+  await handleUpdate({
+    callback_query: {
+      id: "cb_bot",
+      from: { id: "123", is_bot: true },
+      message: { chat: { id: 1 }, message_id: 99 },
+      data: "cancel"
+    }
+  }, env);
+  if (answeredCallbacks.length > 0) {
+    throw new Error("anti-bot echo check failed: bot callback was not ignored");
+  }
+
+  // 19. Worker /delta/manifest release fallback test (debugError -> error?.message || String(error))
+  const origFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async () => { throw new Error("GitHub Network Timeout Mock"); };
+    const req = new Request("https://worker.local/delta/manifest");
+    const resp = await worker.fetch(req, env);
+    if (resp.status !== 200) throw new Error("Worker fallback returned status: " + resp.status);
+    const body = await resp.json();
+    if (body.channel !== "delta" || !body.debug_error || !body.debug_error.includes("GitHub Network Timeout Mock")) {
+      throw new Error("Worker fallback debug_error failed: " + JSON.stringify(body));
+    }
+
+    // Fallback when GitHub responds with non-ok HTTP status (e.g. 502)
+    globalThis.fetch = async () => ({ ok: false, status: 502 });
+    const resp2 = await worker.fetch(req, env);
+    const body2 = await resp2.json();
+    if (!body2.debug_error || !body2.debug_error.includes("502")) {
+      throw new Error("Worker fallback 502 status failed: " + JSON.stringify(body2));
+    }
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+
+  // 20. FleetState HTML checkban reporting test with replace_result and Rule 34 Google Drive sync
+  class MockTelegramStorage {
+    constructor() { this.store = new Map(); }
+    async get(key) { return this.store.get(key); }
+    async put(key, value) { this.store.set(key, JSON.parse(JSON.stringify(value))); }
+  }
+  let lastTelegramReport = null;
+  const fsEnv = {
+    TEST_ENV: true,
+    TELEGRAM_BOT_TOKEN: "mock-token",
+    TELEGRAM_ADMIN_USER_ID: "123"
+  };
+  const fsCtx = {
+    storage: new MockTelegramStorage(),
+    sockets: new Map(),
+    getWebSockets() { return []; }
+  };
+  const fsFleet = new FleetState(fsCtx, fsEnv);
+  const origFetchFs = globalThis.fetch;
+  try {
+    globalThis.fetch = async (url, init) => {
+      if (url.includes("api.telegram.org")) {
+        lastTelegramReport = JSON.parse(init.body);
+        return { ok: true, json: async () => ({ ok: true }) };
+      }
+      return { ok: true, json: async () => ({}) };
+    };
+
+    // Register device m1 and queue checkban
+    await fsFleet.handleHeartbeat(new Request("https://localhost/report", {
+      method: "POST",
+      body: JSON.stringify({ device_id: "m1", device_group: "NOVA", capabilities: ["check_ban"] })
+    }));
+    const qRes = await (await fsFleet.controlFleetHub(new Request("https://localhost/aot/hub/control", {
+      method: "POST",
+      body: JSON.stringify({ protocol: "fleet-batch-v1", kind: "check_ban", target: "m77", target_device_ids: ["m1"], telegram_chat_id: 123 })
+    }))).json();
+    const actionId = qRes.checkban.action_id;
+
+    // Acknowledge checkban with replace_result and Rule 34 sync
+    const ackRes = await (await fsFleet.dispatchFleetAck(new Request("https://localhost/aot/ack", {
+      method: "POST",
+      body: JSON.stringify({
+        protocol: "fleet-batch-v1",
+        batch_action: "CHECK_BAN",
+        device_id: "m1",
+        action_id: actionId,
+        status: "OPENED",
+        executed: true,
+        details: JSON.stringify({
+          target: "M77",
+          total: 10,
+          live: 8,
+          banned: 2,
+          error: 0,
+          banned_list: ["banned_user_1", "banned_user_2"],
+          clean_result: { removed_from_acc: 2, archived_cookies_count: 2 },
+          replace_result: { replaced_count: 2, remaining_reserve_count: 10, replaced_accounts: ["rep1", "rep2"] },
+          sync_result: { acc_sync: true, data_tong_sync: true, rule34_verified: true }
+        })
+      })
+    }))).json();
+
+    if (!ackRes.ok) throw new Error("FleetState checkban ack failed: " + JSON.stringify(ackRes));
+    if (!lastTelegramReport?.text?.includes("🔄 <b>Nạp bù dự phòng</b>: Đã tự động nạp <b>2</b> acc từ kho dự trữ vào máy") ||
+        !lastTelegramReport?.text?.includes("Kho còn lại: <b>10</b>")) {
+      throw new Error("FleetState checkban replace_result reporting failed: " + JSON.stringify(lastTelegramReport));
+    }
+    if (!lastTelegramReport?.text?.includes("Google Drive") || !lastTelegramReport?.text?.includes("Rule 34")) {
+      throw new Error("FleetState checkban Rule 34 reporting failed: " + JSON.stringify(lastTelegramReport));
+    }
+  } finally {
+    globalThis.fetch = origFetchFs;
   }
 
   console.log("TEST_TELEGRAM_PHANSERVER_EQUIVALENCE=OK");

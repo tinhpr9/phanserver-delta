@@ -15,6 +15,7 @@ export default {
     }
 
     if (path === "/delta/manifest") {
+      let error = null;
       try {
         const headers = { "User-Agent": "phanserver-delta-worker", "Accept": "application/vnd.github.v3+json" };
         if (env?.GITHUB_TOKEN) {
@@ -42,15 +43,21 @@ export default {
             }), {
               headers: { "Content-Type": "application/json" }
             });
+          } else {
+            error = new Error("No releases found");
           }
+        } else {
+          error = new Error(`GitHub API returned status ${ghRes.status}`);
         }
-      } catch (e) {}
+      } catch (e) {
+        error = e;
+      }
 
       return new Response(JSON.stringify({
         channel: "delta",
         version: "1.0.0",
         release_date: "2026-08-26T12:00:00Z",
-        debug_error: debugError,
+        debug_error: error?.message || String(error),
         assets: [
           {
             name: "Delta-v1.0.0.apk",

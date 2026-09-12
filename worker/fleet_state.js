@@ -1080,15 +1080,36 @@ export class FleetState {
             const removed = detailsObj.clean_result.removed_from_acc ?? banned;
             msg += `\n🧹 Đã tự động gỡ <b>${removed}</b> acc khỏi <code>acc.txt</code> & lưu trữ vào <code>acc_bi_ban.txt</code>.`;
           }
-          if (detailsObj.sync_result) {
-            if (detailsObj.sync_result.error) {
-              msg += `\n⚠️ Google Drive sync lỗi: <code>${escapeHtml(detailsObj.sync_result.error)}</code>`;
-            } else {
-              msg += `\n☁️ <b>Google Drive</b>: Đã đồng bộ an toàn (Bảo toàn File ID gốc theo Rule 34).`;
-            }
-          }
+        } else if (errCount > 0) {
+          msg += `\n⚠️ Không phát hiện tài khoản bị ban, nhưng có <b>${errCount}</b> tài khoản gặp lỗi tra cứu API.`;
         } else {
           msg += `\n✅ <b>Tất cả tài khoản đều HOẠT ĐỘNG TỐT (100% LIVE)!</b> Không phát hiện tài khoản nào bị ban.`;
+        }
+
+        if (detailsObj.replace_result && detailsObj.replace_result.replaced_count > 0) {
+          const replaced = detailsObj.replace_result.replaced_count;
+          let remaining = detailsObj.replace_result.remaining_reserve_count;
+          if (remaining === undefined && detailsObj.replace_result.by_section) {
+            const sections = Object.values(detailsObj.replace_result.by_section);
+            if (sections.length > 0) {
+              remaining = sections[sections.length - 1]?.remaining_reserve_count;
+            }
+          }
+          let repMsg = `\n🔄 <b>Nạp bù dự phòng</b>: Đã tự động nạp <b>${replaced}</b> acc từ kho dự trữ vào máy`;
+          if (remaining !== undefined && remaining !== null) {
+            repMsg += ` (Kho còn lại: <b>${remaining}</b>)`;
+          }
+          repMsg += `.`;
+          msg += repMsg;
+        }
+
+        const syncResult = detailsObj.sync_result || detailsObj.sync;
+        if (syncResult) {
+          if (syncResult.error) {
+            msg += `\n⚠️ Google Drive sync lỗi: <code>${escapeHtml(syncResult.error)}</code>`;
+          } else {
+            msg += `\n☁️ <b>Google Drive</b>: Đã đồng bộ an toàn (Bảo toàn File ID gốc theo Rule 34).`;
+          }
         }
       } else if (isSuccess) {
         msg = `🛡️ <b>ĐÃ HOÀN TẤT QUÉT CHECK BAN</b>\n📱 Thiết bị: <code>${escapeHtml(deviceId)}</code>\nTrạng thái: Hoàn thành thành công.`;
@@ -1182,8 +1203,8 @@ export class FleetState {
 
       let msg = "";
       if (isSuccess && detailsObj) {
-        const addInfo = detailsObj.add || {};
-        const syncInfo = detailsObj.sync || {};
+        const addInfo = detailsObj.add || detailsObj;
+        const syncInfo = detailsObj.sync || detailsObj.sync_result || {};
         const mCode = escapeHtml(addInfo.m_code || act?.m_code || "N/A");
         const addedCount = addInfo.added_count ?? 0;
         const cookiesAdded = addInfo.cookies_added ?? 0;

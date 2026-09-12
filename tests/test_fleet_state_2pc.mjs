@@ -341,6 +341,197 @@ async function runTests() {
     })
   }))).json();
   if (!cbAck.ok || cbAck.status !== "OPENED") throw new Error("CHECK_BAN ack failed: " + JSON.stringify(cbAck));
+  if (!notifiedTelegram?.text?.includes("100% LIVE") || !notifiedTelegram?.text?.includes("Tổng: <b>5</b>")) {
+    throw new Error("CHECK_BAN 100% LIVE report failed: " + JSON.stringify(notifiedTelegram));
+  }
+
+  // 8b. CHECK_BAN: banned === 0 and errCount > 0
+  const cbRes2 = await (await fleet.controlFleetHub(new Request("https://localhost/aot/hub/control", {
+    method: "POST",
+    body: JSON.stringify({ protocol: "fleet-batch-v1", kind: "check_ban", target: "m77", target_device_ids: ["m1"], telegram_chat_id: 12345 })
+  }))).json();
+  const cbActionId2 = cbRes2.checkban.action_id;
+  await fleet.handleHeartbeat(new Request("https://localhost/report", {
+    method: "POST",
+    body: JSON.stringify({ device_id: "m1", device_group: "NOVA" })
+  }));
+  const cbAck2 = await (await fleet.dispatchFleetAck(new Request("https://localhost/aot/ack", {
+    method: "POST",
+    body: JSON.stringify({
+      protocol: "fleet-batch-v1",
+      batch_action: "CHECK_BAN",
+      device_id: "m1",
+      action_id: cbActionId2,
+      status: "OPENED",
+      executed: true,
+      details: JSON.stringify({ target: "M77", total: 5, live: 3, banned: 0, error: 2, banned_list: [] })
+    })
+  }))).json();
+  if (!cbAck2.ok) throw new Error("CHECK_BAN ack2 failed: " + JSON.stringify(cbAck2));
+  if (!notifiedTelegram?.text?.includes("⚠️ Lỗi API: <b>2</b>")) {
+    throw new Error("CHECK_BAN error count header failed: " + JSON.stringify(notifiedTelegram));
+  }
+  if (!notifiedTelegram?.text?.includes("⚠️ Không phát hiện tài khoản bị ban, nhưng có <b>2</b> tài khoản gặp lỗi tra cứu API.")) {
+    throw new Error("CHECK_BAN error summary report failed: " + JSON.stringify(notifiedTelegram));
+  }
+
+  // 8c. CHECK_BAN: banned > 0, clean_result, replace_result and Rule 34 Google Drive sync
+  const cbRes3 = await (await fleet.controlFleetHub(new Request("https://localhost/aot/hub/control", {
+    method: "POST",
+    body: JSON.stringify({ protocol: "fleet-batch-v1", kind: "check_ban", target: "m77", target_device_ids: ["m1"], telegram_chat_id: 12345 })
+  }))).json();
+  const cbActionId3 = cbRes3.checkban.action_id;
+  await fleet.handleHeartbeat(new Request("https://localhost/report", {
+    method: "POST",
+    body: JSON.stringify({ device_id: "m1", device_group: "NOVA" })
+  }));
+  const cbAck3 = await (await fleet.dispatchFleetAck(new Request("https://localhost/aot/ack", {
+    method: "POST",
+    body: JSON.stringify({
+      protocol: "fleet-batch-v1",
+      batch_action: "CHECK_BAN",
+      device_id: "m1",
+      action_id: cbActionId3,
+      status: "OPENED",
+      executed: true,
+      details: JSON.stringify({
+        target: "M77",
+        total: 10,
+        live: 8,
+        banned: 2,
+        error: 0,
+        banned_list: ["user_ban1", "user_ban2"],
+        clean_result: { removed_from_acc: 2, archived_cookies_count: 2 },
+        replace_result: { replaced_count: 2, remaining_reserve_count: 15, replaced_accounts: ["rep1", "rep2"] },
+        sync_result: { acc_sync: true, data_tong_sync: true, rule34_verified: true }
+      })
+    })
+  }))).json();
+  if (!cbAck3.ok) throw new Error("CHECK_BAN ack3 failed: " + JSON.stringify(cbAck3));
+  if (!notifiedTelegram?.text?.includes("📊 Tổng: <b>10</b> | 🟢 Sống: <b>8</b> | 🔴 Bị Ban: <b>2</b>")) {
+    throw new Error("CHECK_BAN stats failed: " + JSON.stringify(notifiedTelegram));
+  }
+  if (!notifiedTelegram?.text?.includes("user_ban1") || !notifiedTelegram?.text?.includes("user_ban2")) {
+    throw new Error("CHECK_BAN banned list failed: " + JSON.stringify(notifiedTelegram));
+  }
+  if (!notifiedTelegram?.text?.includes("Đã tự động gỡ <b>2</b> acc khỏi <code>acc.txt</code>")) {
+    throw new Error("CHECK_BAN clean_result failed: " + JSON.stringify(notifiedTelegram));
+  }
+  if (!notifiedTelegram?.text?.includes("<b>Nạp bù dự phòng</b>: Đã tự động nạp <b>2</b> acc từ kho dự trữ vào máy") || !notifiedTelegram?.text?.includes("Kho còn lại: <b>15</b>")) {
+    throw new Error("CHECK_BAN replace_result failed: " + JSON.stringify(notifiedTelegram));
+  }
+  if (!notifiedTelegram?.text?.includes("Google Drive") || !notifiedTelegram?.text?.includes("Rule 34")) {
+    throw new Error("CHECK_BAN sync_result failed: " + JSON.stringify(notifiedTelegram));
+  }
+
+  // 8d. CHECK_BAN: removed_from_acc undefined falls back to banned
+  const cbRes4 = await (await fleet.controlFleetHub(new Request("https://localhost/aot/hub/control", {
+    method: "POST",
+    body: JSON.stringify({ protocol: "fleet-batch-v1", kind: "check_ban", target: "m77", target_device_ids: ["m1"], telegram_chat_id: 12345 })
+  }))).json();
+  const cbActionId4 = cbRes4.checkban.action_id;
+  await fleet.handleHeartbeat(new Request("https://localhost/report", {
+    method: "POST",
+    body: JSON.stringify({ device_id: "m1", device_group: "NOVA" })
+  }));
+  const cbAck4 = await (await fleet.dispatchFleetAck(new Request("https://localhost/aot/ack", {
+    method: "POST",
+    body: JSON.stringify({
+      protocol: "fleet-batch-v1",
+      batch_action: "CHECK_BAN",
+      device_id: "m1",
+      action_id: cbActionId4,
+      status: "OPENED",
+      executed: true,
+      details: JSON.stringify({
+        target: "M77",
+        total: 5,
+        live: 4,
+        banned: 1,
+        error: 0,
+        banned_list: ["user_ban1"],
+        clean_result: { archived_cookies_count: 1 }
+      })
+    })
+  }))).json();
+  if (!cbAck4.ok) throw new Error("CHECK_BAN ack4 failed: " + JSON.stringify(cbAck4));
+  if (!notifiedTelegram?.text?.includes("Đã tự động gỡ <b>1</b> acc khỏi <code>acc.txt</code>")) {
+    throw new Error("CHECK_BAN fallback to banned failed: " + JSON.stringify(notifiedTelegram));
+  }
+
+  // 8e. CHECK_BAN: Google Drive sync error reporting
+  const cbRes5 = await (await fleet.controlFleetHub(new Request("https://localhost/aot/hub/control", {
+    method: "POST",
+    body: JSON.stringify({ protocol: "fleet-batch-v1", kind: "check_ban", target: "m77", target_device_ids: ["m1"], telegram_chat_id: 12345 })
+  }))).json();
+  const cbActionId5 = cbRes5.checkban.action_id;
+  await fleet.handleHeartbeat(new Request("https://localhost/report", {
+    method: "POST",
+    body: JSON.stringify({ device_id: "m1", device_group: "NOVA" })
+  }));
+  const cbAck5 = await (await fleet.dispatchFleetAck(new Request("https://localhost/aot/ack", {
+    method: "POST",
+    body: JSON.stringify({
+      protocol: "fleet-batch-v1",
+      batch_action: "CHECK_BAN",
+      device_id: "m1",
+      action_id: cbActionId5,
+      status: "OPENED",
+      executed: true,
+      details: JSON.stringify({
+        target: "M77",
+        total: 5,
+        live: 4,
+        banned: 1,
+        error: 0,
+        banned_list: ["user_ban1"],
+        sync_result: { error: "rclone network timeout" }
+      })
+    })
+  }))).json();
+  if (!cbAck5.ok) throw new Error("CHECK_BAN ack5 failed: " + JSON.stringify(cbAck5));
+  if (!notifiedTelegram?.text?.includes("Google Drive sync lỗi: <code>rclone network timeout</code>")) {
+    throw new Error("CHECK_BAN sync error report failed: " + JSON.stringify(notifiedTelegram));
+  }
+
+  // 8f. CHECK_BAN: replace_result with remaining_reserve_count undefined
+  const cbRes6 = await (await fleet.controlFleetHub(new Request("https://localhost/aot/hub/control", {
+    method: "POST",
+    body: JSON.stringify({ protocol: "fleet-batch-v1", kind: "check_ban", target: "m77", target_device_ids: ["m1"], telegram_chat_id: 12345 })
+  }))).json();
+  const cbActionId6 = cbRes6.checkban.action_id;
+  await fleet.handleHeartbeat(new Request("https://localhost/report", {
+    method: "POST",
+    body: JSON.stringify({ device_id: "m1", device_group: "NOVA" })
+  }));
+  const cbAck6 = await (await fleet.dispatchFleetAck(new Request("https://localhost/aot/ack", {
+    method: "POST",
+    body: JSON.stringify({
+      protocol: "fleet-batch-v1",
+      batch_action: "CHECK_BAN",
+      device_id: "m1",
+      action_id: cbActionId6,
+      status: "OPENED",
+      executed: true,
+      details: JSON.stringify({
+        target: "M77",
+        total: 5,
+        live: 4,
+        banned: 1,
+        error: 0,
+        banned_list: ["user_ban1"],
+        clean_result: { removed_from_acc: 1 },
+        replace_result: { replaced_count: 1 }
+      })
+    })
+  }))).json();
+  if (!cbAck6.ok) throw new Error("CHECK_BAN ack6 failed: " + JSON.stringify(cbAck6));
+  if (!notifiedTelegram?.text?.includes("🔄 <b>Nạp bù dự phòng</b>: Đã tự động nạp <b>1</b> acc từ kho dự trữ vào máy.")) {
+    throw new Error("CHECK_BAN replace_result without remaining count failed: " + JSON.stringify(notifiedTelegram));
+  }
+  if (notifiedTelegram?.text?.includes("Kho còn lại")) {
+    throw new Error("CHECK_BAN unexpected remaining count text: " + JSON.stringify(notifiedTelegram));
+  }
 
   // 9. ADD_ACC is queued per device and acknowledged
   const addaccRes = await (await fleet.controlFleetHub(new Request("https://localhost/aot/hub/control", {

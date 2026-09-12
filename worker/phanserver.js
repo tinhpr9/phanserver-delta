@@ -136,6 +136,7 @@ export async function handleUpdate(update, env, fleetState) {
   const messageId = callback?.message?.message_id;
 
   if (!from || !chatId) return;
+  if (from?.is_bot) return;
 
   if (env?.TELEGRAM_ADMIN_USER_ID && String(from.id) !== String(env.TELEGRAM_ADMIN_USER_ID)) {
     if (callback) {
