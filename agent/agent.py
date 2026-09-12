@@ -507,8 +507,11 @@ def handle_incoming_batch_action(
             mode = str(message.get("mode") or "on").lower()
             if mode == "off":
                 cmd = """
-                settings delete secure always_on_vpn_app 2>/dev/null || true
-                am force-stop com.tailscale.ipn 2>/dev/null || true
+                am broadcast -a com.tailscale.ipn.DISCONNECT_VPN -n com.tailscale.ipn/.IPNReceiver >/dev/null 2>&1 || true
+                am broadcast -a com.tailscale.ipn.DISCONNECT_VPN -p com.tailscale.ipn >/dev/null 2>&1 || true
+                cmd statusbar click-tile com.tailscale.ipn/.QuickToggleService >/dev/null 2>&1 || true
+                settings delete secure always_on_vpn_app >/dev/null 2>&1 || true
+                am force-stop com.tailscale.ipn >/dev/null 2>&1 || true
                 echo "DISCONNECTED"
                 """
             elif mode == "status":
@@ -518,7 +521,7 @@ def handle_incoming_batch_action(
                     echo "CONNECTED: $IP"
                 else
                     if pidof com.tailscale.ipn >/dev/null 2>&1; then
-                        echo "RUNNING"
+                        echo "RUNNING (DISCONNECTED)"
                     else
                         echo "STOPPED"
                     fi
@@ -527,12 +530,35 @@ def handle_incoming_batch_action(
             else:
                 # default: "on"
                 cmd = """
-                settings put secure always_on_vpn_app com.tailscale.ipn 2>/dev/null || true
-                settings put secure always_on_vpn_lockdown 0 2>/dev/null || true
-                cmd statusbar click-tile com.tailscale.ipn/.QuickToggleTile 2>/dev/null || true
-                am start -n com.tailscale.ipn/.MainActivity 2>/dev/null || true
-                sleep 2
+                settings put secure always_on_vpn_app com.tailscale.ipn >/dev/null 2>&1 || true
+                settings put secure always_on_vpn_lockdown 0 >/dev/null 2>&1 || true
+                am broadcast -a com.tailscale.ipn.CONNECT_VPN -n com.tailscale.ipn/.IPNReceiver >/dev/null 2>&1 || true
+                am broadcast -a com.tailscale.ipn.CONNECT_VPN -p com.tailscale.ipn >/dev/null 2>&1 || true
+                cmd statusbar click-tile com.tailscale.ipn/.QuickToggleService >/dev/null 2>&1 || true
+                am start -n com.tailscale.ipn/.MainActivity >/dev/null 2>&1 || true
+                sleep 1
+
                 IP=$(ip addr show dev tun0 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d'/' -f1)
+                if [ -z "$IP" ]; then
+                    WIDTH=$(wm size 2>/dev/null | awk '{print $NF}' | cut -d'x' -f1)
+                    HEIGHT=$(wm size 2>/dev/null | awk '{print $NF}' | cut -d'x' -f2)
+                    if [ -n "$WIDTH" ] && [ -n "$HEIGHT" ] && [ "$WIDTH" -gt 0 ] 2>/dev/null; then
+                        CX=$((WIDTH / 2))
+                        CY=$((HEIGHT / 2))
+                        input tap "$CX" "$CY" >/dev/null 2>&1 || true
+                    fi
+                    input keyevent KEYCODE_ENTER >/dev/null 2>&1 || true
+                    input keyevent KEYCODE_DPAD_CENTER >/dev/null 2>&1 || true
+                fi
+
+                for i in 1 2 3 4 5; do
+                    IP=$(ip addr show dev tun0 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d'/' -f1)
+                    if [ -n "$IP" ]; then
+                        break
+                    fi
+                    sleep 1
+                done
+
                 if [ -n "$IP" ]; then
                     echo "CONNECTED: $IP"
                 else
@@ -541,12 +567,12 @@ def handle_incoming_batch_action(
                 """
 
             if _run_as_root:
-                res = _run_as_root(cmd, timeout=15)
+                res = _run_as_root(cmd, timeout=20)
                 success = res.returncode == 0
                 stdout_text = res.stdout.strip()
                 reason = None if success else res.stderr.strip()
             else:
-                proc = subprocess.run(["sh", "-c", cmd], capture_output=True, text=True, timeout=15)
+                proc = subprocess.run(["sh", "-c", cmd], capture_output=True, text=True, timeout=20)
                 success = proc.returncode == 0
                 stdout_text = proc.stdout.strip()
                 reason = None if success else proc.stderr.strip()
