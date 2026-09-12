@@ -250,7 +250,8 @@ class MockPMContext:
 
     def __enter__(self):
         def mock_run(args, **kwargs):
-            if isinstance(args, list) and len(args) > 0 and args[0] == "su" and "pm install" in args[2]:
+            args_str = " ".join(str(a) for a in args) if isinstance(args, list) else str(args)
+            if "pm install" in args_str:
                 m = subprocess.CompletedProcess(args, returncode=0, stdout="Success\n", stderr="")
                 return m
             return self.orig_run(args, **kwargs)

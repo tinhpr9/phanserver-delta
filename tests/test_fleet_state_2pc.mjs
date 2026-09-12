@@ -314,6 +314,62 @@ async function runTests() {
   }))).json();
   if (afterTailscaleAck.command !== null) throw new Error("acknowledged CONTROL_TAILSCALE was delivered again");
 
+  // 8. CHECK_BAN is queued per device and acknowledged
+  const checkbanRes = await (await fleet.controlFleetHub(new Request("https://localhost/aot/hub/control", {
+    method: "POST",
+    body: JSON.stringify({ protocol: "fleet-batch-v1", kind: "check_ban", target: "m77", target_device_ids: ["m1"], telegram_chat_id: 12345 })
+  }))).json();
+  if (!checkbanRes.ok || !checkbanRes.checkban?.action_id) throw new Error("CHECK_BAN queue failed: " + JSON.stringify(checkbanRes));
+  const cbActionId = checkbanRes.checkban.action_id;
+  const cbCmdRes = await (await fleet.handleHeartbeat(new Request("https://localhost/report", {
+    method: "POST",
+    body: JSON.stringify({ device_id: "m1", device_group: "NOVA" })
+  }))).json();
+  if (cbCmdRes.command?.action !== "CHECK_BAN" || cbCmdRes.command?.action_id !== cbActionId) {
+    throw new Error("CHECK_BAN was not delivered by heartbeat");
+  }
+  const cbAck = await (await fleet.dispatchFleetAck(new Request("https://localhost/aot/ack", {
+    method: "POST",
+    body: JSON.stringify({
+      protocol: "fleet-batch-v1",
+      batch_action: "CHECK_BAN",
+      device_id: "m1",
+      action_id: cbActionId,
+      status: "OPENED",
+      executed: true,
+      details: JSON.stringify({ target: "M77", total: 5, live: 5, banned: 0, error: 0, banned_list: [] })
+    })
+  }))).json();
+  if (!cbAck.ok || cbAck.status !== "OPENED") throw new Error("CHECK_BAN ack failed: " + JSON.stringify(cbAck));
+
+  // 9. ADD_ACC is queued per device and acknowledged
+  const addaccRes = await (await fleet.controlFleetHub(new Request("https://localhost/aot/hub/control", {
+    method: "POST",
+    body: JSON.stringify({ protocol: "fleet-batch-v1", kind: "add_acc", m_code: "m77", lines: ["user1:pass1"], target_device_ids: ["m1"], telegram_chat_id: 12345 })
+  }))).json();
+  if (!addaccRes.ok || !addaccRes.addacc?.action_id) throw new Error("ADD_ACC queue failed: " + JSON.stringify(addaccRes));
+  const addActionId = addaccRes.addacc.action_id;
+  const addCmdRes = await (await fleet.handleHeartbeat(new Request("https://localhost/report", {
+    method: "POST",
+    body: JSON.stringify({ device_id: "m1", device_group: "NOVA" })
+  }))).json();
+  if (addCmdRes.command?.action !== "ADD_ACC" || addCmdRes.command?.action_id !== addActionId) {
+    throw new Error("ADD_ACC was not delivered by heartbeat");
+  }
+  const addAck = await (await fleet.dispatchFleetAck(new Request("https://localhost/aot/ack", {
+    method: "POST",
+    body: JSON.stringify({
+      protocol: "fleet-batch-v1",
+      batch_action: "ADD_ACC",
+      device_id: "m1",
+      action_id: addActionId,
+      status: "OPENED",
+      executed: true,
+      details: JSON.stringify({ add: { m_code: "M77", added_count: 1, cookies_added: 0 }, sync: { "acc.txt": "OK" } })
+    })
+  }))).json();
+  if (!addAck.ok || addAck.status !== "OPENED") throw new Error("ADD_ACC ack failed: " + JSON.stringify(addAck));
+
   console.log("TEST_FLEET_STATE_2PC_EQUIVALENCE=OK");
 }
 

@@ -502,6 +502,176 @@ export async function handleUpdate(update, env, fleetState) {
     return;
   }
 
+  if (input === "/help" || input === "/start") {
+    const helpText = `🤖 <b>DANH SÁCH LỆNH PREIUMBOT / PHANSERVER-DELTA</b>
+
+🛡️ <b>Quản lý Tài khoản (Roblox Ban & Add)</b>:
+• <code>/checkban [m_code|all|users]</code>: Quét Roblox API kiểm tra ban, tự dọn dẹp acc.txt & sync Drive (Rule 34)
+• <code>/addacc &lt;m_code&gt; &lt;user:pass...&gt;</code>: Nạp tài khoản vào dàn máy và sync Google Drive
+
+📱 <b>Quản trị Thiết bị & Trạng thái</b>:
+• <code>/status</code>: Báo cáo trạng thái tổng thể cả dàn
+• <code>/devices</code>: Danh sách thiết bị và trạng thái online/offline
+• <code>/upgrade &lt;devices|all&gt;</code>: Tự động kéo code mới nhất từ GitHub và restart Agent
+
+🔗 <b>Phân chia Server & Kịch bản</b>:
+• <code>/phanserver &lt;devices&gt; &lt;tabs&gt;</code>: Phân phối private server link
+• <code>/script &lt;devices&gt; &lt;tên_file&gt; &lt;url|lua&gt;</code>: Nạp script vào Delta Autoexecute
+• <code>/script &lt;devices&gt; clean [file|all]</code>: Xóa script Autoexecute
+
+🔧 <b>Hệ thống & Cài đặt</b>:
+• <code>/restore</code> hoặc <code>/update &lt;devices&gt;</code>: Cài đặt / cập nhật Roblox & Delta APK
+• <code>/backup &lt;devices&gt; [app] [full|data|apk]</code>: Sao lưu ứng dụng lên GitHub Releases
+• <code>/tailscale &lt;devices&gt; [on|off|status]</code>: Bật/tắt/kiểm tra mạng nội bộ Tailscale VPN
+• <code>/devmode &lt;devices&gt;</code>: Bật Developer Options & ADB`;
+    await telegram(env, "sendMessage", { chat_id: chatId, text: helpText, parse_mode: "HTML" });
+    return;
+  }
+
+  if (input.match(/^\/(?:checkban|kiemtraban)(?:\s|$)/i)) {
+    const raw = input.replace(/^\/(?:checkban|kiemtraban)\s*/i, "").trim();
+    const target = raw || "all";
+    try {
+      let execDeviceId = null;
+      try {
+        const onlineIds = await resolveAndValidateTelegramTargets("all", env, fleetState);
+        if (onlineIds && onlineIds.length > 0) {
+          const normTarget = target.toLowerCase();
+          if (onlineIds.includes(normTarget)) {
+            execDeviceId = normTarget;
+          } else {
+            execDeviceId = onlineIds[0];
+          }
+        }
+      } catch (e) {}
+
+      if (!execDeviceId) {
+        try {
+          const single = await resolveAndValidateTelegramTargets(target, env, fleetState);
+          if (single && single.length > 0) execDeviceId = single[0];
+        } catch (e) {}
+      }
+
+      if (!execDeviceId) {
+        await telegram(env, "sendMessage", {
+          chat_id: chatId,
+          text: "⚠️ <b>KHÔNG CÓ THIẾT BỊ NÀO ONLINE</b>\nĐể quét ban và đồng bộ tệp theo Rule 34, cần ít nhất 1 thiết bị trong dàn online.",
+          parse_mode: "HTML"
+        });
+        return;
+      }
+
+      const result = await fleetStateCall(env, fleetState, "/aot/hub/control", {
+        method: "POST",
+        body: {
+          protocol: "fleet-batch-v1",
+          kind: "check_ban",
+          target_device_ids: [execDeviceId],
+          target: target,
+          telegram_chat_id: chatId
+        }
+      });
+      if (!result?.response?.ok) throw new Error(result?.data?.error || "checkban_queue_failed");
+
+      await telegram(env, "sendMessage", {
+        chat_id: chatId,
+        text: `🛡️ <b>ĐÃ XẾP LỆNH CHECK BAN ROBLOX</b>\n📱 Thiết bị thực thi: <code>${execDeviceId}</code>\n🎯 Mục tiêu: <b>${target.toUpperCase()}</b>\n⚡ Agent đang quét Roblox API và sẽ báo cáo kết quả chi tiết kèm xử lý acc ban ngay khi hoàn tất.`,
+        parse_mode: "HTML"
+      });
+    } catch (error) {
+      await telegram(env, "sendMessage", { chat_id: chatId, text: "Lỗi CHECK_BAN: " + String(error.message || error) });
+    }
+    return;
+  }
+
+  if (input.match(/^\/(?:addacc|themacc)(?:\s|$)/i)) {
+    const raw = input.replace(/^\/(?:addacc|themacc)\s*/i, "").trim();
+    if (!raw) {
+      await telegram(env, "sendMessage", {
+        chat_id: chatId,
+        text: "Cú pháp:\n<code>/addacc &lt;mã_máy&gt; &lt;user:pass&gt; [user2:pass2...]</code>\n\nVí dụ: <code>/addacc m77 user1:pass1 user2:pass2</code>",
+        parse_mode: "HTML"
+      });
+      return;
+    }
+
+    const tokens = raw.split(/[\r\n\s]+/).filter(Boolean);
+    if (tokens.length < 2) {
+      await telegram(env, "sendMessage", {
+        chat_id: chatId,
+        text: "Cú pháp:\n<code>/addacc &lt;mã_máy&gt; &lt;user:pass&gt; [user2:pass2...]</code>\n\nVí dụ: <code>/addacc m77 user1:pass1 user2:pass2</code>",
+        parse_mode: "HTML"
+      });
+      return;
+    }
+
+    const mCode = tokens[0];
+    const accounts = tokens.slice(1);
+
+    const validAccounts = accounts.filter(a => a.includes(":"));
+    if (!validAccounts.length) {
+      await telegram(env, "sendMessage", {
+        chat_id: chatId,
+        text: "⚠️ Định dạng tài khoản không hợp lệ. Mỗi tài khoản phải theo mẫu <code>username:password</code>.",
+        parse_mode: "HTML"
+      });
+      return;
+    }
+
+    try {
+      let execDeviceId = null;
+      try {
+        const onlineIds = await resolveAndValidateTelegramTargets("all", env, fleetState);
+        if (onlineIds && onlineIds.length > 0) {
+          const normMCode = mCode.toLowerCase();
+          if (onlineIds.includes(normMCode)) {
+            execDeviceId = normMCode;
+          } else {
+            execDeviceId = onlineIds[0];
+          }
+        }
+      } catch (e) {}
+
+      if (!execDeviceId) {
+        try {
+          const single = await resolveAndValidateTelegramTargets(mCode, env, fleetState);
+          if (single && single.length > 0) execDeviceId = single[0];
+        } catch (e) {}
+      }
+
+      if (!execDeviceId) {
+        await telegram(env, "sendMessage", {
+          chat_id: chatId,
+          text: "⚠️ <b>KHÔNG CÓ THIẾT BỊ NÀO ONLINE</b>\nĐể nạp tài khoản và đồng bộ theo Rule 34, cần ít nhất 1 thiết bị trong dàn online.",
+          parse_mode: "HTML"
+        });
+        return;
+      }
+
+      const result = await fleetStateCall(env, fleetState, "/aot/hub/control", {
+        method: "POST",
+        body: {
+          protocol: "fleet-batch-v1",
+          kind: "add_acc",
+          target_device_ids: [execDeviceId],
+          m_code: mCode,
+          lines: validAccounts,
+          telegram_chat_id: chatId
+        }
+      });
+      if (!result?.response?.ok) throw new Error(result?.data?.error || "addacc_queue_failed");
+
+      await telegram(env, "sendMessage", {
+        chat_id: chatId,
+        text: `➕ <b>ĐÃ XẾP LỆNH NẠP TÀI KHOẢN</b>\n📱 Thiết bị thực thi: <code>${execDeviceId}</code>\n🎯 Dàn máy: <b>${mCode.toUpperCase()}</b>\n📝 Số lượng tài khoản: <b>${validAccounts.length}</b>\n⚡ Agent sẽ chèn vào đúng vị trí trong <code>acc.txt</code> và đồng bộ Google Drive ngay.`,
+        parse_mode: "HTML"
+      });
+    } catch (error) {
+      await telegram(env, "sendMessage", { chat_id: chatId, text: "Lỗi ADD_ACC: " + String(error.message || error) });
+    }
+    return;
+  }
+
   if (input.match(/^\/phanserver(?:\s|$)/)) {
     const parts = input.split(/\s+/);
     if (parts.length !== 3) {

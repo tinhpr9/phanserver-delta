@@ -388,6 +388,25 @@ export class FleetState {
       );
     }
 
+    if (body.kind === "check_ban") {
+      return this.queueCheckBan(
+        record,
+        Array.isArray(body.target_device_ids) ? body.target_device_ids : [],
+        body.target || "all",
+        { telegram_chat_id: body.telegram_chat_id }
+      );
+    }
+
+    if (body.kind === "add_acc") {
+      return this.queueAddAcc(
+        record,
+        Array.isArray(body.target_device_ids) ? body.target_device_ids : [],
+        body.m_code,
+        body.lines,
+        { telegram_chat_id: body.telegram_chat_id, sync_drive: body.sync_drive !== false }
+      );
+    }
+
     return json({ ok: false, error: "unsupported_fleet_control" }, 400);
   }
 
@@ -966,6 +985,239 @@ export class FleetState {
     return json({ ok: true, action_id: actionId, device_id: deviceId, status: status || "SUCCESS" });
   }
 
+  async queueCheckBan(record, requestedTargetIds, target = "all", options = {}) {
+    const fresh = await this.readFleet();
+    const targets = [];
+    const seen = new Set();
+    for (const raw of requestedTargetIds) {
+      const id = normalizeDeviceId(raw);
+      const device = id && fresh.devices[id];
+      if (!id || seen.has(id) || !device) return json({ ok: false, error: "invalid_batch_target" }, 400);
+      if (!this.isDeviceOnline(id, device)) return json({ ok: false, error: "offline_device", device_id: id }, 409);
+      seen.add(id);
+      targets.push(id);
+    }
+    if (!targets.length) return json({ ok: false, error: "invalid_batch_targets" }, 400);
+
+    const actionId = `checkban-${Date.now()}-${crypto.randomUUID().replace(/-/g, "").slice(0, 8)}`;
+    const command = {
+      type: "aot_batch_action",
+      protocol: AOT_HUB_PROTOCOL_VERSION,
+      action_id: actionId,
+      action: "CHECK_BAN",
+      target: String(target || "all"),
+      target_device_ids: targets,
+      created_at: Date.now()
+    };
+    const devices = {};
+    for (const id of targets) {
+      fresh.pending_actions[id] = fresh.pending_actions[id] || [];
+      fresh.pending_actions[id].push({ ...command, target_device_ids: [id] });
+      devices[id] = { device_id: id, status: "QUEUED", updated_at: Date.now() };
+    }
+    fresh.checkban_actions = fresh.checkban_actions || {};
+    fresh.checkban_actions[actionId] = {
+      action_id: actionId,
+      action: "CHECK_BAN",
+      target: String(target || "all"),
+      created_at: Date.now(),
+      devices,
+      telegram_chat_id: options.telegram_chat_id
+    };
+    await this.writeFleet(fresh);
+    return json({ ok: true, checkban: { action_id: actionId, target: target, devices: Object.values(devices) } });
+  }
+
+  async acknowledgeCheckBan(record, body, deviceId, actionId) {
+    const act = record.checkban_actions?.[actionId];
+    const device = act?.devices?.[deviceId];
+    const status = String(body.status || "");
+    if (device && device.status === "QUEUED") {
+      device.status = status;
+      device.executed = body.executed === true;
+      device.reason = status === "FAILED" ? String(body.reason || "checkban_failed").slice(0, 160) : null;
+      device.details = body.details ? String(body.details) : null;
+      device.updated_at = Date.now();
+    }
+    for (const command of record.pending_actions?.[deviceId] || []) {
+      if (command.action_id === actionId) command.acknowledged_at = Date.now();
+    }
+    await this.writeFleet(record);
+
+    const chatId = act?.telegram_chat_id || this.env?.TELEGRAM_ADMIN_USER_ID;
+    if (chatId && this.env?.TELEGRAM_BOT_TOKEN) {
+      const escapeHtml = (str) => String(str).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      const isSuccess = status === "OPENED" || status === "SUCCESS";
+      let detailsObj = null;
+      if (body.details) {
+        try {
+          detailsObj = typeof body.details === "string" ? JSON.parse(body.details) : body.details;
+        } catch (e) {}
+      }
+
+      let msg = "";
+      if (isSuccess && detailsObj) {
+        const tgt = escapeHtml(detailsObj.target || act?.target || "ALL");
+        const total = detailsObj.total ?? 0;
+        const live = detailsObj.live ?? 0;
+        const banned = detailsObj.banned ?? 0;
+        const errCount = detailsObj.error ?? 0;
+        const bannedList = Array.isArray(detailsObj.banned_list) ? detailsObj.banned_list : [];
+
+        msg = `🛡️ <b>KẾT QUẢ CHECK BAN ROBLOX</b>\n`;
+        msg += `📱 Thiết bị thực thi: <code>${escapeHtml(deviceId)}</code>\n`;
+        msg += `🎯 Mục tiêu: <b>${tgt}</b>\n`;
+        msg += `📊 Tổng: <b>${total}</b> | 🟢 Sống: <b>${live}</b> | 🔴 Bị Ban: <b>${banned}</b>`;
+        if (errCount > 0) msg += ` | ⚠️ Lỗi API: <b>${errCount}</b>`;
+        msg += `\n`;
+
+        if (banned > 0) {
+          msg += `\n🔴 <b>Danh sách tài khoản bị Ban:</b>\n`;
+          for (const u of bannedList) {
+            msg += `• <code>${escapeHtml(u)}</code>\n`;
+          }
+          if (detailsObj.clean_result) {
+            const removed = detailsObj.clean_result.removed_from_acc ?? banned;
+            msg += `\n🧹 Đã tự động gỡ <b>${removed}</b> acc khỏi <code>acc.txt</code> & lưu trữ vào <code>acc_bi_ban.txt</code>.`;
+          }
+          if (detailsObj.sync_result) {
+            if (detailsObj.sync_result.error) {
+              msg += `\n⚠️ Google Drive sync lỗi: <code>${escapeHtml(detailsObj.sync_result.error)}</code>`;
+            } else {
+              msg += `\n☁️ <b>Google Drive</b>: Đã đồng bộ an toàn (Bảo toàn File ID gốc theo Rule 34).`;
+            }
+          }
+        } else {
+          msg += `\n✅ <b>Tất cả tài khoản đều HOẠT ĐỘNG TỐT (100% LIVE)!</b> Không phát hiện tài khoản nào bị ban.`;
+        }
+      } else if (isSuccess) {
+        msg = `🛡️ <b>ĐÃ HOÀN TẤT QUÉT CHECK BAN</b>\n📱 Thiết bị: <code>${escapeHtml(deviceId)}</code>\nTrạng thái: Hoàn thành thành công.`;
+      } else {
+        msg = `❌ <b>CHECK BAN THẤT BẠI</b>\n📱 Thiết bị: <code>${escapeHtml(deviceId)}</code>\n⚠️ Lý do: ${escapeHtml(body.reason || "Lỗi kiểm tra ban")}`;
+      }
+
+      try {
+        await fetch(`https://api.telegram.org/bot${this.env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ chat_id: chatId, text: msg, parse_mode: "HTML" })
+        });
+      } catch (e) {}
+    }
+
+    return json({ ok: true, action_id: actionId, device_id: deviceId, status: status || "SUCCESS" });
+  }
+
+  async queueAddAcc(record, requestedTargetIds, mCode, lines, options = {}) {
+    const fresh = await this.readFleet();
+    const targets = [];
+    const seen = new Set();
+    for (const raw of requestedTargetIds) {
+      const id = normalizeDeviceId(raw);
+      const device = id && fresh.devices[id];
+      if (!id || seen.has(id) || !device) return json({ ok: false, error: "invalid_batch_target" }, 400);
+      if (!this.isDeviceOnline(id, device)) return json({ ok: false, error: "offline_device", device_id: id }, 409);
+      seen.add(id);
+      targets.push(id);
+    }
+    if (!targets.length) return json({ ok: false, error: "invalid_batch_targets" }, 400);
+
+    const actionId = `addacc-${Date.now()}-${crypto.randomUUID().replace(/-/g, "").slice(0, 8)}`;
+    const command = {
+      type: "aot_batch_action",
+      protocol: AOT_HUB_PROTOCOL_VERSION,
+      action_id: actionId,
+      action: "ADD_ACC",
+      m_code: String(mCode || "").toUpperCase(),
+      lines: Array.isArray(lines) ? lines : [String(lines)],
+      sync_drive: options.sync_drive !== false,
+      target_device_ids: targets,
+      created_at: Date.now()
+    };
+    const devices = {};
+    for (const id of targets) {
+      fresh.pending_actions[id] = fresh.pending_actions[id] || [];
+      fresh.pending_actions[id].push({ ...command, target_device_ids: [id] });
+      devices[id] = { device_id: id, status: "QUEUED", updated_at: Date.now() };
+    }
+    fresh.addacc_actions = fresh.addacc_actions || {};
+    fresh.addacc_actions[actionId] = {
+      action_id: actionId,
+      action: "ADD_ACC",
+      m_code: String(mCode || "").toUpperCase(),
+      created_at: Date.now(),
+      devices,
+      telegram_chat_id: options.telegram_chat_id
+    };
+    await this.writeFleet(fresh);
+    return json({ ok: true, addacc: { action_id: actionId, m_code: mCode, devices: Object.values(devices) } });
+  }
+
+  async acknowledgeAddAcc(record, body, deviceId, actionId) {
+    const act = record.addacc_actions?.[actionId];
+    const device = act?.devices?.[deviceId];
+    const status = String(body.status || "");
+    if (device && device.status === "QUEUED") {
+      device.status = status;
+      device.executed = body.executed === true;
+      device.reason = status === "FAILED" ? String(body.reason || "addacc_failed").slice(0, 160) : null;
+      device.details = body.details ? String(body.details) : null;
+      device.updated_at = Date.now();
+    }
+    for (const command of record.pending_actions?.[deviceId] || []) {
+      if (command.action_id === actionId) command.acknowledged_at = Date.now();
+    }
+    await this.writeFleet(record);
+
+    const chatId = act?.telegram_chat_id || this.env?.TELEGRAM_ADMIN_USER_ID;
+    if (chatId && this.env?.TELEGRAM_BOT_TOKEN) {
+      const escapeHtml = (str) => String(str).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      const isSuccess = status === "OPENED" || status === "SUCCESS";
+      let detailsObj = null;
+      if (body.details) {
+        try {
+          detailsObj = typeof body.details === "string" ? JSON.parse(body.details) : body.details;
+        } catch (e) {}
+      }
+
+      let msg = "";
+      if (isSuccess && detailsObj) {
+        const addInfo = detailsObj.add || {};
+        const syncInfo = detailsObj.sync || {};
+        const mCode = escapeHtml(addInfo.m_code || act?.m_code || "N/A");
+        const addedCount = addInfo.added_count ?? 0;
+        const cookiesAdded = addInfo.cookies_added ?? 0;
+
+        msg = `➕ <b>THÊM TÀI KHOẢN THÀNH CÔNG!</b>\n`;
+        msg += `📱 Thiết bị thực thi: <code>${escapeHtml(deviceId)}</code>\n`;
+        msg += `🎯 Dàn máy: <b>${mCode}</b>\n`;
+        msg += `✅ Đã thêm vào acc.txt: <b>${addedCount}</b> tài khoản\n`;
+        if (cookiesAdded > 0) {
+          msg += `🔑 Cookie lưu vào Data_Tong: <b>${cookiesAdded}</b>\n`;
+        }
+        if (syncInfo.error) {
+          msg += `⚠️ Google Drive sync lỗi: <code>${escapeHtml(syncInfo.error)}</code>\n`;
+        } else {
+          msg += `☁️ <b>Google Drive</b>: Đã đồng bộ an toàn (Bảo toàn File ID gốc theo Rule 34).`;
+        }
+      } else if (isSuccess) {
+        msg = `➕ <b>ĐÃ THÊM TÀI KHOẢN VÀO DÀN ${escapeHtml(act?.m_code || "")}</b>\n📱 Thiết bị: <code>${escapeHtml(deviceId)}</code>`;
+      } else {
+        msg = `❌ <b>THÊM TÀI KHOẢN THẤT BẠI</b>\n📱 Thiết bị: <code>${escapeHtml(deviceId)}</code>\n⚠️ Lý do: ${escapeHtml(body.reason || "Lỗi thêm acc")}`;
+      }
+
+      try {
+        await fetch(`https://api.telegram.org/bot${this.env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ chat_id: chatId, text: msg, parse_mode: "HTML" })
+        });
+      } catch (e) {}
+    }
+
+    return json({ ok: true, action_id: actionId, device_id: deviceId, status: status || "SUCCESS" });
+  }
+
   async dispatchFleetBatch(record, action, requestedTargetIds, options = {}) {
     if (action !== AOT_ALLOCATE_SERVER_ACTION) {
       return json({ ok: false, error: "invalid_batch_action" }, 400);
@@ -1107,6 +1359,8 @@ export class FleetState {
     if (action === "WRITE_SCRIPT") return this.acknowledgeWriteScript(record, body, id, actionId);
     if (action === "CLEAN_SCRIPT") return this.acknowledgeCleanScript(record, body, id, actionId);
     if (action === "CONTROL_TAILSCALE") return this.acknowledgeTailscaleControl(record, body, id, actionId);
+    if (action === "CHECK_BAN") return this.acknowledgeCheckBan(record, body, id, actionId);
+    if (action === "ADD_ACC") return this.acknowledgeAddAcc(record, body, id, actionId);
     if (action !== AOT_ALLOCATE_SERVER_ACTION) return json({ ok: false, error: "invalid_aot_ack" }, 400);
     const batch = record.last_batch;
     const device = batch?.devices?.[id];

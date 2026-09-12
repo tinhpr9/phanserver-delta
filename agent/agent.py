@@ -51,8 +51,9 @@ for p in (str(ROOT), str(AGENT_DIR), str(DELTA_DIR)):
         sys.path.insert(0, p)
 
 try:
-    from agent import config, server_links
+    from agent import account_manager, config, server_links
 except ImportError:
+    import account_manager
     import config
     import server_links
 
@@ -63,7 +64,7 @@ except ImportError:
 
 AGENT_VERSION = "phanserver-delta-agent-1.0.0"
 PROTOCOL_VERSION = "fleet-batch-v1"
-CAPABILITIES = ["allocate_server_2pc", "update_delta"]
+CAPABILITIES = ["allocate_server_2pc", "update_delta", "check_ban", "add_acc"]
 
 
 def collect_metrics() -> dict[str, Any]:
@@ -591,6 +592,90 @@ def handle_incoming_batch_action(
             status=result["status"], reason=result.get("reason"),
             executed=result["executed"], batch_action="CONTROL_TAILSCALE",
             details=result.get("details"),
+        )
+        return True
+
+    if action == "CHECK_BAN":
+        completed = state.setdefault("checkban_action_results", {})
+        cached = completed.get(action_id)
+        if isinstance(cached, dict):
+            send_ack(
+                report_url, secret, device_id, action_id,
+                status=str(cached.get("status", "OPENED")),
+                reason=cached.get("reason"),
+                executed=cached.get("executed") is True,
+                batch_action="CHECK_BAN",
+                details=cached.get("details"),
+            )
+            return True
+        try:
+            target = message.get("target") or "all"
+            result_data = account_manager.run_full_checkban_pipeline(target)
+            status = "OPENED"
+            executed = True
+            err_msg = None
+            details_str = json.dumps(result_data, ensure_ascii=False)
+        except Exception as e:
+            status = "FAILED"
+            executed = False
+            err_msg = str(e)[:160]
+            details_str = None
+
+        completed[action_id] = {"status": status, "executed": executed, "reason": err_msg, "details": details_str}
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+        send_ack(
+            report_url, secret, device_id, action_id,
+            status=status, reason=err_msg,
+            executed=executed, batch_action="CHECK_BAN",
+            details=details_str,
+        )
+        return True
+
+    if action == "ADD_ACC":
+        completed = state.setdefault("addacc_action_results", {})
+        cached = completed.get(action_id)
+        if isinstance(cached, dict):
+            send_ack(
+                report_url, secret, device_id, action_id,
+                status=str(cached.get("status", "OPENED")),
+                reason=cached.get("reason"),
+                executed=cached.get("executed") is True,
+                batch_action="ADD_ACC",
+                details=cached.get("details"),
+            )
+            return True
+        try:
+            m_code = message.get("m_code") or message.get("target_m") or device_id
+            lines = message.get("lines") or message.get("accounts") or []
+            if isinstance(lines, str):
+                lines = [lines]
+            sync_drive = message.get("sync_drive", True)
+            add_res = account_manager.add_accounts(m_code, lines)
+            sync_res = {}
+            if sync_drive:
+                try:
+                    sync_res = account_manager.sync_to_google_drive()
+                except Exception as se:
+                    sync_res = {"error": str(se)}
+            status = "OPENED"
+            executed = True
+            err_msg = None
+            details_str = json.dumps({"add": add_res, "sync": sync_res}, ensure_ascii=False)
+        except Exception as e:
+            status = "FAILED"
+            executed = False
+            err_msg = str(e)[:160]
+            details_str = None
+
+        completed[action_id] = {"status": status, "executed": executed, "reason": err_msg, "details": details_str}
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+        send_ack(
+            report_url, secret, device_id, action_id,
+            status=status, reason=err_msg,
+            executed=executed, batch_action="ADD_ACC",
+            details=details_str,
         )
         return True
 

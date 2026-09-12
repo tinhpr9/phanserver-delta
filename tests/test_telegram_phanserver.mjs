@@ -306,6 +306,38 @@ async function runTests() {
     throw new Error("tailscale status confirmation failed: " + (sentMessages[0]?.text || ""));
   }
 
+  // 15. Checkban command
+  await triggerMessage("/checkban m1");
+  const checkbanCall1 = fleetControlCalls.at(-1);
+  if (checkbanCall1?.kind !== "check_ban" || checkbanCall1?.target !== "m1" || !checkbanCall1?.target_device_ids?.includes("m1")) {
+    throw new Error("checkban m1 dispatch test failed: " + JSON.stringify(checkbanCall1));
+  }
+  if (!sentMessages[0]?.text.includes("ĐÃ XẾP LỆNH CHECK BAN ROBLOX")) {
+    throw new Error("checkban confirmation failed: " + (sentMessages[0]?.text || ""));
+  }
+
+  await triggerMessage("/checkban all");
+  const checkbanCall2 = fleetControlCalls.at(-1);
+  if (checkbanCall2?.kind !== "check_ban" || checkbanCall2?.target !== "all") {
+    throw new Error("checkban all dispatch test failed: " + JSON.stringify(checkbanCall2));
+  }
+
+  // 16. Add account command
+  await triggerMessage("/addacc m1 testuser:testpass");
+  const addaccCall = fleetControlCalls.at(-1);
+  if (addaccCall?.kind !== "add_acc" || addaccCall?.m_code !== "m1" || !addaccCall?.lines?.includes("testuser:testpass")) {
+    throw new Error("addacc dispatch test failed: " + JSON.stringify(addaccCall));
+  }
+  if (!sentMessages[0]?.text.includes("ĐÃ XẾP LỆNH NẠP TÀI KHOẢN")) {
+    throw new Error("addacc confirmation failed: " + (sentMessages[0]?.text || ""));
+  }
+
+  // 17. Help command
+  await triggerMessage("/help");
+  if (!sentMessages[0]?.text.includes("DANH SÁCH LỆNH PREIUMBOT")) {
+    throw new Error("help command output failed: " + (sentMessages[0]?.text || ""));
+  }
+
   console.log("TEST_TELEGRAM_PHANSERVER_EQUIVALENCE=OK");
 }
 

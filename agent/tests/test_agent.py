@@ -154,6 +154,60 @@ class TestDeviceAgent(unittest.TestCase):
         ))
         self.assertEqual(mock_ack.call_args.kwargs["details"], "DISCONNECTED")
 
+    @mock.patch("agent.agent.send_ack", return_value=True)
+    @mock.patch("agent.account_manager.run_full_checkban_pipeline")
+    def test_handle_incoming_batch_action_check_ban(self, mock_pipeline, mock_ack):
+        state = {}
+        mock_pipeline.return_value = {
+            "target": "M77",
+            "total": 5,
+            "live": 5,
+            "banned": 0,
+            "error": 0,
+            "banned_list": [],
+        }
+        msg = {
+            "protocol": "fleet-batch-v1",
+            "action": "CHECK_BAN",
+            "action_id": "cb-001",
+            "target": "m77",
+            "target_device_ids": ["m72"],
+        }
+        self.assertTrue(agent.handle_incoming_batch_action(
+            msg, "m72", "https://mock/report", "sec", state, self.state_path, self.links_path
+        ))
+        mock_pipeline.assert_called_once_with("m77")
+        self.assertEqual(mock_ack.call_args.kwargs["batch_action"], "CHECK_BAN")
+        self.assertEqual(mock_ack.call_args.kwargs["status"], "OPENED")
+        self.assertTrue(mock_ack.call_args.kwargs["executed"])
+
+    @mock.patch("agent.agent.send_ack", return_value=True)
+    @mock.patch("agent.account_manager.sync_to_google_drive", return_value={"acc.txt": "OK"})
+    @mock.patch("agent.account_manager.add_accounts")
+    def test_handle_incoming_batch_action_add_acc(self, mock_add, mock_sync, mock_ack):
+        state = {}
+        mock_add.return_value = {
+            "m_code": "M77",
+            "added_count": 1,
+            "cookies_added": 0,
+        }
+        msg = {
+            "protocol": "fleet-batch-v1",
+            "action": "ADD_ACC",
+            "action_id": "add-001",
+            "m_code": "m77",
+            "lines": ["newuser:newpass"],
+            "target_device_ids": ["m72"],
+        }
+        self.assertTrue(agent.handle_incoming_batch_action(
+            msg, "m72", "https://mock/report", "sec", state, self.state_path, self.links_path
+        ))
+        mock_add.assert_called_once_with("m77", ["newuser:newpass"])
+        mock_sync.assert_called_once()
+        self.assertEqual(mock_ack.call_args.kwargs["batch_action"], "ADD_ACC")
+        self.assertEqual(mock_ack.call_args.kwargs["status"], "OPENED")
+        self.assertTrue(mock_ack.call_args.kwargs["executed"])
+
     @mock.patch("agent.agent.send_report_response", return_value={})
     def test_run_agent_loop_once(self, mock_report):
         agent.run_agent_loop(
