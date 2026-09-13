@@ -1039,22 +1039,18 @@ def sync_to_google_drive(base_dir=None, verify_rule34=True):
     return sync_results
 
 
-def run_full_checkban_pipeline(target, base_dir=None, auto_replace=True, use_cache=True, cache_ttl=DEFAULT_CACHE_TTL, use_zeropoint=True):
+def run_full_checkban_pipeline(target, base_dir=None, auto_replace=True, use_cache=True, cache_ttl=DEFAULT_CACHE_TTL, use_zeropoint=True, pull_drive=True):
     """
     Thực hiện trọn gói pipeline checkban:
     1. Trích xuất danh sách tài khoản theo target (m77, all, unassigned hoặc danh sách usernames).
-    2. Nếu tệp trên máy thiếu hoặc rỗng: tự động kéo từ Google Drive (Rule 34 Dual-Storage).
+    2. Luôn tự động kéo bản mới nhất từ Google Drive (Rule 34 Dual-Storage) ở môi trường production.
     3. Trích xuất cookie từ Data_Tong_Cookies.txt và gửi lên ZeroPoint CookieChecker API.
     4. Nhận diện chuyên sâu: Sống (ALIVE), Bị Ban (BANNED), FaceID Lock (FACE_LOCK), Captcha Lock (CAPTCHA_LOCK), Cookie Chết (DEAD).
        Đối với các acc không có cookie hoặc ZeroPoint không phản hồi, fallback về Roblox Public API.
-    5. Cách ly toàn bộ acc lỗi sang các tệp phân loại tương ứng:
-       - Banned -> acc_bi_ban.txt, nhat_ky_ban.txt
-       - FaceID Lock -> acc_face_lock.txt, nhat_ky_face_lock.txt, Face_Target_File.txt
-       - Captcha Lock -> acc_captcha_lock.txt, nhat_ky_captcha_lock.txt
-       - Dead Cookies -> acc_dead_cookies.txt
+    5. Chỉ xóa tài khoản BANNED khỏi dàn máy; giữ nguyên FaceID, Captcha, Dead.
     6. Tự động nạp bù từ kho acc_du_phong.txt nếu auto_replace=True.
     7. Đồng bộ Google Drive bảo toàn File ID theo Rule 34.
-    8. Trả về báo cáo tổng hợp chi tiết.
+    8. Trả về báo cáo tổng hợp chi tiết và tệp phân loại gửi Telegram.
     """
     paths = get_default_paths(base_dir)
     acc_file = paths["acc_file"]
@@ -1065,8 +1061,13 @@ def run_full_checkban_pipeline(target, base_dir=None, auto_replace=True, use_cac
     is_single_m = bool(re.match(r"^[Mm]\d+$", target_lower))
 
     if target_lower == "all" or is_single_m or target_lower == "unassigned":
-        if not os.path.exists(acc_file) or os.path.getsize(acc_file) == 0:
-            pull_from_google_drive(base_dir, force=True)
+        # Ở môi trường production (base_dir is None), luôn kéo bản mới nhất từ Google Drive để đồng bộ fleet
+        if pull_drive and (base_dir is None or not os.path.exists(acc_file) or os.path.getsize(acc_file) == 0):
+            try:
+                pull_from_google_drive(base_dir, force=(base_dir is None))
+            except Exception as e:
+                print(f"[CHECK_BAN] Cảnh báo pull Google Drive: {e}", flush=True)
+
         if not os.path.exists(acc_file):
             raise FileNotFoundError(f"Không tìm thấy file {acc_file}")
         with open(acc_file, "r", encoding="utf-8", errors="ignore") as f:
