@@ -1121,7 +1121,19 @@ def run_full_checkban_pipeline(target, base_dir=None, auto_replace=True, use_cac
             "message": "Danh sách tài khoản trống."
         }
 
-    # 2. Trích xuất cookie từ Data_Tong_Cookies.txt
+    # 2. Trích xuất mật khẩu và cookie từ acc.txt và Data_Tong_Cookies.txt
+    user_pwd_map = {}
+    if os.path.exists(acc_file):
+        with open(acc_file, "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                stripped = line.strip()
+                if stripped and ":" in stripped and not stripped.endswith(")") and not stripped.startswith("["):
+                    parts = stripped.split(":")
+                    u = parts[0].strip().lower()
+                    p = parts[1].strip() if len(parts) > 1 else ""
+                    if u and u not in user_pwd_map:
+                        user_pwd_map[u] = p
+
     user_cookie_map = {}
     if not os.path.exists(data_tong_file) or os.path.getsize(data_tong_file) == 0:
         pull_from_google_drive(base_dir, force=True)
@@ -1132,11 +1144,16 @@ def run_full_checkban_pipeline(target, base_dir=None, auto_replace=True, use_cac
                 line_str = line.strip()
                 if not line_str or ":" not in line_str:
                     continue
-                parts = line_str.split(":", 1)
+                parts = line_str.split(":")
                 u_norm = parts[0].strip().lower()
+                pwd_cand = parts[1].strip() if len(parts) > 1 else ""
+                if pwd_cand and u_norm not in user_pwd_map:
+                    user_pwd_map[u_norm] = pwd_cand
                 c = ""
                 if "_|WARNING:" in line_str:
                     c = line_str[line_str.index("_|WARNING:"):].strip()
+                elif len(parts) > 2:
+                    c = ":".join(parts[2:]).strip()
                 elif len(parts) > 1 and ":" in parts[1]:
                     c = ":".join(parts[1].split(":")[1:]).strip()
                 else:
@@ -1285,6 +1302,25 @@ def run_full_checkban_pipeline(target, base_dir=None, auto_replace=True, use_cac
         except Exception as e:
             sync_result = {"error": str(e)}
 
+    def _format_entry(uname):
+        u_l = uname.lower()
+        pwd = user_pwd_map.get(u_l, "")
+        cookie = user_cookie_map.get(u_l, "")
+        if cookie:
+            return f"{uname}:{pwd}:{cookie}"
+        elif pwd:
+            return f"{uname}:{pwd}"
+        return uname
+
+    category_entries = {
+        "live": [_format_entry(u) for u in live_list],
+        "banned": [_format_entry(u) for u in banned_list],
+        "face_lock": [_format_entry(u) for u in face_lock_list],
+        "captcha_lock": [_format_entry(u) for u in captcha_lock_list],
+        "dead": [_format_entry(u) for u in dead_list],
+        "error": [_format_entry(u) for u in error_list],
+    }
+
     return {
         "target": target.upper() if is_single_m else target,
         "total": len(usernames_to_check),
@@ -1303,6 +1339,7 @@ def run_full_checkban_pipeline(target, base_dir=None, auto_replace=True, use_cac
         "clean_result": clean_result,
         "replace_result": replace_result,
         "sync_result": sync_result,
+        "category_entries": category_entries,
         "checker_engine": engine_name if cookie_results else "RobloxAPI",
     }
 

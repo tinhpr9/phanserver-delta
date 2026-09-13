@@ -15,6 +15,27 @@ export async function telegram(env, method, payload) {
   return response.json();
 }
 
+export async function sendTelegramDocument(env, chatId, filename, content, caption = "") {
+  if (env?.sendTelegramDocument) {
+    return env.sendTelegramDocument(env, chatId, filename, content, caption);
+  }
+  const token = env?.TELEGRAM_BOT_TOKEN;
+  if (!token) return { ok: false };
+  const formData = new FormData();
+  formData.append("chat_id", String(chatId));
+  const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
+  formData.append("document", blob, filename);
+  if (caption) {
+    formData.append("caption", caption);
+    formData.append("parse_mode", "HTML");
+  }
+  const response = await fetch(`https://api.telegram.org/bot${token}/sendDocument`, {
+    method: "POST",
+    body: formData
+  });
+  return response.json();
+}
+
 export async function answerCallback(id, env, text, alert = false) {
   if (env?.answerCallback) {
     return env.answerCallback(id, env, text, alert);
