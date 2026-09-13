@@ -33,6 +33,7 @@ ROBLOX_USER_DETAIL_URL = "https://users.roblox.com/v1/users/{userId}"
 # Rule 34 Google Drive In-Place Sync & File ID Invariants
 RULE34_ACC_FILE_ID = "12oxXXlSPvHbB0YRUMQcHhLHiE4gemiVg"
 RULE34_DATA_TONG_FILE_ID = "1k8B2Vkdu-w3-K-O92vMeC1HQbKGaZb0B"
+RULE34_ACC_RESERVE_FILE_ID = "1sprXB5Sub3Dzt6-CGkaZY7ODsiHd4kG4"
 
 # ZeroPoint CookieChecker API
 ZEROPOINT_COOKIE_CHECKER_URL = "https://zeropoint.to/api/cookie-checker-api"
@@ -546,6 +547,27 @@ def pull_from_google_drive(base_dir=None, force=False) -> dict[str, str]:
                 except Exception as e:
                     res["Data_Tong_Cookies.txt"] = f"ERR: {e}"
 
+    # 3. Kéo kho tài khoản dự trữ (acc_khong_trung_moi.txt / acc_du_phong.txt)
+    res_f = paths.get("acc_du_phong_file", os.path.join(bdir, "acc_du_phong.txt"))
+    alt_res_f = os.path.join(bdir, "acc_khong_trung_moi.txt")
+    has_res = (os.path.exists(res_f) and os.path.getsize(res_f) > 0) or (os.path.exists(alt_res_f) and os.path.getsize(alt_res_f) > 0)
+    if force or not has_res:
+        target_res_save = alt_res_f
+        if not _http_download(RULE34_ACC_RESERVE_FILE_ID, target_res_save, "acc_khong_trung_moi.txt"):
+            rclone_bin = shutil.which("rclone") or "/data/data/com.termux/files/usr/bin/rclone" or "/usr/bin/rclone" or "rclone"
+            if shutil.which(rclone_bin) or os.path.exists(rclone_bin):
+                try:
+                    p3 = subprocess.run([rclone_bin, "copyto", "gdrive:acc_khong_trung_moi.txt", target_res_save], capture_output=True, text=True, timeout=30)
+                    res["acc_khong_trung_moi.txt"] = "PULLED_RCLONE" if p3.returncode == 0 else f"ERR: {p3.stderr[:80]}"
+                except Exception as e:
+                    res["acc_khong_trung_moi.txt"] = f"ERR: {e}"
+        # Đảm bảo nếu acc_du_phong.txt chưa có thì sao chép sang để đồng bộ tên
+        if os.path.exists(target_res_save) and os.path.getsize(target_res_save) > 0 and (not os.path.exists(res_f) or os.path.getsize(res_f) == 0):
+            try:
+                shutil.copy2(target_res_save, res_f)
+            except Exception:
+                pass
+
     return res
 
 
@@ -785,14 +807,19 @@ def add_accounts(m_code, new_acc_lines, base_dir=None):
                 section_found = True
             elif section_found and not inserted:
                 # Đã duyệt qua hết các acc của section mục tiêu, chèn các acc mới vào đây
+                while out_lines and not out_lines[-1].strip():
+                    out_lines.pop()
                 for nl in valid_new_lines:
                     out_lines.append(nl)
+                out_lines.append("")
                 inserted = True
 
         out_lines.append(line)
 
     # Nếu section nằm ở cuối file mà chưa chèn
     if section_found and not inserted:
+        while out_lines and not out_lines[-1].strip():
+            out_lines.pop()
         for nl in valid_new_lines:
             out_lines.append(nl)
         inserted = True
@@ -845,32 +872,40 @@ def replace_banned_accounts_from_reserve(m_code, num_needed, base_dir=None, rese
     if reserve_accounts is not None:
         selected_replacements = reserve_accounts[:num_needed]
         remaining_reserve_lines = reserve_accounts[num_needed:]
-    elif os.path.exists(acc_du_phong_file):
-        with open(acc_du_phong_file, "r", encoding="utf-8", errors="ignore") as f:
-            raw_lines = f.read().splitlines()
+    else:
+        # Hỗ trợ cả acc_du_phong.txt và acc_khong_trung_moi.txt
+        res_file = acc_du_phong_file
+        if not os.path.exists(res_file) or os.path.getsize(res_file) == 0:
+            alt_res = os.path.join(paths["base_dir"], "acc_khong_trung_moi.txt")
+            if os.path.exists(alt_res) and os.path.getsize(alt_res) > 0:
+                res_file = alt_res
 
-        valid_pool = []
-        non_acc_lines = []
-        for line in raw_lines:
-            stripped = line.strip()
-            if stripped and ":" in stripped:
-                valid_pool.append(line)
-            elif stripped:
-                non_acc_lines.append(line)
+        if os.path.exists(res_file) and os.path.getsize(res_file) > 0:
+            with open(res_file, "r", encoding="utf-8", errors="ignore") as f:
+                raw_lines = f.read().splitlines()
 
-        selected_replacements = valid_pool[:num_needed]
-        remaining_valid = valid_pool[num_needed:]
+            valid_pool = []
+            non_acc_lines = []
+            for line in raw_lines:
+                stripped = line.strip()
+                if stripped and ":" in stripped:
+                    valid_pool.append(line)
+                elif stripped:
+                    non_acc_lines.append(line)
 
-        # Tạo bản sao lưu acc_du_phong.txt
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        shutil.copy2(acc_du_phong_file, f"{acc_du_phong_file}.bak_{timestamp}")
+            selected_replacements = valid_pool[:num_needed]
+            remaining_valid = valid_pool[num_needed:]
 
-        # Cập nhật lại kho dự trữ
-        with open(acc_du_phong_file, "w", encoding="utf-8") as f:
-            all_remain = remaining_valid + non_acc_lines
-            f.write("\n".join(all_remain) + ("\n" if all_remain else ""))
+            # Tạo bản sao lưu kho dự trữ
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            shutil.copy2(res_file, f"{res_file}.bak_{timestamp}")
 
-        remaining_reserve_lines = remaining_valid
+            # Cập nhật lại kho dự trữ
+            with open(res_file, "w", encoding="utf-8") as f:
+                all_remain = remaining_valid + non_acc_lines
+                f.write("\n".join(all_remain) + ("\n" if all_remain else ""))
+
+            remaining_reserve_lines = remaining_valid
 
     if not selected_replacements:
         return {
@@ -904,19 +939,16 @@ def verify_google_drive_file_ids(rclone_bin=None):
     File ID Data_Tong_Cookies.txt: 1k8B2Vkdu-w3-K-O92vMeC1HQbKGaZb0B
     """
     bin_path = rclone_bin or shutil.which("rclone") or "/usr/bin/rclone"
-    cmd = [bin_path, "lsf", "gdrive:", "--format", "ip"]
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
-    if proc.returncode != 0:
-        raise RuntimeError(f"rclone lsf thất bại: {proc.stderr.strip() or proc.stdout.strip()}")
-
     file_ids = {}
-    for line in proc.stdout.splitlines():
-        line = line.strip()
-        if not line or ";" not in line:
-            continue
-        parts = line.split(";")
-        fid, fname = parts[0].strip(), parts[1].strip()
-        file_ids[fname] = fid
+    for fname in ["acc.txt", "Data_Tong_Cookies.txt"]:
+        cmd = [bin_path, "lsf", f"gdrive:{fname}", "--format", "ip"]
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=45)
+        if proc.returncode == 0:
+            for line in proc.stdout.splitlines():
+                line_str = line.strip()
+                if ";" in line_str:
+                    parts = line_str.split(";")
+                    file_ids[parts[1].strip()] = parts[0].strip()
 
     # Kiểm tra bảo toàn tuyệt đối File ID (Rule 34)
     if "acc.txt" in file_ids and file_ids["acc.txt"] != RULE34_ACC_FILE_ID:
