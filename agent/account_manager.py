@@ -113,7 +113,10 @@ def check_zeropoint_cookie_status(
     cookie_to_users = {}
     for uname, c in user_cookie_map.items():
         if c and c.strip():
-            cookie_to_users.setdefault(c.strip(), []).append(uname)
+            c_clean = c.strip()
+            if "_|WARNING:" in c_clean:
+                c_clean = c_clean[c_clean.index("_|WARNING:"):].strip()
+            cookie_to_users.setdefault(c_clean, []).append(uname)
 
     if not cookie_to_users:
         return {}
@@ -122,13 +125,18 @@ def check_zeropoint_cookie_status(
         return {}
 
     cookies_payload = "\n".join(cookie_to_users.keys())
-    headers = {"X-API-Key": key, "Content-Type": "application/json"}
+    ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    headers = {
+        "X-API-Key": key,
+        "Content-Type": "application/json",
+        "User-Agent": ua
+    }
     submit_url = f"{ZEROPOINT_COOKIE_CHECKER_URL}/submit"
 
     try:
         data = json.dumps({"cookies": cookies_payload}).encode("utf-8")
         req = urllib.request.Request(submit_url, data=data, headers=headers)
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with urllib.request.urlopen(req, timeout=10) as resp:
             sub_res = json.loads(resp.read().decode("utf-8"))
     except Exception as e:
         print(f"[ZEROPOINT] Lỗi gửi submit cookies: {e}", flush=True)
@@ -145,8 +153,8 @@ def check_zeropoint_cookie_status(
     while time.time() - start_time < timeout:
         time.sleep(2)
         try:
-            req = urllib.request.Request(status_url, headers={"X-API-Key": key})
-            with urllib.request.urlopen(req, timeout=10) as resp:
+            req = urllib.request.Request(status_url, headers={"X-API-Key": key, "User-Agent": ua})
+            with urllib.request.urlopen(req, timeout=8) as resp:
                 st_data = json.loads(resp.read().decode("utf-8"))
             if st_data.get("status") in ("completed", "error"):
                 final_st_data = st_data
@@ -176,15 +184,19 @@ def check_zeropoint_cookie_status(
 
         dl_url = f"{ZEROPOINT_COOKIE_CHECKER_URL}/download/{session_id}/{ftype}"
         try:
-            req = urllib.request.Request(dl_url, headers={"X-API-Key": key})
+            req = urllib.request.Request(dl_url, headers={"X-API-Key": key, "User-Agent": ua})
             with urllib.request.urlopen(req, timeout=10) as resp:
                 text = resp.read().decode("utf-8")
             for c_line in text.splitlines():
                 c_clean = c_line.strip()
                 if not c_clean:
                     continue
-                matched_users = cookie_to_users.get(c_clean, [])
-                for u in matched_users:
+                matched_users = list(cookie_to_users.get(c_clean, []))
+                if not matched_users:
+                    for orig_c, u_list in cookie_to_users.items():
+                        if c_clean in orig_c or orig_c in c_clean:
+                            matched_users.extend(u_list)
+                for u in set(matched_users):
                     results[u] = {"status": cat, "reason": f"ZeroPoint: {ftype}"}
         except Exception as e:
             print(f"[ZEROPOINT] Lỗi tải kết quả {ftype}: {e}", flush=True)
@@ -193,6 +205,76 @@ def check_zeropoint_cookie_status(
         for u in user_cookie_map:
             if u not in results:
                 results[u] = {"status": "ALIVE", "reason": "ZeroPoint default"}
+
+    return results
+
+
+def check_roblox_cookie_status(
+    user_cookie_map: dict[str, str],
+    timeout: int = 8,
+    use_cache: bool = True,
+    cache_ttl: int = DEFAULT_CACHE_TTL
+) -> dict[str, dict]:
+    """
+    Kiểm tra trực tiếp cookie .ROBLOSECURITY qua Roblox API chính thức:
+    - https://users.roblox.com/v1/users/authenticated (Session Validation)
+    - HTTP 200: ALIVE (Session hoạt động bình thường)
+    - HTTP 401: DEAD (Cookie hết hạn hoặc không hợp lệ)
+    - HTTP 403 (User is moderated):
+        Kiểm tra profile công khai:
+        - isBanned: True -> BANNED (Terminated vĩnh viễn)
+        - isBanned: False -> FACE_LOCK (Khóa FaceID / Checkpoint xác minh người thật)
+    """
+    results = {}
+    if not user_cookie_map:
+        return results
+
+    if not any(c and len(c.strip()) > 250 for c in user_cookie_map.values()):
+        return results
+
+    moderated_users = []
+    ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
+    for uname, cookie in user_cookie_map.items():
+        if not cookie or not cookie.strip():
+            results[uname] = {"status": "DEAD", "reason": "No cookie provided"}
+            continue
+
+        ck = cookie.strip()
+        if "_|WARNING:" in ck:
+            ck = ck[ck.index("_|WARNING:"):].strip()
+
+        headers = {
+            "Cookie": f".ROBLOSECURITY={ck}",
+            "User-Agent": ua,
+            "Accept": "application/json"
+        }
+
+        req = urllib.request.Request("https://users.roblox.com/v1/users/authenticated", headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                uid = data.get("id")
+                results[uname] = {"status": "ALIVE", "reason": f"Roblox Session Valid (id={uid})"}
+        except urllib.error.HTTPError as e:
+            err_body = e.read().decode("utf-8", errors="ignore")
+            if e.code == 401:
+                results[uname] = {"status": "DEAD", "reason": "Cookie expired / not authenticated"}
+            elif e.code == 403 and "moderated" in err_body.lower():
+                moderated_users.append(uname)
+            else:
+                results[uname] = {"status": "DEAD" if e.code in (401, 403) else "ERROR", "reason": f"HTTP {e.code}: {err_body[:80]}"}
+        except Exception as ex:
+            results[uname] = {"status": "ERROR", "reason": str(ex)}
+
+    if moderated_users:
+        public_res = check_roblox_ban_status(moderated_users, use_cache=use_cache, cache_ttl=cache_ttl)
+        for u in moderated_users:
+            p_info = public_res.get(u, {})
+            if p_info.get("isBanned") is True:
+                results[u] = {"status": "BANNED", "reason": "Roblox Moderation: Account Banned"}
+            else:
+                results[u] = {"status": "FACE_LOCK", "reason": "Roblox Moderation: Checkpoint / FaceID Lock"}
 
     return results
 
@@ -1005,7 +1087,13 @@ def run_full_checkban_pipeline(target, base_dir=None, auto_replace=True, use_cac
                     continue
                 parts = line_str.split(":", 1)
                 u_norm = parts[0].strip().lower()
-                c = parts[1].strip() if len(parts) > 1 else ""
+                c = ""
+                if "_|WARNING:" in line_str:
+                    c = line_str[line_str.index("_|WARNING:"):].strip()
+                elif len(parts) > 1 and ":" in parts[1]:
+                    c = ":".join(parts[1].split(":")[1:]).strip()
+                else:
+                    c = parts[1].strip() if len(parts) > 1 else ""
                 if c:
                     user_cookie_map[u_norm] = c
 
@@ -1021,24 +1109,48 @@ def run_full_checkban_pipeline(target, base_dir=None, auto_replace=True, use_cac
                         continue
                     parts = line_str.split(":", 1)
                     u_norm = parts[0].strip().lower()
-                    c = parts[1].strip() if len(parts) > 1 else ""
+                    c = ""
+                    if "_|WARNING:" in line_str:
+                        c = line_str[line_str.index("_|WARNING:"):].strip()
+                    elif len(parts) > 1 and ":" in parts[1]:
+                        c = ":".join(parts[1].split(":")[1:]).strip()
+                    else:
+                        c = parts[1].strip() if len(parts) > 1 else ""
                     if c:
                         user_cookie_map[u_norm] = c
 
-    # 3. Kiểm tra qua ZeroPoint CookieChecker API
+    # 3. Kiểm tra qua ZeroPoint CookieChecker API và Roblox Direct Cookie Authentication
     zp_input = {}
     for u in usernames_to_check:
         c = user_cookie_map.get(u.lower(), "")
         if c:
             zp_input[u] = c
 
-    zp_results = {}
+    cookie_results = {}
+    engine_name = None
     if use_zeropoint and zp_input:
         try:
-            zp_results = check_zeropoint_cookie_status(zp_input)
+            cookie_results = check_zeropoint_cookie_status(zp_input)
+            if cookie_results:
+                engine_name = "ZeroPoint"
         except Exception as e:
             print(f"[ZEROPOINT] Lỗi gọi API: {e}", flush=True)
-            zp_results = {}
+            cookie_results = {}
+
+    # Nếu ZeroPoint không trả kết quả (ví dụ Cloudflare 522/timeout), tự động fallback sang kiểm tra trực tiếp qua Roblox Cookie Auth
+    missing_from_zp = {u: zp_input[u] for u in zp_input if u not in cookie_results}
+    if missing_from_zp:
+        try:
+            rbx_results = check_roblox_cookie_status(missing_from_zp, use_cache=use_cache, cache_ttl=cache_ttl)
+            for u, r_info in rbx_results.items():
+                if u not in cookie_results:
+                    cookie_results[u] = r_info
+            if not engine_name:
+                engine_name = "RobloxCookieAuth"
+            elif engine_name == "ZeroPoint":
+                engine_name = "ZeroPoint+RobloxAuth"
+        except Exception as e:
+            print(f"[ROBLOX_COOKIE] Lỗi kiểm tra cookie trực tiếp: {e}", flush=True)
 
     live_list = []
     banned_list = []
@@ -1049,8 +1161,8 @@ def run_full_checkban_pipeline(target, base_dir=None, auto_replace=True, use_cac
 
     remaining_usernames = []
     for u in usernames_to_check:
-        if u in zp_results:
-            st = zp_results[u].get("status", "ALIVE").upper()
+        if u in cookie_results:
+            st = cookie_results[u].get("status", "ALIVE").upper()
             if st == "ALIVE":
                 live_list.append(u)
             elif st == "FACE_LOCK":
@@ -1066,7 +1178,7 @@ def run_full_checkban_pipeline(target, base_dir=None, auto_replace=True, use_cac
         else:
             remaining_usernames.append(u)
 
-    # Fallback kiểm tra Roblox Public API cho các tài khoản chưa kiểm tra được qua ZeroPoint
+    # Fallback kiểm tra Roblox Public API cho các tài khoản không có cookie
     if remaining_usernames:
         roblox_results = check_roblox_ban_status(remaining_usernames, use_cache=use_cache, cache_ttl=cache_ttl)
         for uname, info in roblox_results.items():
@@ -1144,7 +1256,7 @@ def run_full_checkban_pipeline(target, base_dir=None, auto_replace=True, use_cac
         "clean_result": clean_result,
         "replace_result": replace_result,
         "sync_result": sync_result,
-        "checker_engine": "ZeroPoint" if zp_results else "RobloxAPI",
+        "checker_engine": engine_name if cookie_results else "RobloxAPI",
     }
 
 

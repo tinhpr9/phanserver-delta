@@ -686,6 +686,109 @@ ReserveUser4:Pass104
         self.assertNotIn("ShadowWoodrow820", acc_c)
         self.assertNotIn("Mega_Wiley623", acc_c)
 
+    @patch("agent.account_manager.check_roblox_ban_status")
+    @patch("urllib.request.urlopen")
+    def test_check_roblox_cookie_status(self, mock_urlopen, mock_ban_status):
+        """Kiểm tra check_roblox_cookie_status phân loại ALIVE, DEAD, FACE_LOCK, BANNED."""
+        from agent.account_manager import check_roblox_cookie_status
+        fake_ck = "_|WARNING:" + "x" * 300
+        cookie_map = {
+            "user_live": fake_ck,
+            "user_dead": fake_ck,
+            "user_facelock": fake_ck,
+            "user_banned": fake_ck,
+        }
+
+        def mock_urlopen_side_effect(req, *args, **kwargs):
+            headers = req.headers
+            cookie_header = headers.get("Cookie", "")
+            # Check user by mock behavior
+            if "live" in req.full_url or "live" in str(req):
+                pass
+            return MagicMock()
+
+        # Mock responses
+        def side_effect(req, *args, **kwargs):
+            cookie = req.headers.get("Cookie", "")
+            # We can distinguish by cookie or mock urlopen per call
+            resp = MagicMock()
+            resp.read.return_value = json.dumps({"id": 12345, "name": "LiveUser"}).encode("utf-8")
+            resp.__enter__.return_value = resp
+            return resp
+
+        # Test each individual user
+        # 1. ALIVE
+        resp_alive = MagicMock()
+        resp_alive.read.return_value = json.dumps({"id": 12345, "name": "LiveUser"}).encode("utf-8")
+        resp_alive.__enter__.return_value = resp_alive
+        mock_urlopen.return_value = resp_alive
+        res1 = check_roblox_cookie_status({"user_live": fake_ck})
+        self.assertEqual(res1["user_live"]["status"], "ALIVE")
+
+        # 2. DEAD (HTTP 401)
+        err_401 = urllib.error.HTTPError(
+            "https://users.roblox.com/v1/users/authenticated",
+            401,
+            "Unauthorized",
+            {},
+            MagicMock(read=lambda: b'{"errors":[{"code":9002,"message":"User is not authenticated"}]}')
+        )
+        mock_urlopen.side_effect = err_401
+        res2 = check_roblox_cookie_status({"user_dead": fake_ck})
+        self.assertEqual(res2["user_dead"]["status"], "DEAD")
+
+        # 3. FACE_LOCK (HTTP 403 moderated + isBanned: False)
+        err_403 = urllib.error.HTTPError(
+            "https://users.roblox.com/v1/users/authenticated",
+            403,
+            "Forbidden",
+            {},
+            MagicMock(read=lambda: b'{"errors":[{"code":0,"message":"User is moderated"}]}')
+        )
+        mock_urlopen.side_effect = err_403
+        mock_ban_status.return_value = {"user_facelock": {"isBanned": False}}
+        res3 = check_roblox_cookie_status({"user_facelock": fake_ck})
+        self.assertEqual(res3["user_facelock"]["status"], "FACE_LOCK")
+
+        # 4. BANNED (HTTP 403 moderated + isBanned: True)
+        mock_ban_status.return_value = {"user_banned": {"isBanned": True}}
+        res4 = check_roblox_cookie_status({"user_banned": fake_ck})
+        self.assertEqual(res4["user_banned"]["status"], "BANNED")
+
+    @patch("agent.account_manager.sync_to_google_drive")
+    @patch("agent.account_manager.check_zeropoint_cookie_status")
+    @patch("agent.account_manager.check_roblox_cookie_status")
+    def test_run_full_checkban_pipeline_fallback_to_roblox_cookie(self, mock_rbx_ck, mock_zp, mock_sync):
+        """Kiểm tra khi ZeroPoint thất bại/rỗng, pipeline tự động fallback sang check_roblox_cookie_status."""
+        # ZeroPoint fails or returns empty
+        mock_zp.return_value = {}
+        # Roblox direct cookie auth succeeds
+        mock_rbx_ck.return_value = {
+            "BreckenLife330": {"status": "ALIVE", "reason": "Roblox Session Valid"},
+            "ShadowWoodrow820": {"status": "ALIVE", "reason": "Roblox Session Valid"},
+            "Mega_Wiley623": {"status": "FACE_LOCK", "reason": "User is moderated"},
+            "JeremiahWilkerson46": {"status": "DEAD", "reason": "Cookie expired"},
+        }
+        mock_sync.return_value = {"acc.txt": "OK", "Data_Tong_Cookies.txt": "OK"}
+
+        # Tạo kho dự trữ
+        with open(self.acc_du_phong_file, "w", encoding="utf-8") as f:
+            f.write("ReserveA:pA\nReserveB:pB\n")
+
+        # Inject real-length cookies into test data_tong_file
+        with open(self.data_tong_file, "w", encoding="utf-8") as f:
+            for u in ["BreckenLife330", "ShadowWoodrow820", "Mega_Wiley623", "JeremiahWilkerson46"]:
+                f.write(f"{u}:pass:_|WARNING:{'A' * 300}\n")
+
+        report = run_full_checkban_pipeline("m77", base_dir=self.test_dir, auto_replace=True)
+        self.assertEqual(report["total"], 4)
+        self.assertEqual(report["live"], 2)
+        self.assertEqual(report["face_lock"], 1)
+        self.assertEqual(report["dead"], 1)
+        self.assertEqual(report["checker_engine"], "RobloxCookieAuth")
+        self.assertEqual(report["replace_result"]["replaced_count"], 2)
+        self.assertEqual(report["replace_result"]["replaced_accounts"], ["ReserveA", "ReserveB"])
+
 
 if __name__ == "__main__":
     unittest.main()
