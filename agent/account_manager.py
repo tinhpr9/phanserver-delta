@@ -884,12 +884,27 @@ def replace_banned_accounts_from_reserve(m_code, num_needed, base_dir=None, rese
             with open(res_file, "r", encoding="utf-8", errors="ignore") as f:
                 raw_lines = f.read().splitlines()
 
+            # Lấy danh sách các tài khoản đã bị cách ly trước đó (FaceID, Ban, Dead, Captcha)
+            # để đảm bảo không bao giờ nạp lại một acc đang lỗi vào dàn máy
+            defective_known = set()
+            for k in ["acc_bi_ban_file", "acc_face_lock_file", "acc_dead_cookies_file", "acc_captcha_lock_file"]:
+                fpath = paths.get(k)
+                if fpath and os.path.exists(fpath):
+                    with open(fpath, "r", encoding="utf-8", errors="ignore") as df:
+                        for l in df:
+                            if ":" in l:
+                                defective_known.add(l.strip().split(":")[0].strip().lower())
+
             valid_pool = []
             non_acc_lines = []
             for line in raw_lines:
                 stripped = line.strip()
                 if stripped and ":" in stripped:
-                    valid_pool.append(line)
+                    u_cand = stripped.split(":")[0].strip().lower()
+                    if u_cand not in defective_known:
+                        valid_pool.append(line)
+                    else:
+                        non_acc_lines.append(line)
                 elif stripped:
                     non_acc_lines.append(line)
 

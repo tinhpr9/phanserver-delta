@@ -1073,10 +1073,7 @@ export class FleetState {
         msg = `🛡️ <b>KẾT QUẢ CHECK BAN ROBLOX</b>\n`;
         msg += `📱 Thiết bị thực thi: <code>${escapeHtml(deviceId)}</code>\n`;
         msg += `🎯 Mục tiêu: <b>${tgt}</b>\n`;
-        msg += `📊 Tổng: <b>${total}</b> | 🟢 Sống: <b>${live}</b> | 🔴 Bị Ban: <b>${banned}</b>`;
-        if (faceCount > 0) msg += ` | 👤 FaceID: <b>${faceCount}</b>`;
-        if (captchaCount > 0) msg += ` | 🧩 Captcha: <b>${captchaCount}</b>`;
-        if (deadCount > 0) msg += ` | 💀 Dead: <b>${deadCount}</b>`;
+        msg += `📊 Tổng: <b>${total}</b> | 🟢 Sống: <b>${live}</b> | 🔴 Bị Ban: <b>${banned}</b> | 👤 FaceID: <b>${faceCount}</b> | 🧩 Captcha: <b>${captchaCount}</b> | 💀 Dead: <b>${deadCount}</b>`;
         if (errCount > 0) msg += ` | ⚠️ Lỗi API: <b>${errCount}</b>`;
         msg += `\n`;
 
