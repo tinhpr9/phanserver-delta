@@ -663,7 +663,7 @@ ReserveUser4:Pass104
         mock_zp.return_value = {
             "BreckenLife330": {"status": "ALIVE", "reason": "ZeroPoint: alive"},
             "ShadowWoodrow820": {"status": "FACE_LOCK", "reason": "ZeroPoint: face_lock"},
-            "Mega_Wiley623": {"status": "DEAD", "reason": "ZeroPoint: dead"},
+            "Mega_Wiley623": {"status": "BANNED", "reason": "ZeroPoint: banned"},
             "JeremiahWilkerson46": {"status": "ALIVE", "reason": "ZeroPoint: alive"},
         }
         mock_sync.return_value = {"acc.txt": "OK", "Data_Tong_Cookies.txt": "OK"}
@@ -673,17 +673,17 @@ ReserveUser4:Pass104
         self.assertEqual(report["total"], 4)
         self.assertEqual(report["live"], 2)
         self.assertEqual(report["face_lock"], 1)
-        self.assertEqual(report["dead"], 1)
+        self.assertEqual(report["banned"], 1)
         self.assertEqual(report["checker_engine"], "ZeroPoint")
-        self.assertEqual(report["replace_result"]["replaced_count"], 2)
-        self.assertEqual(report["replace_result"]["replaced_accounts"], ["NewReserve1", "NewReserve2"])
+        # Only BANNED account is replaced, FACE_LOCK account is preserved in acc.txt
+        self.assertEqual(report["replace_result"]["replaced_count"], 1)
+        self.assertEqual(report["replace_result"]["replaced_accounts"], ["NewReserve1"])
 
-        # acc.txt has new accounts and removed defective accounts
+        # acc.txt has new account for banned, kept face_lock, removed banned
         with open(self.acc_file, "r") as f:
             acc_c = f.read()
         self.assertIn("NewReserve1:pass1", acc_c)
-        self.assertIn("NewReserve2:pass2", acc_c)
-        self.assertNotIn("ShadowWoodrow820", acc_c)
+        self.assertIn("ShadowWoodrow820", acc_c)
         self.assertNotIn("Mega_Wiley623", acc_c)
 
     @patch("agent.account_manager.check_roblox_ban_status")
@@ -785,9 +785,12 @@ ReserveUser4:Pass104
         self.assertEqual(report["live"], 2)
         self.assertEqual(report["face_lock"], 1)
         self.assertEqual(report["dead"], 1)
-        self.assertEqual(report["checker_engine"], "RobloxCookieAuth")
-        self.assertEqual(report["replace_result"]["replaced_count"], 2)
-        self.assertEqual(report["replace_result"]["replaced_accounts"], ["ReserveA", "ReserveB"])
+        self.assertIsNone(report["replace_result"])
+        # Both FACE_LOCK and DEAD accounts remain in acc.txt
+        with open(self.acc_file, "r") as f:
+            acc_c = f.read()
+        self.assertIn("Mega_Wiley623", acc_c)
+        self.assertIn("JeremiahWilkerson46", acc_c)
 
 
 if __name__ == "__main__":

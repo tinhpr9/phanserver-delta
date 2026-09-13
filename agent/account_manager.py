@@ -957,13 +957,28 @@ def verify_google_drive_file_ids(rclone_bin=None):
     file_ids = {}
     for fname in ["acc.txt", "Data_Tong_Cookies.txt"]:
         cmd = [bin_path, "lsf", f"gdrive:{fname}", "--format", "ip"]
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=45)
-        if proc.returncode == 0:
-            for line in proc.stdout.splitlines():
-                line_str = line.strip()
-                if ";" in line_str:
-                    parts = line_str.split(";")
-                    file_ids[parts[1].strip()] = parts[0].strip()
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
+            if proc.returncode == 0:
+                for line in proc.stdout.splitlines():
+                    line_str = line.strip()
+                    if ";" in line_str:
+                        parts = line_str.split(";")
+                        file_ids[parts[1].strip()] = parts[0].strip()
+        except Exception:
+            pass
+
+        if fname not in file_ids:
+            try:
+                cmd_json = [bin_path, "lsjson", f"gdrive:{fname}"]
+                proc_j = subprocess.run(cmd_json, capture_output=True, text=True, timeout=90)
+                if proc_j.returncode == 0:
+                    import json
+                    items = json.loads(proc_j.stdout)
+                    if isinstance(items, list) and len(items) > 0 and "ID" in items[0]:
+                        file_ids[fname] = items[0]["ID"]
+            except Exception:
+                pass
 
     # Kiểm tra bảo toàn tuyệt đối File ID (Rule 34)
     if "acc.txt" in file_ids and file_ids["acc.txt"] != RULE34_ACC_FILE_ID:
@@ -1253,25 +1268,15 @@ def run_full_checkban_pipeline(target, base_dir=None, auto_replace=True, use_cac
             else:
                 error_list.append(uname)
 
-    # 4. Gom nhóm tất cả tài khoản lỗi để cách ly an toàn
-    defective_list = banned_list + face_lock_list + captcha_lock_list + dead_list
-
+    # 4. Chỉ xóa tài khoản BANNED khỏi acc.txt và Data_Tong_Cookies.txt
+    # Tài khoản FACE_LOCK, CAPTCHA_LOCK, DEAD được giữ nguyên trong acc.txt và Data_Tong_Cookies.txt.
+    # Toàn bộ trạng thái vẫn được gom vào category_entries để xuất file đính kèm gửi Telegram.
     clean_result = None
     replace_result = None
     sync_result = None
 
-    if defective_list:
-        categories_map = {}
-        for u in banned_list:
-            categories_map[u] = "BANNED"
-        for u in face_lock_list:
-            categories_map[u] = "FACE_LOCK"
-        for u in captcha_lock_list:
-            categories_map[u] = "CAPTCHA_LOCK"
-        for u in dead_list:
-            categories_map[u] = "DEAD"
-
-        clean_result = clean_banned_accounts(target, defective_list, base_dir=base_dir, categories_map=categories_map)
+    if banned_list:
+        clean_result = clean_banned_accounts(target, banned_list, base_dir=base_dir)
 
         # 5. Tự động nạp bù tài khoản từ kho dự trữ nếu được kích hoạt
         if auto_replace:
