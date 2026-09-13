@@ -1061,24 +1061,62 @@ export class FleetState {
         const total = detailsObj.total ?? 0;
         const live = detailsObj.live ?? 0;
         const banned = detailsObj.banned ?? 0;
+        const faceCount = detailsObj.face_lock ?? 0;
+        const captchaCount = detailsObj.captcha_lock ?? 0;
+        const deadCount = detailsObj.dead ?? 0;
         const errCount = detailsObj.error ?? 0;
         const bannedList = Array.isArray(detailsObj.banned_list) ? detailsObj.banned_list : [];
+        const faceList = Array.isArray(detailsObj.face_lock_list) ? detailsObj.face_lock_list : [];
+        const captchaList = Array.isArray(detailsObj.captcha_lock_list) ? detailsObj.captcha_lock_list : [];
+        const deadList = Array.isArray(detailsObj.dead_list) ? detailsObj.dead_list : [];
 
         msg = `🛡️ <b>KẾT QUẢ CHECK BAN ROBLOX</b>\n`;
         msg += `📱 Thiết bị thực thi: <code>${escapeHtml(deviceId)}</code>\n`;
         msg += `🎯 Mục tiêu: <b>${tgt}</b>\n`;
         msg += `📊 Tổng: <b>${total}</b> | 🟢 Sống: <b>${live}</b> | 🔴 Bị Ban: <b>${banned}</b>`;
+        if (faceCount > 0) msg += ` | 👤 FaceID: <b>${faceCount}</b>`;
+        if (captchaCount > 0) msg += ` | 🧩 Captcha: <b>${captchaCount}</b>`;
+        if (deadCount > 0) msg += ` | 💀 Dead: <b>${deadCount}</b>`;
         if (errCount > 0) msg += ` | ⚠️ Lỗi API: <b>${errCount}</b>`;
         msg += `\n`;
 
-        if (banned > 0) {
-          msg += `\n🔴 <b>Danh sách tài khoản bị Ban:</b>\n`;
-          for (const u of bannedList) {
-            msg += `• <code>${escapeHtml(u)}</code>\n`;
+        if (total === 0) {
+          msg += `\n⚠️ <b>Không tìm thấy tài khoản nào cho mục tiêu ${tgt} trong acc.txt!</b>`;
+          if (detailsObj.message) {
+            msg += `\n<i>${escapeHtml(detailsObj.message)}</i>`;
+          }
+        } else if (banned > 0 || faceCount > 0 || captchaCount > 0 || deadCount > 0) {
+          if (banned > 0) {
+            msg += `\n🔴 <b>Danh sách tài khoản bị Ban:</b>\n`;
+            for (const u of bannedList) {
+              msg += `• <code>${escapeHtml(u)}</code>\n`;
+            }
+          }
+          if (faceCount > 0) {
+            msg += `\n👤 <b>Tài khoản dính FaceID Lock:</b>\n`;
+            for (const u of faceList) {
+              msg += `• <code>${escapeHtml(u)}</code>\n`;
+            }
+          }
+          if (captchaCount > 0) {
+            msg += `\n🧩 <b>Tài khoản dính Captcha Lock:</b>\n`;
+            for (const u of captchaList) {
+              msg += `• <code>${escapeHtml(u)}</code>\n`;
+            }
+          }
+          if (deadCount > 0) {
+            msg += `\n💀 <b>Tài khoản Cookie chết / hết hạn:</b>\n`;
+            for (const u of deadList) {
+              msg += `• <code>${escapeHtml(u)}</code>\n`;
+            }
           }
           if (detailsObj.clean_result) {
-            const removed = detailsObj.clean_result.removed_from_acc ?? banned;
-            msg += `\n🧹 Đã tự động gỡ <b>${removed}</b> acc khỏi <code>acc.txt</code> & lưu trữ vào <code>acc_bi_ban.txt</code>.`;
+            const removed = detailsObj.clean_result.removed_from_acc ?? (banned + faceCount + captchaCount + deadCount);
+            if (faceCount > 0 || captchaCount > 0 || deadCount > 0) {
+              msg += `\n🧹 Đã tự động gỡ <b>${removed}</b> acc lỗi khỏi <code>acc.txt</code> & lưu trữ phân loại an toàn.`;
+            } else {
+              msg += `\n🧹 Đã tự động gỡ <b>${removed}</b> acc khỏi <code>acc.txt</code> & lưu trữ vào <code>acc_bi_ban.txt</code>.`;
+            }
           }
         } else if (errCount > 0) {
           msg += `\n⚠️ Không phát hiện tài khoản bị ban, nhưng có <b>${errCount}</b> tài khoản gặp lỗi tra cứu API.`;

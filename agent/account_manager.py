@@ -34,6 +34,10 @@ ROBLOX_USER_DETAIL_URL = "https://users.roblox.com/v1/users/{userId}"
 RULE34_ACC_FILE_ID = "12oxXXlSPvHbB0YRUMQcHhLHiE4gemiVg"
 RULE34_DATA_TONG_FILE_ID = "1k8B2Vkdu-w3-K-O92vMeC1HQbKGaZb0B"
 
+# ZeroPoint CookieChecker API
+ZEROPOINT_COOKIE_CHECKER_URL = "https://zeropoint.to/api/cookie-checker-api"
+DEFAULT_ZEROPOINT_API_KEY = "ZP_CookieChecker_fGLOGOoJITp2SK402kgMtFqMAZCfXgH9"
+
 # Quota-Guard Cache
 _QUOTA_GUARD_CACHE = {}  # username_lower: {"data": dict, "timestamp": float}
 _CACHE_LOCK = threading.Lock()
@@ -77,9 +81,120 @@ def get_default_paths(base_dir=None):
         "acc_file": os.path.join(bdir, "acc.txt"),
         "data_tong_file": os.path.join(bdir, "Data_Tong_Cookies.txt"),
         "acc_bi_ban_file": os.path.join(bdir, "acc_bi_ban.txt"),
+        "acc_face_lock_file": os.path.join(bdir, "acc_face_lock.txt"),
+        "acc_captcha_lock_file": os.path.join(bdir, "acc_captcha_lock.txt"),
+        "acc_dead_cookies_file": os.path.join(bdir, "acc_dead_cookies.txt"),
         "nhat_ky_ban_file": os.path.join(bdir, "nhat_ky_ban.txt"),
+        "nhat_ky_face_lock_file": os.path.join(bdir, "nhat_ky_face_lock.txt"),
+        "nhat_ky_captcha_lock_file": os.path.join(bdir, "nhat_ky_captcha_lock.txt"),
+        "face_target_file": os.path.join(bdir, "Face_Target_File.txt"),
         "acc_du_phong_file": os.path.join(bdir, "acc_du_phong.txt"),
     }
+
+
+def check_zeropoint_cookie_status(
+    user_cookie_map: dict[str, str],
+    api_key: str = None,
+    timeout: int = 40,
+) -> dict[str, dict]:
+    """
+    Gửi cookies lên ZeroPoint CookieChecker API và phân loại trạng thái:
+    - ALIVE: Sống hoàn toàn
+    - BANNED: Bị ban / cảnh cáo (ban_warn)
+    - FACE_LOCK: Bị khóa FaceID / Checkpoint xác minh
+    - CAPTCHA_LOCK: Bị khóa Captcha / Yêu cầu xác minh người thật
+    - DEAD: Cookie hỏng hoặc hết hạn
+    Trả về dict[username, {"status": "ALIVE"|"BANNED"|"FACE_LOCK"|"CAPTCHA_LOCK"|"DEAD", "reason": ...}]
+    """
+    if not user_cookie_map:
+        return {}
+
+    key = api_key or os.getenv("ZEROPOINT_COOKIE_KEY") or DEFAULT_ZEROPOINT_API_KEY
+    cookie_to_users = {}
+    for uname, c in user_cookie_map.items():
+        if c and c.strip():
+            cookie_to_users.setdefault(c.strip(), []).append(uname)
+
+    if not cookie_to_users:
+        return {}
+
+    if not any(len(c) > 250 for c in cookie_to_users):
+        return {}
+
+    cookies_payload = "\n".join(cookie_to_users.keys())
+    headers = {"X-API-Key": key, "Content-Type": "application/json"}
+    submit_url = f"{ZEROPOINT_COOKIE_CHECKER_URL}/submit"
+
+    try:
+        data = json.dumps({"cookies": cookies_payload}).encode("utf-8")
+        req = urllib.request.Request(submit_url, data=data, headers=headers)
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            sub_res = json.loads(resp.read().decode("utf-8"))
+    except Exception as e:
+        print(f"[ZEROPOINT] Lỗi gửi submit cookies: {e}", flush=True)
+        return {}
+
+    session_id = sub_res.get("session_id")
+    if not session_id:
+        print(f"[ZEROPOINT] Submit không trả về session_id: {sub_res}", flush=True)
+        return {}
+
+    status_url = f"{ZEROPOINT_COOKIE_CHECKER_URL}/status/{session_id}"
+    start_time = time.time()
+    final_st_data = None
+    while time.time() - start_time < timeout:
+        time.sleep(2)
+        try:
+            req = urllib.request.Request(status_url, headers={"X-API-Key": key})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                st_data = json.loads(resp.read().decode("utf-8"))
+            if st_data.get("status") in ("completed", "error"):
+                final_st_data = st_data
+                break
+        except Exception:
+            continue
+
+    if not final_st_data or final_st_data.get("status") != "completed":
+        print(f"[ZEROPOINT] Phiên {session_id} không hoàn tất hoặc lỗi: {final_st_data}", flush=True)
+        return {}
+
+    results = {}
+    download_files = final_st_data.get("download_files") or {}
+    for ftype in list(download_files.keys()):
+        norm_type = ftype.lower()
+        cat = "ALIVE"
+        if "ban" in norm_type or "warn" in norm_type:
+            cat = "BANNED"
+        elif "face" in norm_type or "checkpoint" in norm_type:
+            cat = "FACE_LOCK"
+        elif "captcha" in norm_type or "lock" in norm_type:
+            cat = "CAPTCHA_LOCK"
+        elif "dead" in norm_type or "expired" in norm_type or "invalid" in norm_type:
+            cat = "DEAD"
+        elif "live" in norm_type or "valid" in norm_type or "alive" in norm_type:
+            cat = "ALIVE"
+
+        dl_url = f"{ZEROPOINT_COOKIE_CHECKER_URL}/download/{session_id}/{ftype}"
+        try:
+            req = urllib.request.Request(dl_url, headers={"X-API-Key": key})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                text = resp.read().decode("utf-8")
+            for c_line in text.splitlines():
+                c_clean = c_line.strip()
+                if not c_clean:
+                    continue
+                matched_users = cookie_to_users.get(c_clean, [])
+                for u in matched_users:
+                    results[u] = {"status": cat, "reason": f"ZeroPoint: {ftype}"}
+        except Exception as e:
+            print(f"[ZEROPOINT] Lỗi tải kết quả {ftype}: {e}", flush=True)
+
+    if results:
+        for u in user_cookie_map:
+            if u not in results:
+                results[u] = {"status": "ALIVE", "reason": "ZeroPoint default"}
+
+    return results
 
 
 def parse_acc_sections(acc_content):
@@ -283,10 +398,36 @@ def check_roblox_ban_status(usernames, max_workers=5, use_cache=True, cache_ttl=
     return results
 
 
-def clean_banned_accounts(m_code_or_target, banned_usernames, base_dir=None):
+def pull_from_google_drive(base_dir=None) -> dict[str, str]:
+    """Tự động kéo acc.txt và Data_Tong_Cookies.txt từ Google Drive về nếu tệp trên máy bị thiếu/rỗng."""
+    paths = get_default_paths(base_dir)
+    bdir = paths["base_dir"]
+    os.makedirs(bdir, exist_ok=True)
+    rclone_bin = shutil.which("rclone") or "/data/data/com.termux/files/usr/bin/rclone" or "rclone"
+    res = {}
+    if shutil.which(rclone_bin) or os.path.exists(rclone_bin):
+        try:
+            acc_f = paths["acc_file"]
+            if not os.path.exists(acc_f) or os.path.getsize(acc_f) == 0:
+                p = subprocess.run([rclone_bin, "copyto", "gdrive:acc.txt", acc_f], capture_output=True, text=True, timeout=30)
+                res["acc.txt"] = "PULLED" if p.returncode == 0 else f"ERR: {p.stderr[:80]}"
+            dt_f = paths["data_tong_file"]
+            if not os.path.exists(dt_f) or os.path.getsize(dt_f) == 0:
+                p2 = subprocess.run([rclone_bin, "copyto", "gdrive:Data_Tong_Cookies.txt", dt_f], capture_output=True, text=True, timeout=30)
+                res["Data_Tong_Cookies.txt"] = "PULLED" if p2.returncode == 0 else f"ERR: {p2.stderr[:80]}"
+        except Exception as e:
+            res["error"] = str(e)[:100]
+    return res
+
+
+def clean_banned_accounts(m_code_or_target, banned_usernames, base_dir=None, categories_map=None):
     """
-    Xóa các tài khoản bị ban khỏi acc.txt và Data_Tong_Cookies.txt,
-    đồng thời sao lưu .bak_<timestamp> cho CẢ HAI tệp và lưu trữ vào acc_bi_ban.txt, nhat_ky_ban.txt.
+    Xóa các tài khoản bị ban/lỗi khỏi acc.txt và Data_Tong_Cookies.txt,
+    đồng thời sao lưu .bak_<timestamp> cho CẢ HAI tệp và lưu trữ vào các tệp phân loại tương ứng:
+    - BANNED -> acc_bi_ban.txt (nhat_ky_ban.txt)
+    - FACE_LOCK -> acc_face_lock.txt (nhat_ky_face_lock.txt, ghi Face_Target_File.txt)
+    - CAPTCHA_LOCK -> acc_captcha_lock.txt (nhat_ky_captcha_lock.txt)
+    - DEAD -> acc_dead_cookies.txt
     Hỗ trợ target là mã máy (m77), 'all', 'unassigned' hoặc danh sách username rời.
     Trả về dict: {
         "banned_count": int,
@@ -301,7 +442,13 @@ def clean_banned_accounts(m_code_or_target, banned_usernames, base_dir=None):
     acc_file = paths["acc_file"]
     data_tong_file = paths["data_tong_file"]
     acc_bi_ban_file = paths["acc_bi_ban_file"]
+    acc_face_lock_file = paths["acc_face_lock_file"]
+    acc_captcha_lock_file = paths["acc_captcha_lock_file"]
+    acc_dead_cookies_file = paths["acc_dead_cookies_file"]
     nhat_ky_ban_file = paths["nhat_ky_ban_file"]
+    nhat_ky_face_lock_file = paths["nhat_ky_face_lock_file"]
+    nhat_ky_captcha_lock_file = paths["nhat_ky_captcha_lock_file"]
+    face_target_file = paths["face_target_file"]
 
     if not os.path.exists(acc_file):
         raise FileNotFoundError(f"Không tìm thấy tệp: {acc_file}")
@@ -318,9 +465,11 @@ def clean_banned_accounts(m_code_or_target, banned_usernames, base_dir=None):
         shutil.copy2(data_tong_file, backup_data_tong)
 
     banned_set = {u.strip().lower() for u in banned_usernames if u.strip()}
+    cat_map = {k.strip().lower(): str(v).upper() for k, v in (categories_map or {}).items()}
 
-    # 2. Xử lý trích xuất lưu trữ từ Data_Tong_Cookies.txt
+    # 2. Xử lý trích xuất lưu trữ từ Data_Tong_Cookies.txt theo từng nhóm
     archived_full_lines = []
+    archived_by_category = {"BANNED": [], "FACE_LOCK": [], "CAPTCHA_LOCK": [], "DEAD": []}
     cleaned_data_tong_lines = []
     if os.path.exists(data_tong_file):
         with open(data_tong_file, "r", encoding="utf-8", errors="ignore") as f:
@@ -331,19 +480,17 @@ def clean_banned_accounts(m_code_or_target, banned_usernames, base_dir=None):
                 user = line_str.split(":")[0].strip().lower()
                 if user in banned_set:
                     archived_full_lines.append(line_str)
+                    user_cat = cat_map.get(user, "BANNED")
+                    if user_cat not in archived_by_category:
+                        user_cat = "BANNED"
+                    archived_by_category[user_cat].append(line_str)
                 else:
                     cleaned_data_tong_lines.append(line_str)
 
         with open(data_tong_file, "w", encoding="utf-8") as f:
             f.write("\n".join(cleaned_data_tong_lines) + ("\n" if cleaned_data_tong_lines else ""))
 
-    # 3. Ghi vào acc_bi_ban.txt (cookies đầy đủ)
-    if archived_full_lines:
-        with open(acc_bi_ban_file, "a", encoding="utf-8") as f:
-            for l in archived_full_lines:
-                f.write(l + "\n")
-
-    # 4. Ghi vào nhat_ky_ban.txt
+    # 3. Ghi vào các tệp phân loại
     target_str = str(m_code_or_target or "Tự do").strip()
     if re.match(r"^[Mm]\d+$", target_str, re.IGNORECASE):
         m_clean = target_str.upper().replace("M", "Máy ")
@@ -352,9 +499,53 @@ def clean_banned_accounts(m_code_or_target, banned_usernames, base_dir=None):
     else:
         m_clean = "Tự do"
 
-    with open(nhat_ky_ban_file, "a", encoding="utf-8") as f:
-        for u in banned_usernames:
-            f.write(f"{u}:::banned {date_str} - {m_clean}\n")
+    # 3a. Banned
+    banned_lines = archived_by_category["BANNED"]
+    if banned_lines or any(cat_map.get(u.lower(), "BANNED") == "BANNED" for u in banned_usernames):
+        if banned_lines:
+            with open(acc_bi_ban_file, "a", encoding="utf-8") as f:
+                for l in banned_lines:
+                    f.write(l + "\n")
+        with open(nhat_ky_ban_file, "a", encoding="utf-8") as f:
+            for u in banned_usernames:
+                if cat_map.get(u.lower(), "BANNED") == "BANNED":
+                    f.write(f"{u}:::banned {date_str} - {m_clean}\n")
+
+    # 3b. Face Lock
+    face_lines = archived_by_category["FACE_LOCK"]
+    if face_lines or any(cat_map.get(u.lower()) == "FACE_LOCK" for u in banned_usernames):
+        if face_lines:
+            with open(acc_face_lock_file, "a", encoding="utf-8") as f:
+                for l in face_lines:
+                    f.write(l + "\n")
+            try:
+                with open(face_target_file, "w", encoding="utf-8") as f:
+                    f.write(acc_face_lock_file + "\n")
+            except Exception:
+                pass
+        with open(nhat_ky_face_lock_file, "a", encoding="utf-8") as f:
+            for u in banned_usernames:
+                if cat_map.get(u.lower()) == "FACE_LOCK":
+                    f.write(f"{u}:::facelock {date_str} - {m_clean}\n")
+
+    # 3c. Captcha Lock
+    captcha_lines = archived_by_category["CAPTCHA_LOCK"]
+    if captcha_lines or any(cat_map.get(u.lower()) == "CAPTCHA_LOCK" for u in banned_usernames):
+        if captcha_lines:
+            with open(acc_captcha_lock_file, "a", encoding="utf-8") as f:
+                for l in captcha_lines:
+                    f.write(l + "\n")
+        with open(nhat_ky_captcha_lock_file, "a", encoding="utf-8") as f:
+            for u in banned_usernames:
+                if cat_map.get(u.lower()) == "CAPTCHA_LOCK":
+                    f.write(f"{u}:::captchalock {date_str} - {m_clean}\n")
+
+    # 3d. Dead Cookies
+    dead_lines = archived_by_category["DEAD"]
+    if dead_lines:
+        with open(acc_dead_cookies_file, "a", encoding="utf-8") as f:
+            for l in dead_lines:
+                f.write(l + "\n")
 
     # 5. Làm sạch acc.txt
     with open(acc_file, "r", encoding="utf-8", errors="ignore") as f:
@@ -657,29 +848,46 @@ def sync_to_google_drive(base_dir=None, verify_rule34=True):
     return sync_results
 
 
-def run_full_checkban_pipeline(target, base_dir=None, auto_replace=True, use_cache=True, cache_ttl=DEFAULT_CACHE_TTL):
+def run_full_checkban_pipeline(target, base_dir=None, auto_replace=True, use_cache=True, cache_ttl=DEFAULT_CACHE_TTL, use_zeropoint=True):
     """
     Thực hiện trọn gói pipeline checkban:
     1. Trích xuất danh sách tài khoản theo target (m77, all, unassigned hoặc danh sách usernames).
-    2. Kiểm tra trạng thái Roblox Ban API với Quota-Guard Cache.
-    3. Nếu có acc ban: tự động sao lưu dual-storage, lưu trữ, xóa khỏi acc.txt & Data_Tong.
-    4. Tự động nạp bù từ kho acc_du_phong.txt nếu auto_replace=True.
-    5. Đồng bộ Google Drive bảo toàn File ID theo Rule 34.
-    6. Trả về báo cáo tổng hợp chi tiết.
+    2. Nếu tệp trên máy thiếu hoặc rỗng: tự động kéo từ Google Drive (Rule 34 Dual-Storage).
+    3. Trích xuất cookie từ Data_Tong_Cookies.txt và gửi lên ZeroPoint CookieChecker API.
+    4. Nhận diện chuyên sâu: Sống (ALIVE), Bị Ban (BANNED), FaceID Lock (FACE_LOCK), Captcha Lock (CAPTCHA_LOCK), Cookie Chết (DEAD).
+       Đối với các acc không có cookie hoặc ZeroPoint không phản hồi, fallback về Roblox Public API.
+    5. Cách ly toàn bộ acc lỗi sang các tệp phân loại tương ứng:
+       - Banned -> acc_bi_ban.txt, nhat_ky_ban.txt
+       - FaceID Lock -> acc_face_lock.txt, nhat_ky_face_lock.txt, Face_Target_File.txt
+       - Captcha Lock -> acc_captcha_lock.txt, nhat_ky_captcha_lock.txt
+       - Dead Cookies -> acc_dead_cookies.txt
+    6. Tự động nạp bù từ kho acc_du_phong.txt nếu auto_replace=True.
+    7. Đồng bộ Google Drive bảo toàn File ID theo Rule 34.
+    8. Trả về báo cáo tổng hợp chi tiết.
     """
     paths = get_default_paths(base_dir)
     acc_file = paths["acc_file"]
+    data_tong_file = paths["data_tong_file"]
 
     usernames_to_check = []
     target_lower = target.strip().lower()
     is_single_m = bool(re.match(r"^[Mm]\d+$", target_lower))
 
     if target_lower == "all" or is_single_m or target_lower == "unassigned":
+        if not os.path.exists(acc_file) or os.path.getsize(acc_file) == 0:
+            pull_from_google_drive(base_dir)
         if not os.path.exists(acc_file):
             raise FileNotFoundError(f"Không tìm thấy file {acc_file}")
         with open(acc_file, "r", encoding="utf-8", errors="ignore") as f:
             content = f.read()
         sections = parse_acc_sections(content)
+
+        if is_single_m and (target_lower not in sections or not sections[target_lower]["accounts"]):
+            # Thử kéo lại từ Google Drive nếu file cục bộ chưa có section này
+            pull_from_google_drive(base_dir)
+            with open(acc_file, "r", encoding="utf-8", errors="ignore") as f:
+                content = f.read()
+            sections = parse_acc_sections(content)
 
         if target_lower == "all":
             for sec in sections.values():
@@ -693,6 +901,9 @@ def run_full_checkban_pipeline(target, base_dir=None, auto_replace=True, use_cac
                     "total": 0,
                     "live": 0,
                     "banned": 0,
+                    "face_lock": 0,
+                    "captcha_lock": 0,
+                    "dead": 0,
                     "error": 0,
                     "banned_list": [],
                     "message": "Không tìm thấy tài khoản unassigned nào."
@@ -707,6 +918,9 @@ def run_full_checkban_pipeline(target, base_dir=None, auto_replace=True, use_cac
                     "total": 0,
                     "live": 0,
                     "banned": 0,
+                    "face_lock": 0,
+                    "captcha_lock": 0,
+                    "dead": 0,
                     "error": 0,
                     "banned_list": [],
                     "message": f"Không tìm thấy tài khoản nào trong dàn {target.upper()} trong acc.txt."
@@ -723,35 +937,104 @@ def run_full_checkban_pipeline(target, base_dir=None, auto_replace=True, use_cac
             "total": 0,
             "live": 0,
             "banned": 0,
+            "face_lock": 0,
+            "captcha_lock": 0,
+            "dead": 0,
             "error": 0,
             "banned_list": [],
             "message": "Danh sách tài khoản trống."
         }
 
-    # 2. Kiểm tra Roblox API (sử dụng Quota-Guard Cache)
-    ban_results = check_roblox_ban_status(usernames_to_check, use_cache=use_cache, cache_ttl=cache_ttl)
+    # 2. Trích xuất cookie từ Data_Tong_Cookies.txt
+    user_cookie_map = {}
+    if not os.path.exists(data_tong_file) or os.path.getsize(data_tong_file) == 0:
+        pull_from_google_drive(base_dir)
+
+    if os.path.exists(data_tong_file):
+        with open(data_tong_file, "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                line_str = line.strip()
+                if not line_str or ":" not in line_str:
+                    continue
+                parts = line_str.split(":", 1)
+                u_norm = parts[0].strip().lower()
+                c = parts[1].strip() if len(parts) > 1 else ""
+                if c:
+                    user_cookie_map[u_norm] = c
+
+    # 3. Kiểm tra qua ZeroPoint CookieChecker API
+    zp_input = {}
+    for u in usernames_to_check:
+        c = user_cookie_map.get(u.lower(), "")
+        if c:
+            zp_input[u] = c
+
+    zp_results = {}
+    if use_zeropoint and zp_input:
+        try:
+            zp_results = check_zeropoint_cookie_status(zp_input)
+        except Exception as e:
+            print(f"[ZEROPOINT] Lỗi gọi API: {e}", flush=True)
+            zp_results = {}
 
     live_list = []
     banned_list = []
+    face_lock_list = []
+    captcha_lock_list = []
+    dead_list = []
     error_list = []
 
-    for uname, info in ban_results.items():
-        if info.get("isBanned") is True:
-            banned_list.append(uname)
-        elif info.get("isBanned") is False:
-            live_list.append(uname)
+    remaining_usernames = []
+    for u in usernames_to_check:
+        if u in zp_results:
+            st = zp_results[u].get("status", "ALIVE").upper()
+            if st == "ALIVE":
+                live_list.append(u)
+            elif st == "FACE_LOCK":
+                face_lock_list.append(u)
+            elif st == "CAPTCHA_LOCK":
+                captcha_lock_list.append(u)
+            elif st in ("BANNED", "BAN_WARN"):
+                banned_list.append(u)
+            elif st == "DEAD":
+                dead_list.append(u)
+            else:
+                error_list.append(u)
         else:
-            error_list.append(uname)
+            remaining_usernames.append(u)
 
-    # 3. Nếu có acc ban: tự động dọn dẹp, nạp bù dự trữ và sync Google Drive
+    # Fallback kiểm tra Roblox Public API cho các tài khoản chưa kiểm tra được qua ZeroPoint
+    if remaining_usernames:
+        roblox_results = check_roblox_ban_status(remaining_usernames, use_cache=use_cache, cache_ttl=cache_ttl)
+        for uname, info in roblox_results.items():
+            if info.get("isBanned") is True:
+                banned_list.append(uname)
+            elif info.get("isBanned") is False:
+                live_list.append(uname)
+            else:
+                error_list.append(uname)
+
+    # 4. Gom nhóm tất cả tài khoản lỗi để cách ly an toàn
+    defective_list = banned_list + face_lock_list + captcha_lock_list + dead_list
+
     clean_result = None
     replace_result = None
     sync_result = None
 
-    if banned_list:
-        clean_result = clean_banned_accounts(target, banned_list, base_dir=base_dir)
+    if defective_list:
+        categories_map = {}
+        for u in banned_list:
+            categories_map[u] = "BANNED"
+        for u in face_lock_list:
+            categories_map[u] = "FACE_LOCK"
+        for u in captcha_lock_list:
+            categories_map[u] = "CAPTCHA_LOCK"
+        for u in dead_list:
+            categories_map[u] = "DEAD"
 
-        # 4. Tự động nạp bù tài khoản từ kho dự trữ nếu được kích hoạt
+        clean_result = clean_banned_accounts(target, defective_list, base_dir=base_dir, categories_map=categories_map)
+
+        # 5. Tự động nạp bù tài khoản từ kho dự trữ nếu được kích hoạt
         if auto_replace:
             if is_single_m and clean_result.get("removed_from_acc", 0) > 0:
                 replace_result = replace_banned_accounts_from_reserve(
@@ -785,11 +1068,20 @@ def run_full_checkban_pipeline(target, base_dir=None, auto_replace=True, use_cac
         "total": len(usernames_to_check),
         "live": len(live_list),
         "banned": len(banned_list),
+        "face_lock": len(face_lock_list),
+        "captcha_lock": len(captcha_lock_list),
+        "dead": len(dead_list),
         "error": len(error_list),
+        "live_list": live_list,
         "banned_list": banned_list,
+        "face_lock_list": face_lock_list,
+        "captcha_lock_list": captcha_lock_list,
+        "dead_list": dead_list,
+        "error_list": error_list,
         "clean_result": clean_result,
         "replace_result": replace_result,
         "sync_result": sync_result,
+        "checker_engine": "ZeroPoint" if zp_results else "RobloxAPI",
     }
 
 

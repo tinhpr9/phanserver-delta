@@ -22,6 +22,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
+import json
 import urllib.error
 
 # Ensure project root is in sys.path
@@ -525,6 +526,165 @@ ReserveUser4:Pass104
             report = run_full_checkban_pipeline(tgt, base_dir=self.test_dir)
             self.assertEqual(report["total"], 3)
             self.assertIn("player_alpha", report["target"])
+
+    @patch("urllib.request.urlopen")
+    def test_check_zeropoint_cookie_status_parsing(self, mock_urlopen):
+        """Kiểm tra phân tích kết quả ZeroPoint CookieChecker API chính xác 5 danh mục."""
+        fake_cookie_1 = "_|WARNING:-DO-NOT-SHARE-THIS.--Sharing-this-will-allow-someone-to-log-in-to-your-account-and-to-steal-your-ROBUX-and-infrastructure|" + "A" * 300
+        fake_cookie_2 = "_|WARNING:-DO-NOT-SHARE-THIS.--Sharing-this-will-allow-someone-to-log-in-to-your-account-and-to-steal-your-ROBUX-and-infrastructure|" + "B" * 300
+        fake_cookie_3 = "_|WARNING:-DO-NOT-SHARE-THIS.--Sharing-this-will-allow-someone-to-log-in-to-your-account-and-to-steal-your-ROBUX-and-infrastructure|" + "C" * 300
+        fake_cookie_4 = "_|WARNING:-DO-NOT-SHARE-THIS.--Sharing-this-will-allow-someone-to-log-in-to-your-account-and-to-steal-your-ROBUX-and-infrastructure|" + "D" * 300
+        fake_cookie_5 = "_|WARNING:-DO-NOT-SHARE-THIS.--Sharing-this-will-allow-someone-to-log-in-to-your-account-and-to-steal-your-ROBUX-and-infrastructure|" + "E" * 300
+
+        user_cookie_map = {
+            "user_live": fake_cookie_1,
+            "user_face": fake_cookie_2,
+            "user_captcha": fake_cookie_3,
+            "user_banned": fake_cookie_4,
+            "user_dead": fake_cookie_5,
+        }
+
+        # Mock responses
+        submit_resp = MagicMock()
+        submit_resp.read.return_value = json.dumps({"session_id": "test_sess_123"}).encode("utf-8")
+        submit_resp.__enter__.return_value = submit_resp
+
+        status_resp = MagicMock()
+        status_resp.read.return_value = json.dumps({
+            "status": "completed",
+            "download_files": {
+                "alive": "/download/alive",
+                "face_lock": "/download/face_lock",
+                "captcha_lock": "/download/captcha_lock",
+                "ban_warn": "/download/ban_warn",
+                "dead": "/download/dead",
+            }
+        }).encode("utf-8")
+        status_resp.__enter__.return_value = status_resp
+
+        dl_alive = MagicMock()
+        dl_alive.read.return_value = (fake_cookie_1 + "\n").encode("utf-8")
+        dl_alive.__enter__.return_value = dl_alive
+
+        dl_face = MagicMock()
+        dl_face.read.return_value = (fake_cookie_2 + "\n").encode("utf-8")
+        dl_face.__enter__.return_value = dl_face
+
+        dl_captcha = MagicMock()
+        dl_captcha.read.return_value = (fake_cookie_3 + "\n").encode("utf-8")
+        dl_captcha.__enter__.return_value = dl_captcha
+
+        dl_ban = MagicMock()
+        dl_ban.read.return_value = (fake_cookie_4 + "\n").encode("utf-8")
+        dl_ban.__enter__.return_value = dl_ban
+
+        dl_dead = MagicMock()
+        dl_dead.read.return_value = (fake_cookie_5 + "\n").encode("utf-8")
+        dl_dead.__enter__.return_value = dl_dead
+
+        def mock_urlopen_side_effect(req, *args, **kwargs):
+            url = req.full_url if hasattr(req, "full_url") else str(req)
+            if "submit" in url:
+                return submit_resp
+            if "status/test_sess_123" in url:
+                return status_resp
+            if "download/test_sess_123/alive" in url:
+                return dl_alive
+            if "download/test_sess_123/face_lock" in url:
+                return dl_face
+            if "download/test_sess_123/captcha_lock" in url:
+                return dl_captcha
+            if "download/test_sess_123/ban_warn" in url:
+                return dl_ban
+            if "download/test_sess_123/dead" in url:
+                return dl_dead
+            return MagicMock()
+
+        mock_urlopen.side_effect = mock_urlopen_side_effect
+
+        from agent.account_manager import check_zeropoint_cookie_status
+        res = check_zeropoint_cookie_status(user_cookie_map, api_key="test_key", timeout=5)
+
+        self.assertEqual(res["user_live"]["status"], "ALIVE")
+        self.assertEqual(res["user_face"]["status"], "FACE_LOCK")
+        self.assertEqual(res["user_captcha"]["status"], "CAPTCHA_LOCK")
+        self.assertEqual(res["user_banned"]["status"], "BANNED")
+        self.assertEqual(res["user_dead"]["status"], "DEAD")
+
+    def test_clean_banned_accounts_with_categories(self):
+        """Kiểm tra lưu trữ phân loại riêng biệt cho Banned, FaceID Lock, Captcha Lock và Dead Cookies."""
+        from agent.account_manager import clean_banned_accounts
+        cat_map = {
+            "breckenlife330": "FACE_LOCK",
+            "shadowwoodrow820": "DEAD",
+            "mega_wiley623": "BANNED",
+            "jeremiahwilkerson46": "CAPTCHA_LOCK"
+        }
+        res = clean_banned_accounts(
+            "m77",
+            ["BreckenLife330", "ShadowWoodrow820", "Mega_Wiley623", "JeremiahWilkerson46"],
+            base_dir=self.test_dir,
+            categories_map=cat_map
+        )
+        self.assertEqual(res["removed_from_acc"], 4)
+
+        paths = get_default_paths(self.test_dir)
+        # Face lock files
+        self.assertTrue(os.path.exists(paths["acc_face_lock_file"]))
+        with open(paths["acc_face_lock_file"], "r") as f:
+            self.assertIn("BreckenLife330", f.read())
+        self.assertTrue(os.path.exists(paths["face_target_file"]))
+        with open(paths["face_target_file"], "r") as f:
+            self.assertIn("acc_face_lock.txt", f.read())
+
+        # Dead cookies file
+        self.assertTrue(os.path.exists(paths["acc_dead_cookies_file"]))
+        with open(paths["acc_dead_cookies_file"], "r") as f:
+            self.assertIn("ShadowWoodrow820", f.read())
+
+        # Banned file
+        self.assertTrue(os.path.exists(paths["acc_bi_ban_file"]))
+        with open(paths["acc_bi_ban_file"], "r") as f:
+            self.assertIn("Mega_Wiley623", f.read())
+
+        # Captcha lock file
+        self.assertTrue(os.path.exists(paths["acc_captcha_lock_file"]))
+        with open(paths["acc_captcha_lock_file"], "r") as f:
+            self.assertIn("JeremiahWilkerson46", f.read())
+
+    @patch("agent.account_manager.sync_to_google_drive")
+    @patch("agent.account_manager.check_zeropoint_cookie_status")
+    def test_run_full_checkban_pipeline_with_zeropoint(self, mock_zp, mock_sync):
+        """Kiểm tra run_full_checkban_pipeline nhận diện FaceID và Dead từ ZeroPoint và tự nạp bù."""
+        # Tạo kho dự trữ
+        with open(self.acc_du_phong_file, "w", encoding="utf-8") as f:
+            f.write("NewReserve1:pass1\nNewReserve2:pass2\n")
+
+        mock_zp.return_value = {
+            "BreckenLife330": {"status": "ALIVE", "reason": "ZeroPoint: alive"},
+            "ShadowWoodrow820": {"status": "FACE_LOCK", "reason": "ZeroPoint: face_lock"},
+            "Mega_Wiley623": {"status": "DEAD", "reason": "ZeroPoint: dead"},
+            "JeremiahWilkerson46": {"status": "ALIVE", "reason": "ZeroPoint: alive"},
+        }
+        mock_sync.return_value = {"acc.txt": "OK", "Data_Tong_Cookies.txt": "OK"}
+
+        report = run_full_checkban_pipeline("m77", base_dir=self.test_dir, auto_replace=True)
+
+        self.assertEqual(report["total"], 4)
+        self.assertEqual(report["live"], 2)
+        self.assertEqual(report["face_lock"], 1)
+        self.assertEqual(report["dead"], 1)
+        self.assertEqual(report["checker_engine"], "ZeroPoint")
+        self.assertEqual(report["replace_result"]["replaced_count"], 2)
+        self.assertEqual(report["replace_result"]["replaced_accounts"], ["NewReserve1", "NewReserve2"])
+
+        # acc.txt has new accounts and removed defective accounts
+        with open(self.acc_file, "r") as f:
+            acc_c = f.read()
+        self.assertIn("NewReserve1:pass1", acc_c)
+        self.assertIn("NewReserve2:pass2", acc_c)
+        self.assertNotIn("ShadowWoodrow820", acc_c)
+        self.assertNotIn("Mega_Wiley623", acc_c)
 
 
 if __name__ == "__main__":
