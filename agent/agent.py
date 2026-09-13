@@ -21,6 +21,7 @@ import ssl
 import struct
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -64,7 +65,7 @@ except ImportError:
 
 AGENT_VERSION = "phanserver-delta-agent-1.0.0"
 PROTOCOL_VERSION = "fleet-batch-v1"
-CAPABILITIES = ["allocate_server_2pc", "update_delta", "check_ban", "add_acc", "del_acc"]
+CAPABILITIES = ["allocate_server_2pc", "update_delta", "check_ban", "add_acc", "del_acc", "control_tailscale"]
 
 
 def collect_metrics() -> dict[str, Any]:
@@ -234,60 +235,21 @@ if [ -z "$IP" ]; then
 fi
 
 if [ -z "$IP" ]; then
-    ROTATION=$(dumpsys input 2>/dev/null | grep -m 1 'SurfaceOrientation' | awk -F':' '{print $2}' | tr -d ' \\r\\n')
-    if [ -z "$ROTATION" ]; then
-        ROTATION=$(dumpsys window 2>/dev/null | grep -m 1 -E 'mCurrentRotation|mDisplayOrientation|rotation=' | grep -oE '[0-3]' | head -n 1)
-    fi
-    [ -z "$ROTATION" ] && ROTATION=0
-
     RAW_SIZE=$(wm size 2>/dev/null | tail -n 1 | awk '{print $NF}')
     DIM_W=$(echo "$RAW_SIZE" | cut -d'x' -f1)
     DIM_H=$(echo "$RAW_SIZE" | cut -d'x' -f2)
+    [ -z "$DIM_W" ] && DIM_W=720
+    [ -z "$DIM_H" ] && DIM_H=1280
 
-    if [ -n "$DIM_W" ] && [ -n "$DIM_H" ] && [ "$DIM_W" -gt 0 ] 2>/dev/null; then
-        if [ "$DIM_W" -gt "$DIM_H" ]; then
-            MAX_D="$DIM_W"
-            MIN_D="$DIM_H"
-        else
-            MAX_D="$DIM_H"
-            MIN_D="$DIM_W"
-        fi
+    if [ "$DIM_W" -gt "$DIM_H" ] 2>/dev/null; then
+        TOGGLE_X=$((DIM_W * 92 / 100))
+        TOGGLE_Y=$((DIM_H * 12 / 100))
     else
-        MIN_D=720
-        MAX_D=1280
+        TOGGLE_X=$((DIM_W * 88 / 100))
+        TOGGLE_Y=$((DIM_H * 8 / 100))
     fi
-
-    if [ "$ROTATION" -eq 1 ] || [ "$ROTATION" -eq 3 ]; then
-        WIDTH="$MAX_D"
-        HEIGHT="$MIN_D"
-        TOGGLE_X=$((WIDTH * 92 / 100))
-        TOGGLE_Y=$((HEIGHT * 12 / 100))
-    else
-        WIDTH="$MIN_D"
-        HEIGHT="$MAX_D"
-        TOGGLE_X=$((WIDTH * 88 / 100))
-        TOGGLE_Y=$((HEIGHT * 8 / 100))
-    fi
-    CENTER_X=$((WIDTH / 2))
-    CENTER_Y=$((HEIGHT / 2))
-
-    DUMP_XML="/data/local/tmp/uidump.xml"
-    rm -f "$DUMP_XML"
-    uiautomator dump "$DUMP_XML" >/dev/null 2>&1 || true
-    CLICKED=0
-    if [ -f "$DUMP_XML" ]; then
-        COORDS=$(grep -E 'text="(Connect|OK|Tiếp tục|Kết nối|Allow|Cho phép)"' "$DUMP_XML" | grep -o 'bounds="\\[[0-9]*,[0-9]*\\]\\[[0-9]*,[0-9]*\\]"' | head -n 1 | sed 's/bounds="//; s/"//; s/\\]\\[/,/; s/\\[//; s/\\]//')
-        if [ -n "$COORDS" ]; then
-            X1=$(echo "$COORDS" | cut -d',' -f1)
-            Y1=$(echo "$COORDS" | cut -d',' -f2)
-            X2=$(echo "$COORDS" | cut -d',' -f3)
-            Y2=$(echo "$COORDS" | cut -d',' -f4)
-            TAP_X=$(( (X1 + X2) / 2 ))
-            TAP_Y=$(( (Y1 + Y2) / 2 ))
-            input tap "$TAP_X" "$TAP_Y" >/dev/null 2>&1 || true
-            CLICKED=1
-        fi
-    fi
+    CENTER_X=$((DIM_W / 2))
+    CENTER_Y=$((DIM_H / 2))
 
     input tap "$TOGGLE_X" "$TOGGLE_Y" >/dev/null 2>&1 || true
     input tap "$CENTER_X" "$CENTER_Y" >/dev/null 2>&1 || true
@@ -335,6 +297,7 @@ def handle_incoming_batch_action(
     state: dict[str, Any],
     state_path: pathlib.Path,
     links_path: pathlib.Path,
+    sync: bool = False,
 ) -> bool:
     """Process 2PC batch actions (PREPARE, COMMIT, ABORT) or UPDATE_DELTA."""
     if message.get("protocol") != PROTOCOL_VERSION:
@@ -675,79 +638,99 @@ def handle_incoming_batch_action(
                 details=cached.get("details"),
             )
             return True
-        try:
+
+        in_progress = state.setdefault("tailscale_action_in_progress", set())
+        if action_id in in_progress:
+            return True
+        in_progress.add(action_id)
+
+        def _worker():
             try:
-                from agent.backup_manager import _run_as_root
-            except ImportError:
                 try:
-                    from backup_manager import _run_as_root
+                    from agent.backup_manager import _run_as_root
                 except ImportError:
-                    _run_as_root = None
+                    try:
+                        from backup_manager import _run_as_root
+                    except ImportError:
+                        _run_as_root = None
 
-            mode = str(message.get("mode") or "on").lower()
-            cmd = build_tailscale_command(mode)
+                mode = str(message.get("mode") or "on").lower()
+                cmd = build_tailscale_command(mode)
 
-            if _run_as_root:
-                res = _run_as_root(cmd, timeout=30)
-                success = res.returncode == 0
-                stdout_text = res.stdout.strip()
-                reason = None if success else (res.stderr.strip() or "vpn_timeout_no_ip")
-            else:
-                proc = subprocess.run(["sh", "-c", cmd], capture_output=True, text=True, timeout=30)
-                success = proc.returncode == 0
-                stdout_text = proc.stdout.strip()
-                reason = None if success else (proc.stderr.strip() or "vpn_timeout_no_ip")
+                if _run_as_root:
+                    res = _run_as_root(cmd, timeout=20)
+                    success = res.returncode == 0
+                    stdout_text = res.stdout.strip()
+                    reason = None if success else (res.stderr.strip() or "vpn_timeout_no_ip")
+                else:
+                    proc = subprocess.run(["sh", "-c", cmd], capture_output=True, text=True, timeout=20)
+                    success = proc.returncode == 0
+                    stdout_text = proc.stdout.strip()
+                    reason = None if success else (proc.stderr.strip() or "vpn_timeout_no_ip")
 
-            # Strict status validation to prevent phantom successes (R1)
-            tailscale_ip_pattern = r"(?<![0-9a-zA-Z.])\b100\.\d{1,3}\.\d{1,3}\.\d{1,3}\b(?![0-9a-zA-Z./:])"
-            if mode == "on":
-                ip_match = re.search(tailscale_ip_pattern, stdout_text)
-                is_valid_ip = False
-                if ip_match:
-                    is_valid_ip = validate_tailscale_cgnat_ip(ip_match.group(0))
+                # Strict status validation to prevent phantom successes (R1)
+                tailscale_ip_pattern = r"(?<![0-9a-zA-Z.])\b100\.\d{1,3}\.\d{1,3}\.\d{1,3}\b(?![0-9a-zA-Z./:])"
+                if mode == "on":
+                    ip_match = re.search(tailscale_ip_pattern, stdout_text)
+                    is_valid_ip = False
+                    if ip_match:
+                        is_valid_ip = validate_tailscale_cgnat_ip(ip_match.group(0))
 
-                if success and stdout_text.startswith("CONNECTED:") and is_valid_ip:
+                    if success and stdout_text.startswith("CONNECTED:") and is_valid_ip:
+                        status = "OPENED"
+                        executed = True
+                        details = stdout_text
+                        reason = None
+                    else:
+                        status = "FAILED"
+                        executed = False
+                        details = None
+                        reason = reason or "vpn_timeout_no_ip: Timeout 12s không nhận được IP Tailscale (100.x.y.z)"
+                elif mode == "status":
                     status = "OPENED"
                     executed = True
-                    details = stdout_text
+                    ip_match = re.search(tailscale_ip_pattern, stdout_text)
+                    if success and ip_match and validate_tailscale_cgnat_ip(ip_match.group(0)):
+                        details = f"CONNECTED: {ip_match.group(0)}"
+                    else:
+                        details = "DISCONNECTED"
                     reason = None
+                elif mode == "off":
+                    status = "OPENED" if success else "FAILED"
+                    executed = success
+                    details = stdout_text if success else None
+                    reason = None if success else (reason or "vpn_disconnect_failed")
                 else:
-                    status = "FAILED"
-                    executed = False
-                    details = None
-                    reason = reason or "vpn_timeout_no_ip: Timeout 12s không nhận được IP Tailscale (100.x.y.z)"
-            elif mode == "status":
-                status = "OPENED"
-                executed = True
-                ip_match = re.search(tailscale_ip_pattern, stdout_text)
-                if success and ip_match and validate_tailscale_cgnat_ip(ip_match.group(0)):
-                    details = f"CONNECTED: {ip_match.group(0)}"
-                else:
-                    details = "DISCONNECTED"
-                reason = None
-            elif mode == "off":
-                status = "OPENED" if success else "FAILED"
-                executed = success
-                details = stdout_text if success else None
-                reason = None if success else (reason or "vpn_disconnect_failed")
-            else:
-                status = "OPENED" if success else "FAILED"
-                executed = success
-                details = stdout_text
+                    status = "OPENED" if success else "FAILED"
+                    executed = success
+                    details = stdout_text
 
-            result = {"status": status, "executed": executed, "reason": reason, "details": details}
-        except Exception as e:
-            result = {"status": "FAILED", "executed": False, "reason": str(e)[:160], "details": None}
+                result = {"status": status, "executed": executed, "reason": reason, "details": details}
+            except Exception as e:
+                result = {"status": "FAILED", "executed": False, "reason": str(e)[:160], "details": None}
+            finally:
+                in_progress.discard(action_id)
 
-        completed[action_id] = result
-        state_path.parent.mkdir(parents=True, exist_ok=True)
-        state_path.write_text(json.dumps(state), encoding="utf-8")
-        send_ack(
-            report_url, secret, device_id, action_id,
-            status=result["status"], reason=result.get("reason"),
-            executed=result["executed"], batch_action="CONTROL_TAILSCALE",
-            details=result.get("details"),
-        )
+            completed[action_id] = result
+            try:
+                state_path.parent.mkdir(parents=True, exist_ok=True)
+                save_state = {k: list(v) if isinstance(v, set) else v for k, v in state.items()}
+                state_path.write_text(json.dumps(save_state), encoding="utf-8")
+            except Exception:
+                pass
+            send_ack(
+                report_url, secret, device_id, action_id,
+                status=result["status"], reason=result.get("reason"),
+                executed=result["executed"], batch_action="CONTROL_TAILSCALE",
+                details=result.get("details"),
+            )
+
+        t = threading.Thread(target=_worker, daemon=True)
+        t.start()
+        if sync:
+            t.join()
+        elif t.is_alive():
+            t.join(timeout=0.2)
         return True
 
     if action == "CHECK_BAN":

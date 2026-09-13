@@ -201,10 +201,33 @@ export class FleetState {
 
     const now = Date.now();
     const actions = record.pending_actions[deviceId] || [];
+    const handleExpiredAction = (item, reason) => {
+      item.acknowledged_at = now;
+      item.expired = true;
+      if (item.action === "CONTROL_TAILSCALE" && !item.timeout_alerted) {
+        item.timeout_alerted = true;
+        const act = record.tailscale_actions?.[item.action_id];
+        if (act && act.devices?.[deviceId] && act.devices[deviceId].status === "QUEUED") {
+          act.devices[deviceId].status = "FAILED";
+          act.devices[deviceId].reason = reason;
+          act.devices[deviceId].updated_at = now;
+        }
+        const chatId = act?.telegram_chat_id || this.env?.TELEGRAM_ADMIN_USER_ID;
+        if (chatId && this.env?.TELEGRAM_BOT_TOKEN) {
+          const mode = (act?.mode || item.mode || "on").toUpperCase();
+          const msg = `⚠️ <b>ĐIỀU KHIỂN TAILSCALE QUÁ THỜI GIAN (TIMEOUT)</b>\n📱 Thiết bị: <code>${deviceId}</code>\n⚙️ Chế độ: <b>${mode}</b>\n⚠️ Thiết bị không phản hồi kết quả sau 90 giây. Vui lòng kiểm tra lại thiết bị hoặc kết nối mạng.`;
+          fetch(`https://api.telegram.org/bot${this.env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ chat_id: chatId, text: msg, parse_mode: "HTML" })
+          }).catch(() => {});
+        }
+      }
+    };
+
     for (const item of actions) {
       if (!item.acknowledged_at && item.delivered_at && now - item.delivered_at > 90000) {
-        item.acknowledged_at = now;
-        item.expired = true;
+        handleExpiredAction(item, "Timeout 90s không nhận được phản hồi từ thiết bị");
       }
     }
     const command = actions.find(item => !item.acknowledged_at) || null;
@@ -212,8 +235,7 @@ export class FleetState {
       command.delivered_at = command.delivered_at || now;
       command.delivery_count = (command.delivery_count || 0) + 1;
       if (command.delivery_count > 3 && now - command.delivered_at > 60000) {
-        command.acknowledged_at = now;
-        command.expired = true;
+        handleExpiredAction(command, "Quá 3 lần thử lại không nhận được phản hồi từ thiết bị");
       }
     }
     await this.writeFleet(record);

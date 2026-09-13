@@ -475,6 +475,35 @@ async function runTests() {
     }
   }
 
+  // 7i. CONTROL_TAILSCALE action timeout alert to Telegram when pending action expires (>90s)
+  const tsTimeoutRes = await (await fleet.controlFleetHub(new Request("https://localhost/aot/hub/control", {
+    method: "POST",
+    body: JSON.stringify({ protocol: "fleet-batch-v1", kind: "control_tailscale", mode: "on", target_device_ids: ["m1"], telegram_chat_id: 12345 })
+  }))).json();
+  const tsTimeoutActionId = tsTimeoutRes.tailscale.action_id;
+  await fleet.handleHeartbeat(new Request("https://localhost/report", {
+    method: "POST",
+    body: JSON.stringify({ device_id: "m1", device_group: "NOVA" })
+  }));
+  const fleetRecord = await fleet.readFleet();
+  for (const cmd of fleetRecord.pending_actions?.["m1"] || []) {
+    if (cmd.action_id === tsTimeoutActionId) {
+      cmd.delivered_at = Date.now() - 95000;
+    }
+  }
+  await fleet.writeFleet(fleetRecord);
+  notifiedTelegram = null;
+  await fleet.handleHeartbeat(new Request("https://localhost/report", {
+    method: "POST",
+    body: JSON.stringify({ device_id: "m1", device_group: "NOVA" })
+  }));
+  if (!notifiedTelegram?.text?.includes("ĐIỀU KHIỂN TAILSCALE QUÁ THỜI GIAN (TIMEOUT)")) {
+    throw new Error("Telegram timeout notification not sent: " + notifiedTelegram?.text);
+  }
+  if (!notifiedTelegram?.text?.includes("m1")) {
+    throw new Error("Telegram timeout notification missing deviceId: " + notifiedTelegram?.text);
+  }
+
   // 8. CHECK_BAN is queued per device and acknowledged
   const checkbanRes = await (await fleet.controlFleetHub(new Request("https://localhost/aot/hub/control", {
     method: "POST",

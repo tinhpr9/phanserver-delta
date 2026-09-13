@@ -63,16 +63,18 @@ def _run_as_root(cmd: str, timeout: int = 180) -> subprocess.CompletedProcess:
         if os.path.exists(su):
             try:
                 res = subprocess.run([su, "-c", cmd], capture_output=True, text=True, timeout=timeout)
-                if res.returncode == 0:
-                    return res
-                last_res = res
-            except Exception:
-                pass
+                return res
+            except subprocess.TimeoutExpired:
+                return subprocess.CompletedProcess(args=[su, "-c", cmd], returncode=124, stdout="", stderr=f"Lệnh chạy quá thời gian ({timeout}s)")
+            except Exception as e:
+                last_res = subprocess.CompletedProcess(args=[su, "-c", cmd], returncode=1, stdout="", stderr=str(e))
 
     if last_res is not None:
         return last_res
     try:
         return subprocess.run(["sh", "-c", cmd], capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(args=["sh", "-c", cmd], returncode=124, stdout="", stderr=f"Lệnh chạy quá thời gian ({timeout}s)")
     except Exception as e:
         return subprocess.CompletedProcess(args=["sh", "-c", cmd], returncode=1, stdout="", stderr=str(e))
 

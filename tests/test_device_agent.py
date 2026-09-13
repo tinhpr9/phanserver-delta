@@ -400,6 +400,13 @@ class TestTailscaleDeviceAgent(unittest.TestCase):
         self.assertIn("input keyevent KEYCODE_HOME", on_cmd)
         self.assertIn("1 2 3 4 5 6 7 8 9 10 11 12", on_cmd)
         self.assertNotIn("echo \"TRIGGERED\"", on_cmd)
+        self.assertNotIn("uiautomator dump", on_cmd)
+        self.assertNotIn("dumpsys input", on_cmd)
+        self.assertNotIn("dumpsys window", on_cmd)
+
+    def test_capabilities_includes_control_tailscale(self):
+        from agent.agent import CAPABILITIES
+        self.assertIn("control_tailscale", CAPABILITIES)
 
 
 if __name__ == "__main__":
