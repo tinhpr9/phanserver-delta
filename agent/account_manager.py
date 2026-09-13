@@ -850,6 +850,113 @@ def add_accounts(m_code, new_acc_lines, base_dir=None):
     }
 
 
+def delete_accounts(m_code_or_target, usernames, base_dir=None, sync_drive=True):
+    """
+    Xóa danh sách tài khoản chỉ định khỏi acc.txt và Data_Tong_Cookies.txt.
+    - m_code_or_target: mã máy (m77), 'all' hoặc tên section.
+    - usernames: danh sách username cần xóa.
+    - Tạo bản sao lưu .bak_<timestamp> trước khi xóa.
+    - Đồng bộ lên Google Drive (Rule 34) nếu sync_drive=True.
+    """
+    paths = get_default_paths(base_dir)
+    acc_file = paths["acc_file"]
+    data_tong_file = paths["data_tong_file"]
+
+    if not os.path.exists(acc_file):
+        pull_from_google_drive(base_dir, force=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_acc = f"{acc_file}.bak_{timestamp}"
+    shutil.copy2(acc_file, backup_acc)
+    backup_data_tong = None
+    if os.path.exists(data_tong_file):
+        backup_data_tong = f"{data_tong_file}.bak_{timestamp}"
+        shutil.copy2(data_tong_file, backup_data_tong)
+
+    del_set = {u.strip().lower() for u in usernames if u.strip()}
+    if not del_set:
+        return {
+            "target": str(m_code_or_target or "ALL").upper(),
+            "deleted_count": 0,
+            "deleted_usernames": [],
+            "removed_from_acc": 0,
+            "removed_from_data_tong": 0,
+            "sync_result": None
+        }
+
+    # 1. Xóa khỏi Data_Tong_Cookies.txt
+    removed_from_data_tong = 0
+    if os.path.exists(data_tong_file):
+        cleaned_dt = []
+        with open(data_tong_file, "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                stripped = line.strip()
+                if not stripped or ":" not in stripped:
+                    continue
+                user = stripped.split(":")[0].strip().lower()
+                if user in del_set:
+                    removed_from_data_tong += 1
+                else:
+                    cleaned_dt.append(stripped)
+        with open(data_tong_file, "w", encoding="utf-8") as f:
+            f.write("\n".join(cleaned_dt) + ("\n" if cleaned_dt else ""))
+
+    # 2. Xóa khỏi acc.txt
+    target_str = str(m_code_or_target or "all").strip().lower()
+    is_single_m = bool(re.match(r"^[Mm]\d+$", target_str))
+    section_pattern = re.compile(r"^\s*([Mm]\d+)(?:[_\s(].*)?$", re.IGNORECASE)
+
+    current_sec_code = "unassigned"
+    removed_from_acc = 0
+    new_acc_lines = []
+
+    with open(acc_file, "r", encoding="utf-8", errors="ignore") as f:
+        acc_text = f.read()
+
+    for line in acc_text.splitlines():
+        stripped = line.strip()
+        m = section_pattern.match(stripped)
+        if m and ":" not in stripped:
+            current_sec_code = m.group(1).lower()
+            new_acc_lines.append(line)
+            continue
+
+        if ":" in stripped and not stripped.endswith(")") and not stripped.startswith("["):
+            user = stripped.split(":")[0].strip().lower()
+            should_check = False
+            if is_single_m:
+                should_check = (current_sec_code == target_str)
+            else:
+                should_check = True
+
+            if should_check and user in del_set:
+                removed_from_acc += 1
+                continue
+
+        new_acc_lines.append(line)
+
+    with open(acc_file, "w", encoding="utf-8") as f:
+        f.write("\n".join(new_acc_lines) + ("\n" if new_acc_lines else ""))
+
+    sync_res = None
+    if sync_drive:
+        try:
+            sync_res = sync_to_google_drive(base_dir=base_dir)
+        except Exception as e:
+            sync_res = {"error": str(e)}
+
+    return {
+        "target": target_str.upper(),
+        "deleted_count": len(del_set),
+        "deleted_usernames": list(del_set),
+        "removed_from_acc": removed_from_acc,
+        "removed_from_data_tong": removed_from_data_tong,
+        "backup_acc": backup_acc,
+        "backup_data_tong": backup_data_tong,
+        "sync_result": sync_res
+    }
+
+
 def replace_banned_accounts_from_reserve(m_code, num_needed, base_dir=None, reserve_accounts=None, sync_drive=False):
     """
     Tự động đọc tài khoản từ kho dự trữ acc_du_phong.txt (hoặc qua tham số reserve_accounts),

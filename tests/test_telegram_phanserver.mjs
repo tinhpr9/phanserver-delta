@@ -334,9 +334,19 @@ async function runTests() {
     throw new Error("addacc confirmation failed: " + (sentMessages[0]?.text || ""));
   }
 
+  // 16b. Delete account command
+  await triggerMessage("/delacc m1 testuser");
+  const delaccCall = fleetControlCalls.at(-1);
+  if (delaccCall?.kind !== "del_acc" || delaccCall?.m_code !== "m1" || !delaccCall?.usernames?.includes("testuser")) {
+    throw new Error("delacc dispatch test failed: " + JSON.stringify(delaccCall));
+  }
+  if (!sentMessages[0]?.text.includes("ĐÃ XẾP LỆNH XÓA TÀI KHOẢN")) {
+    throw new Error("delacc confirmation failed: " + (sentMessages[0]?.text || ""));
+  }
+
   // 17. Help command
   await triggerMessage("/help");
-  if (!sentMessages[0]?.text.includes("DANH SÁCH LỆNH PREIUMBOT")) {
+  if (!sentMessages[0]?.text.includes("DANH SÁCH LỆNH PREIUMBOT") || !sentMessages[0]?.text.includes("/delacc")) {
     throw new Error("help command output failed: " + (sentMessages[0]?.text || ""));
   }
 
@@ -460,6 +470,38 @@ async function runTests() {
     }
     if (!lastTelegramReport?.text?.includes("Google Drive") || !lastTelegramReport?.text?.includes("Rule 34")) {
       throw new Error("FleetState checkban Rule 34 reporting failed: " + JSON.stringify(lastTelegramReport));
+    }
+
+    // Queue and acknowledge delacc
+    const qDelRes = await (await fsFleet.controlFleetHub(new Request("https://localhost/aot/hub/control", {
+      method: "POST",
+      body: JSON.stringify({ protocol: "fleet-batch-v1", kind: "del_acc", m_code: "m77", usernames: ["testuser"], target_device_ids: ["m1"], telegram_chat_id: 123 })
+    }))).json();
+    const delActionId = qDelRes.delacc.action_id;
+
+    const delAckRes = await (await fsFleet.dispatchFleetAck(new Request("https://localhost/aot/ack", {
+      method: "POST",
+      body: JSON.stringify({
+        protocol: "fleet-batch-v1",
+        batch_action: "DEL_ACC",
+        device_id: "m1",
+        action_id: delActionId,
+        status: "OPENED",
+        executed: true,
+        details: JSON.stringify({
+          target: "M77",
+          deleted_usernames: ["testuser"],
+          removed_from_acc: 1,
+          removed_from_data_tong: 1,
+          sync_result: { acc_sync: true, data_tong_sync: true, rule34_verified: true }
+        })
+      })
+    }))).json();
+
+    if (!delAckRes.ok) throw new Error("FleetState delacc ack failed: " + JSON.stringify(delAckRes));
+    if (!lastTelegramReport?.text?.includes("XÓA TÀI KHOẢN THÀNH CÔNG") ||
+        !lastTelegramReport?.text?.includes("testuser")) {
+      throw new Error("FleetState delacc reporting failed: " + JSON.stringify(lastTelegramReport));
     }
   } finally {
     globalThis.fetch = origFetchFs;

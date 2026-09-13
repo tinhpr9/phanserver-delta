@@ -64,7 +64,7 @@ except ImportError:
 
 AGENT_VERSION = "phanserver-delta-agent-1.0.0"
 PROTOCOL_VERSION = "fleet-batch-v1"
-CAPABILITIES = ["allocate_server_2pc", "update_delta", "check_ban", "add_acc"]
+CAPABILITIES = ["allocate_server_2pc", "update_delta", "check_ban", "add_acc", "del_acc"]
 
 
 def collect_metrics() -> dict[str, Any]:
@@ -699,6 +699,47 @@ def handle_incoming_batch_action(
             report_url, secret, device_id, action_id,
             status=status, reason=err_msg,
             executed=executed, batch_action="ADD_ACC",
+            details=details_str,
+        )
+        return True
+
+    if action == "DEL_ACC":
+        completed = state.setdefault("delacc_action_results", {})
+        cached = completed.get(action_id)
+        if isinstance(cached, dict):
+            send_ack(
+                report_url, secret, device_id, action_id,
+                status=str(cached.get("status", "OPENED")),
+                reason=cached.get("reason"),
+                executed=cached.get("executed") is True,
+                batch_action="DEL_ACC",
+                details=cached.get("details"),
+            )
+            return True
+        try:
+            m_code = message.get("m_code") or message.get("target") or "all"
+            usernames = message.get("usernames") or message.get("accounts") or []
+            if isinstance(usernames, str):
+                usernames = [u.strip() for u in re.split(r"[\s,]+", usernames) if u.strip()]
+            sync_drive = message.get("sync_drive", True)
+            del_res = account_manager.delete_accounts(m_code, usernames, sync_drive=sync_drive)
+            status = "OPENED"
+            executed = True
+            err_msg = None
+            details_str = json.dumps(del_res, ensure_ascii=False)
+        except Exception as e:
+            status = "FAILED"
+            executed = False
+            err_msg = str(e)[:160]
+            details_str = None
+
+        completed[action_id] = {"status": status, "executed": executed, "reason": err_msg, "details": details_str}
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+        send_ack(
+            report_url, secret, device_id, action_id,
+            status=status, reason=err_msg,
+            executed=executed, batch_action="DEL_ACC",
             details=details_str,
         )
         return True

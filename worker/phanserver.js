@@ -535,9 +535,10 @@ export async function handleUpdate(update, env, fleetState) {
   if (input === "/help" || input === "/start") {
     const helpText = `🤖 <b>DANH SÁCH LỆNH PREIUMBOT / PHANSERVER-DELTA</b>
 
-🛡️ <b>Quản lý Tài khoản (Roblox Ban & Add)</b>:
+🛡️ <b>Quản lý Tài khoản (Roblox Ban & Add/Delete)</b>:
 • <code>/checkban [m_code|all|users]</code>: Quét Roblox API kiểm tra ban, tự dọn dẹp acc.txt & sync Drive (Rule 34)
 • <code>/addacc &lt;m_code&gt; &lt;user:pass...&gt;</code>: Nạp tài khoản vào dàn máy và sync Google Drive
+• <code>/delacc &lt;m_code|all&gt; &lt;user1 [user2...]&gt;</code>: Xóa tài khoản khỏi acc.txt & Data_Tong_Cookies và sync Google Drive
 
 📱 <b>Quản trị Thiết bị & Trạng thái</b>:
 • <code>/status</code>: Báo cáo trạng thái tổng thể cả dàn
@@ -698,6 +699,94 @@ export async function handleUpdate(update, env, fleetState) {
       });
     } catch (error) {
       await telegram(env, "sendMessage", { chat_id: chatId, text: "Lỗi ADD_ACC: " + String(error.message || error) });
+    }
+    return;
+  }
+
+  if (input.match(/^\/(?:delacc|delete|xoaacc)(?:\s|$)/i)) {
+    const raw = input.replace(/^\/(?:delacc|delete|xoaacc)\s*/i, "").trim();
+    if (!raw) {
+      await telegram(env, "sendMessage", {
+        chat_id: chatId,
+        text: "Cú pháp:\n<code>/delacc &lt;mã_máy|all&gt; &lt;username1&gt; [username2...]</code>\n\nVí dụ: <code>/delacc m77 VanessaJoseph403</code>",
+        parse_mode: "HTML"
+      });
+      return;
+    }
+
+    const tokens = raw.split(/[\r\n\s]+/).filter(Boolean);
+    if (tokens.length < 2) {
+      await telegram(env, "sendMessage", {
+        chat_id: chatId,
+        text: "Cú pháp:\n<code>/delacc &lt;mã_máy|all&gt; &lt;username1&gt; [username2...]</code>\n\nVí dụ: <code>/delacc m77 VanessaJoseph403</code>",
+        parse_mode: "HTML"
+      });
+      return;
+    }
+
+    const mCode = tokens[0];
+    const rawUsers = tokens.slice(1);
+    const usernames = rawUsers.map(u => u.split(":")[0].trim()).filter(Boolean);
+
+    if (!usernames.length) {
+      await telegram(env, "sendMessage", {
+        chat_id: chatId,
+        text: "⚠️ Danh sách username không hợp lệ.",
+        parse_mode: "HTML"
+      });
+      return;
+    }
+
+    try {
+      let execDeviceId = null;
+      try {
+        const onlineIds = await resolveAndValidateTelegramTargets("all", env, fleetState);
+        if (onlineIds && onlineIds.length > 0) {
+          const normMCode = mCode.toLowerCase();
+          if (onlineIds.includes(normMCode)) {
+            execDeviceId = normMCode;
+          } else {
+            execDeviceId = onlineIds[0];
+          }
+        }
+      } catch (e) {}
+
+      if (!execDeviceId) {
+        try {
+          const single = await resolveAndValidateTelegramTargets(mCode, env, fleetState);
+          if (single && single.length > 0) execDeviceId = single[0];
+        } catch (e) {}
+      }
+
+      if (!execDeviceId) {
+        await telegram(env, "sendMessage", {
+          chat_id: chatId,
+          text: "⚠️ <b>KHÔNG CÓ THIẾT BỊ NÀO ONLINE</b>\nĐể xóa tài khoản và đồng bộ theo Rule 34, cần ít nhất 1 thiết bị trong dàn online.",
+          parse_mode: "HTML"
+        });
+        return;
+      }
+
+      const result = await fleetStateCall(env, fleetState, "/aot/hub/control", {
+        method: "POST",
+        body: {
+          protocol: "fleet-batch-v1",
+          kind: "del_acc",
+          target_device_ids: [execDeviceId],
+          m_code: mCode,
+          usernames: usernames,
+          telegram_chat_id: chatId
+        }
+      });
+      if (!result?.response?.ok) throw new Error(result?.data?.error || "delacc_queue_failed");
+
+      await telegram(env, "sendMessage", {
+        chat_id: chatId,
+        text: `🗑️ <b>ĐÃ XẾP LỆNH XÓA TÀI KHOẢN</b>\n📱 Thiết bị thực thi: <code>${execDeviceId}</code>\n🎯 Mục tiêu: <b>${mCode.toUpperCase()}</b>\n👤 Danh sách xóa (${usernames.length}): <code>${usernames.join(", ")}</code>\n⚡ Agent sẽ xóa khỏi <code>acc.txt</code> & <code>Data_Tong_Cookies.txt</code> và đồng bộ Google Drive ngay.`,
+        parse_mode: "HTML"
+      });
+    } catch (error) {
+      await telegram(env, "sendMessage", { chat_id: chatId, text: "Lỗi DEL_ACC: " + String(error.message || error) });
     }
     return;
   }

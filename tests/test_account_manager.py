@@ -34,6 +34,7 @@ from agent.account_manager import (
     parse_acc_sections,
     clean_banned_accounts,
     add_accounts,
+    delete_accounts,
     replace_banned_accounts_from_reserve,
     check_roblox_ban_status,
     run_full_checkban_pipeline,
@@ -791,6 +792,82 @@ ReserveUser4:Pass104
             acc_c = f.read()
         self.assertIn("Mega_Wiley623", acc_c)
         self.assertIn("JeremiahWilkerson46", acc_c)
+
+    def test_delete_accounts_specific_m_code(self):
+        """Kiểm tra xóa tài khoản chỉ định khỏi section của máy cụ thể."""
+        with open(self.acc_file, "w", encoding="utf-8") as f:
+            f.write(
+                "M77___(gag2)\n"
+                "UserKeep1:pass1:\n"
+                "UserDeleteMe:passDel:\n"
+                "M109___(gag2)\n"
+                "UserDeleteMe:passDelOtherMachine:\n"
+                "UserKeep2:pass2:\n"
+            )
+        with open(self.data_tong_file, "w", encoding="utf-8") as f:
+            f.write(
+                "UserKeep1:pass1:cookie1\n"
+                "UserDeleteMe:passDel:cookieDel\n"
+                "UserKeep2:pass2:cookie2\n"
+            )
+
+        res = delete_accounts("m77", ["UserDeleteMe"], base_dir=self.test_dir, sync_drive=False)
+        self.assertEqual(res["target"], "M77")
+        self.assertEqual(res["removed_from_acc"], 1)
+        self.assertEqual(res["removed_from_data_tong"], 1)
+
+        with open(self.acc_file, "r", encoding="utf-8") as f:
+            acc_content = f.read()
+        # UserDeleteMe in M77 was deleted, but in M109 it remains because target was m77
+        self.assertIn("M109___(gag2)\nUserDeleteMe:passDelOtherMachine:", acc_content)
+        self.assertNotIn("M77___(gag2)\nUserKeep1:pass1:\nUserDeleteMe", acc_content)
+        self.assertIn("UserKeep1:pass1:", acc_content)
+
+        with open(self.data_tong_file, "r", encoding="utf-8") as f:
+            data_content = f.read()
+        self.assertNotIn("UserDeleteMe:passDel:cookieDel", data_content)
+        self.assertIn("UserKeep1:pass1:cookie1", data_content)
+
+        # Kiểm tra backup file được tạo
+        self.assertTrue(os.path.exists(res["backup_acc"]))
+        self.assertTrue(os.path.exists(res["backup_data_tong"]))
+
+    def test_delete_accounts_all_targets(self):
+        """Kiểm tra xóa tài khoản trên tất cả các section khi target là 'all'."""
+        with open(self.acc_file, "w", encoding="utf-8") as f:
+            f.write(
+                "M77___(gag2)\n"
+                "VanessaJoseph403:cowmama@934056:\n"
+                "ShadowWoodrow820:pass2\n"
+                "M109___(gag2)\n"
+                "VanessaJoseph403:cowmama@934056:\n"
+            )
+        with open(self.data_tong_file, "w", encoding="utf-8") as f:
+            f.write(
+                "VanessaJoseph403:cowmama@934056:cookieValen\n"
+                "ShadowWoodrow820:pass2:cookieShadow\n"
+            )
+
+        res = delete_accounts("all", ["VanessaJoseph403"], base_dir=self.test_dir, sync_drive=False)
+        self.assertEqual(res["removed_from_acc"], 2)
+        self.assertEqual(res["removed_from_data_tong"], 1)
+
+        with open(self.acc_file, "r", encoding="utf-8") as f:
+            acc_content = f.read()
+        self.assertNotIn("VanessaJoseph403", acc_content)
+        self.assertIn("ShadowWoodrow820", acc_content)
+
+    @patch("agent.account_manager.sync_to_google_drive")
+    def test_delete_accounts_with_drive_sync(self, mock_sync):
+        """Kiểm tra gọi đồng bộ Google Drive khi sync_drive=True."""
+        mock_sync.return_value = {"acc.txt": "OK", "Data_Tong_Cookies.txt": "OK"}
+        with open(self.acc_file, "w", encoding="utf-8") as f:
+            f.write("M77___(gag2)\nTestUser:pass:\n")
+
+        res = delete_accounts("m77", ["TestUser"], base_dir=self.test_dir, sync_drive=True)
+        mock_sync.assert_called_once()
+        self.assertEqual(res["removed_from_acc"], 1)
+        self.assertEqual(res["sync_result"], {"acc.txt": "OK", "Data_Tong_Cookies.txt": "OK"})
 
 
 if __name__ == "__main__":
