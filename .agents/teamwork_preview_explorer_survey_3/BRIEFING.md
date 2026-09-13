@@ -1,49 +1,49 @@
-# BRIEFING — 2026-09-12T15:36:26Z
+# BRIEFING — 2026-09-13T14:26:45Z
 
 ## Mission
-Investigate Roblox ban detection and Telegram Bot control (R1 and R4), analyzing existing code, endpoints, batching, quota caching, bot integration, CLI entrypoints, missing logic, and bugs.
+Investigate test suite (tests/run_all_tests.sh, test files, mock structures) and determine coverage and required tests for Tailscale R1-R4 compliance.
 
 ## 🔒 My Identity
 - Archetype: explorer
-- Roles: ban-detection-and-bot-explorer
+- Roles: Test Suite Harness Explorer
 - Working directory: /root/phanserver-delta/.agents/teamwork_preview_explorer_survey_3
-- Original parent: ccc9cc2f-4aeb-4347-848c-5fbfc02675da
+- Original parent: 4ba35ff1-6d39-4ef8-ab5f-ffbaa4894c40
 - Milestone: survey
 
 ## 🔒 Key Constraints
 - Read-only investigation — do NOT implement
-- Inspect Roblox ban checking implementation & endpoints (users.roblox.com/v1/usernames/users, /v1/users/{userId}), batching <= 100, Quota-Guard caching, 429 backoff, isBanned classification, on-demand requirement
-- Inspect Telegram Bot integration (Preiumbot in Cloudflare Worker / Durable Objects, telegram_phanserver, /checkban, /addacc, HTML reporting)
-- Inspect CLI / script entrypoints for ban checking & account addition
-- Identify existing code, missing logic, bugs, requirements for R1 & R4
-- Produce handoff report and send_message to parent
+- Do NOT modify any code
+- Write comprehensive findings to handoff.md and report back via send_message
 
 ## Current Parent
-- Conversation ID: ccc9cc2f-4aeb-4347-848c-5fbfc02675da
-- Updated: not yet
+- Conversation ID: 4ba35ff1-6d39-4ef8-ab5f-ffbaa4894c40
+- Updated: 2026-09-13T14:21:18Z
 
 ## Investigation State
 - **Explored paths**:
-  - `ORIGINAL_REQUEST.md`, `README.md`, `AGENTS.md`, `rule.txt`, `wrangler.jsonc`, `wrangler.toml`
-  - `agent/account_manager.py`, `agent/agent.py`, `agent/config.py`
-  - `worker/worker.js`, `worker/phanserver.js`, `worker/fleet_state.js`
-  - `tests/run_all_tests.sh`, `tests/test_account_manager.py`, `tests/test_telegram_phanserver.mjs`, `tests/test_fleet_state_2pc.mjs`, `tests/test_e2e_flow.py`, `tests/verify_production_runtime.py`
-  - `deploy/agent_service.sh`
+  * `tests/run_all_tests.sh` (executed and verified all 7 suites)
+  * `agent/agent.py` (audited lines 486-630 for Tailscale logic)
+  * `agent/tests/test_agent.py` (audited lines 116-156 for Tailscale mocks)
+  * `agent/backup_manager.py` (audited `_run_as_root` and subprocess delegation)
+  * `worker/fleet_state.js` (audited `acknowledgeTailscaleControl` and Telegram formatting)
+  * `worker/phanserver.js` (audited Telegram command dispatcher)
+  * `tests/test_fleet_state_2pc.mjs` (audited Tailscale queue & ack step)
+  * `tests/test_telegram_phanserver.mjs` (audited Telegram command testing)
+  * `tests/test_account_manager.py`, `tests/test_e2e_flow.py`, `tests/verify_production_runtime.py`
 - **Key findings**:
-  1. Roblox ban detection: implemented in `agent/account_manager.py` using `users.roblox.com/v1/usernames/users` (POST, batching up to 100 with `excludeBannedUsers: False`) and `v1/users/{userId}` (GET with `ThreadPoolExecutor(max_workers=5)`).
-  2. On-demand requirement: verified 100% compliant. No cron jobs, no background scanning, no autonomous API calls in worker or agent daemon.
-  3. Quota-Guard caching: MISSING. No caching layer exists in `account_manager.py`.
-  4. Telegram Bot (Preiumbot): `/checkban` and `/addacc` commands implemented in `worker/phanserver.js` and coordinated via FleetState Durable Object in `worker/fleet_state.js`.
-  5. HTML reporting: Detailed HTML summary returned via Telegram Bot API when agent ACKs.
-  6. Identified 8 bugs/gaps including missing Quota-Guard cache, CLI argv truncation, missing `removed_from_acc` attribute, unhandled bot echo loop check, and `worker.js` undefined variable.
-- **Unexplored areas**: None within scope of R1 and R4.
+  * Root cause of phantom success: `agent.py` emits `"TRIGGERED"` with exitcode 0 when IP is empty; `status = "OPENED"` is reported, which worker broadcasts as "ĐÃ BẬT THÀNH CÔNG!".
+  * Orientation and `--user 0` gaps: `am start` lacks `--user 0`; rotation (0°/180° portrait vs 90°/270° landscape) is not handled and Toggle Switch is never clicked.
+  * Test gaps: No test exists for timeout -> FAILED, status check (CONNECTED vs DISCONNECTED), or UgPhone orientation.
+  * Mock mechanics: Python tests mock `subprocess.run` and `send_ack`; JS tests mock `globalThis.fetch`.
+  * Designed 12 Python unit tests and 4 JS integration tests for full R1-R4 coverage without touching real UgPhone.
+- **Unexplored areas**: None (survey complete).
 
 ## Key Decisions Made
-- Confirmed full test suite baseline runs with 7/7 passing suites.
-- Completed line-by-line inspection of Roblox endpoints, Telegram commands, FleetState DO, and CLI entrypoint.
+- Fully documented 5-component report in `handoff.md`.
+- Proposed introducing `tests/test_device_agent.py` with standalone test classes and integrating into `run_all_tests.sh`.
 
 ## Artifact Index
-- /root/phanserver-delta/.agents/teamwork_preview_explorer_survey_3/DISPATCH.md — record of incoming dispatch messages
-- /root/phanserver-delta/.agents/teamwork_preview_explorer_survey_3/BRIEFING.md — situational awareness
-- /root/phanserver-delta/.agents/teamwork_preview_explorer_survey_3/progress.md — progress heartbeat
-- /root/phanserver-delta/.agents/teamwork_preview_explorer_survey_3/handoff.md — final handoff report
+- /root/phanserver-delta/.agents/teamwork_preview_explorer_survey_3/DISPATCH.md — incoming dispatch log
+- /root/phanserver-delta/.agents/teamwork_preview_explorer_survey_3/BRIEFING.md — persistent state
+- /root/phanserver-delta/.agents/teamwork_preview_explorer_survey_3/progress.md — liveness heartbeat
+- /root/phanserver-delta/.agents/teamwork_preview_explorer_survey_3/handoff.md — comprehensive final report

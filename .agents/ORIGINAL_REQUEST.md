@@ -47,3 +47,47 @@ Tích hợp giao diện điều khiển qua Telegram Bot (`Preiumbot`) trong Clo
 ### Automated Testing Suite
 - [ ] Toàn bộ bộ kiểm thử tự động `tests/run_all_tests.sh` vượt qua 100% (7/7 suites: tong_hop_link, telegram_phanserver, fleet_state_2pc, delta_updater, device_agent, account_manager, e2e_flow).
 - [ ] Script kiểm chứng production `tests/verify_production_runtime.py` chạy thành công không có lỗi.
+
+## 2026-09-13T14:19:22Z
+
+Khắc phục lỗi bật Tailscale VPN trên máy ảo UgPhone (`m77`): Loại bỏ báo cáo thành công ảo (`TRIGGERED`), hỗ trợ tọa độ bấm thích ứng xoay màn hình ngang/dọc (Landscape/Portrait) trên UgPhone, và báo cáo trung thực địa chỉ IP Tailscale (`100.x.y.z`) qua bot Telegram. Tuyệt đối không thử nghiệm trực tiếp trên máy UgPhone thật mà kiểm chứng bằng unit test tự động.
+
+Working directory: /root/phanserver-delta
+Integrity mode: development
+
+## Requirements
+
+### R1. Loại bỏ báo cáo thành công ảo & Báo cáo trung thực IP Tailscale
+- Tuyệt đối không trả về `status: OPENED` hoặc báo "ĐÃ BẬT THÀNH CÔNG" khi chưa có interface VPN (`tun0`) hoặc IP mạng nội bộ Tailscale (`100.x.y.z`).
+- Khi bật thành công: Phản hồi rõ ràng kèm địa chỉ IP Tailscale (`100.x.y.z`).
+- Khi không kết nối được sau thời gian chờ (12s): Trả về `status: FAILED` kèm lý do cụ thể để bot Telegram thông báo rõ ràng cho người dùng thay vì báo ảo `TRIGGERED`.
+
+### R2. Tối ưu kích hoạt Tailscale tương thích máy ảo UgPhone (Landscape & Portrait)
+- Hỗ trợ mở app Tailscale với tham số `--user 0` (`am start --user 0 -n com.tailscale.ipn/.MainActivity`) để tương thích Android multi-user.
+- Tự động nhận diện hướng xoay màn hình UgPhone (xoay ngang 90°/270° hoặc dọc 0°/180°) để tính toán chính xác tọa độ bấm nút `Connect` (ở giữa màn hình) và công tắc Toggle Switch (ở góc trên bên phải).
+- Bổ sung kiểm tra IP trên cả `tun0` và dải IP CGNAT Tailscale `100.x.y.z`.
+- Sau khi kết nối thành công, tự động gửi phím `BACK` hoặc `HOME` để ẩn giao diện Tailscale, tránh che màn hình game.
+
+### R3. Nâng cấp xử lý lệnh `/vpn` và `/tailscale` trên Worker & Telegram Bot
+- Định dạng tin nhắn Telegram phân biệt rõ:
+  * Thành công: `🌐 ĐÃ BẬT TAILSCALE THÀNH CÔNG! IP: 100.x.y.z`.
+  * Thất bại: `❌ BẬT TAILSCALE THẤT BẠI: <Lý do cụ thể>`.
+  * Trạng thái `/vpn <device> status`: Hiển thị rõ đang CONNECTED (IP) hay DISCONNECTED.
+
+### R4. An toàn thiết bị: Nghiêm cấm test trên máy UgPhone thật
+- Toàn bộ quá trình phát triển và kiểm chứng phải được thực hiện bằng bộ mock unit test / integration test tự động trong thư mục `tests/`. Tuyệt đối không gửi lệnh test làm gián đoạn máy UgPhone thật.
+
+## Acceptance Criteria
+
+### VPN Real Status Enforcement
+- [ ] Không còn bất kỳ trường hợp nào bot Telegram báo "ĐÃ BẬT THÀNH CÔNG" khi Tailscale chưa có IP.
+- [ ] Khi chạy `CONTROL_TAILSCALE` ở chế độ `on` mà không có IP `tun0`/`100.x.y.z`, kết quả trả về `status: "FAILED"`.
+- [ ] Khi có IP, kết quả trả về `status: "OPENED"` và chi tiết chứa tiền tố `CONNECTED: 100.`.
+
+### Telegram Message Format
+- [ ] Tin nhắn Telegram hiển thị chính xác địa chỉ IP Tailscale `100.x.y.z` khi kết nối thành công.
+- [ ] Tin nhắn Telegram hiển thị lý do lỗi rõ ràng khi không kết nối được.
+
+### Automated Test Suite
+- [ ] Bộ kiểm thử `tests/test_device_agent.py` hoặc test chuyên biệt cho Tailscale kiểm chứng đầy đủ các kịch bản: Connect thành công có IP, Timeout không có IP (báo FAILED), Disconnect, Status check.
+- [ ] Toàn bộ test suite `bash tests/run_all_tests.sh` vượt qua 100%.

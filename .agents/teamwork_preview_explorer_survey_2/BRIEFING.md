@@ -1,7 +1,7 @@
-# BRIEFING — 2026-09-12T15:40:00Z
+# BRIEFING — 2026-09-13T14:25:00Z
 
 ## Mission
-Investigate storage and account management implementation in phanserver-delta (local storage, Google Drive sync, Rule 34, account replacement, backup retention, cookies).
+Investigate Telegram Bot and Worker handlers for /vpn and /tailscale commands, status queries, and message formatting.
 
 ## 🔒 My Identity
 - Archetype: explorer
@@ -9,36 +9,40 @@ Investigate storage and account management implementation in phanserver-delta (l
 - Working directory: /root/phanserver-delta/.agents/teamwork_preview_explorer_survey_2
 - Original parent: ccc9cc2f-4aeb-4347-848c-5fbfc02675da
 - Milestone: survey
+- Current caller parent: 4ba35ff1-6d39-4ef8-ab5f-ffbaa4894c40
+- Sub-milestone: vpn_tailscale_command_explorer
 
 ## 🔒 Key Constraints
 - Read-only investigation — do NOT implement
 - Adhere strictly to file workspace convention (only write to our own folder)
 - Self-contained 5-component handoff report
+- Do NOT test on real UgPhone devices (R4)
+- Focus on Telegram Bot & Worker endpoints, command parsing, dispatch, and message formatting (R3)
 
 ## Current Parent
-- Conversation ID: ccc9cc2f-4aeb-4347-848c-5fbfc02675da
-- Updated: 2026-09-12T15:36:26Z
+- Conversation ID: 4ba35ff1-6d39-4ef8-ab5f-ffbaa4894c40
+- Updated: 2026-09-13T14:21:18Z
 
 ## Investigation State
 - **Explored paths**:
-  - `ORIGINAL_REQUEST.md`, `rule.txt` (Rule 34 SSOT)
-  - `agent/account_manager.py`, `agent/agent.py`, `agent/config.py`, `agent/backup_manager.py`
-  - `worker/phanserver.js`, `worker/fleet_state.js`
-  - `/storage/emulated/0/Download/Shouko/` (acc.txt, Data_Tong_Cookies.txt, acc_bi_ban.txt, nhat_ky_ban.txt, ZeroPoint_AIO.py)
-  - Google Drive (`gdrive:`) via `rclone lsf gdrive: --format "sip"`
-  - Test suites: `tests/test_account_manager.py`, `tests/test_e2e_flow.py`, `tests/run_all_tests.sh`, `tests/verify_production_runtime.py`, `tests/test_fleet_state_2pc.mjs`, `tests/test_telegram_phanserver.mjs`
+  - `worker/phanserver.js` (lines 489-533, 556)
+  - `worker/fleet_state.js` (lines 382-389, 916-996, 1560-1580)
+  - `worker/worker.js` (lines 79-97)
+  - `agent/agent.py` (lines 486-620, 787-848)
+  - `tests/test_telegram_phanserver.mjs` (lines 283-310)
+  - `tests/test_fleet_state_2pc.mjs` (lines 292-316)
+  - `agent/tests/test_agent.py` (lines 115-160)
+  - `rule.txt` (lines 289-293)
 - **Key findings**:
-  - Confirmed 7/7 test suites and verify_production_runtime pass.
-  - Confirmed exact File IDs on Google Drive: `12oxXXlSPvHbB0YRUMQcHhLHiE4gemiVg` for acc.txt, `1k8B2Vkdu-w3-K-O92vMeC1HQbKGaZb0B` for Data_Tong_Cookies.txt.
-  - Identified that `acc_du_phong.txt` reserve replacement is completely missing from `account_manager.py`.
-  - Identified that Quota-Guard Cache is missing in `account_manager.py`.
-  - Identified Rule 34 post-sync File ID verification gate is missing from `sync_to_google_drive()`.
-  - Found 8 concrete bugs and gaps across parsing, backups, target filtering, and reporting.
+  - Located Telegram command parser in `worker/phanserver.js`: handles `/vpn` and `/tailscale`, dispatches `control_tailscale` to FleetState DO.
+  - Located Durable Object queue handler `queueControlTailscale()` and ACK handler `acknowledgeTailscaleControl()` in `worker/fleet_state.js`.
+  - Discovered root cause of "fake success": `agent.py` outputs `TRIGGERED` with exit code 0 when IP lookup fails; DO treats `status === "OPENED"` as success regardless of missing IP.
+  - Formulated strict message formatting and status detection for R3 (Success with IP, Failure with reason, Status showing CONNECTED vs DISCONNECTED).
 - **Unexplored areas**: None within scope.
 
 ## Key Decisions Made
-- Confirmed full forensic evidence chain across local storage, cloud Drive, worker Durable Object, and agent runtime.
-- Formulated precise remediation recommendations for the upcoming implementation phase.
+- Fully documented the end-to-end command flow: Telegram -> Worker -> FleetState DO -> Device Heartbeat -> Device Agent -> Device ACK -> FleetState DO -> Telegram Notification.
+- Designed exact response formatting specifications and validation logic for `acknowledgeTailscaleControl()`.
 
 ## Artifact Index
 - /root/phanserver-delta/.agents/teamwork_preview_explorer_survey_2/DISPATCH.md — Dispatch log

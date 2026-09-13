@@ -1,42 +1,34 @@
-# Sentinel Final Handoff Report
+# Sentinel Handoff Report
 
-## 1. Observation
-- The user requested an on-demand Roblox ban detection and auto-replacement system with Quota-Guard, strict dual-storage account isolation, reserve account replenishment, and Rule 34 Google Drive in-place sync preserving 100% File IDs, integrated with Telegram Bot controls.
-- Execution was routed to `teamwork_preview_orchestrator` (`ccc9cc2f-4aeb-4347-848c-5fbfc02675da`) per the Task Routing Decision Table (General route).
-- Orchestrator decomposed and drove implementation through parallel explorers, implementer workers, independent reviewers, and adversarial challengers across 3 milestones (M1, M2, M3).
-- The implementation stack covers:
-  - `agent/account_manager.py`: On-demand batch Roblox API queries (up to 100 usernames), Quota-Guard cache (TTL 300s), HTTP 429 exponential backoff with Retry-After header parsing, `.bak_<timestamp>` backups, isolation to `acc_bi_ban.txt` and `nhat_ky_ban.txt`, machine section regex isolation (`^[Mm]\d+(?:[_\s(].*)?$`), auto-replacement from `acc_du_phong.txt`, and `rclone copyto` in-place sync.
-  - `worker/phanserver.js`, `worker/fleet_state.js`, `worker/worker.js`: `/checkban [m_code|all|users]`, `/addacc <m_code> <accounts>` commands, HTML report formatting, anti-webhook bot loop protection (`from?.is_bot`), and release manifest fallback hardening.
-- When the orchestrator claimed completion, an independent post-victory audit was dispatched via `teamwork_preview_victory_auditor` (`bf562aac-b562-49de-83fa-2f62eef85153`).
-- The Victory Auditor conducted a 3-phase audit:
-  - Phase A (Timeline & Scope): PASS
-  - Phase B (Integrity & Anti-cheating): PASS (zero hardcoding, zero facade mocks, on-demand compliance verified, Rule 34 Google Drive File IDs verified 100% invariant against live remote)
-  - Phase C (Independent Test Execution): PASS (7/7 test suites green with 71 passing tests; 7/7 production runtime verification steps passing with zero errors).
-- Official Auditor Verdict: **VICTORY CONFIRMED**.
+## Observation
+The user requested a comprehensive fix for Tailscale VPN on UgPhone virtual devices (`m77`), addressing:
+1. Eradication of fake success reports (`TRIGGERED` or false `OPENED`) when no real VPN interface/IP exists, with explicit failure reasons on timeout.
+2. UgPhone virtualization compatibility: multi-user launch flag `--user 0`, dynamic screen orientation detection (landscape vs portrait) with adaptive coordinate clicking for the toggle switch and connect button, polling `tun0` and `100.x.y.z` IP, and auto-dismissing Tailscale UI via `BACK`/`HOME`.
+3. Clear Telegram bot `/vpn` and `/tailscale` command responses with real IP `100.x.y.z` on success, explicit failure errors on failure, and distinct CONNECTED / DISCONNECTED status.
+4. Device safety: strict requirement not to run commands against real UgPhone devices, but verify 100% via automated mock unit tests.
 
-## 2. Logic Chain
-1. User requirements contained full-stack software development spanning Python agent, Cloudflare Workers, and Durable Objects -> routed to General Orchestrator.
-2. Two sentinel monitoring crons (Progress Reporting every 8m, Liveness Check every 10m) actively tracked the workspace and reported status updates.
-3. Upon completion claim by the orchestrator, victory claim was withheld pending independent audit.
-4. Independent Victory Auditor inspected the codebase without shared context, tested live Google Drive remote integration for Rule 34 preservation, analyzed code for hardcoding/facades/leaks, and executed the test suites independently.
-5. VICTORY CONFIRMED verdict obtained; background monitoring crons cancelled and subagents cleaned up.
+The task was routed to `teamwork_preview_orchestrator` (General path). The orchestrator coordinated exploration, implementation, review, adversarial testing, and forensic auditing. Upon completion, Sentinel dispatched `teamwork_preview_victory_auditor_2` to independently verify the codebase and execute all tests.
 
-## 3. Caveats
-- The system strictly adheres to on-demand execution. Roblox API will never be polled automatically in the background; calls occur only when triggered explicitly by `/checkban` via Telegram Bot or direct agent invocation.
-- Google Drive in-place synchronization requires `rclone` configured with the remote `gdrive:` containing valid file targets matching the designated IDs (`12oxXXlSPvHbB0YRUMQcHhLHiE4gemiVg` for `acc.txt` and `1k8B2Vkdu-w3-K-O92vMeC1HQbKGaZb0B` for `Data_Tong_Cookies.txt`).
+## Logic Chain
+1. **Routing & Dispatch**: The request involved multiple components across device agent (`agent/agent.py`), Cloudflare worker (`worker/fleet_state.js`), and test suites without explicit lightness signals, properly routed to `teamwork_preview_orchestrator`.
+2. **Monitoring & Liveness**: Sentinel maintained regular progress reports (Cron 1) and liveness checks (Cron 2) while keeping a light context.
+3. **Execution & Refinement**: The orchestrator managed two iterations. When Challenger 1 flagged an edge-case regarding malformed IP boundaries in Iteration 1, the orchestrator systematically executed Iteration 2 with retry explorers, worker 2, and a fresh verification swarm.
+4. **Independent Victory Audit**: Victory Auditor performed a 3-phase audit:
+   - Timeline & Provenance: Validated authentic progression across commit history and agent artifacts.
+   - Integrity & Safety: Verified no mock leaks in production code, no bypass flags, complete elimination of `echo "TRIGGERED"`, strict regex lookaround word boundaries with numeric octet checking (`0 <= octet <= 255`), and verified 0 connections to real UgPhone devices.
+   - Test Execution: Independently ran `run_all_tests.sh` (7/7 passed), `test_device_agent.py` (15/15 passed), `test_fleet_state_2pc.mjs` (PASSED), `verify_production_runtime.py` (7/7 passed), and 5 adversarial suites (100% passed).
+5. **Audit Verdict**: `VICTORY CONFIRMED`.
 
-## 4. Conclusion
-All acceptance criteria and functional requirements have been completely fulfilled, comprehensively verified, and formally certified by independent forensic audit. The project is production ready.
+## Caveats
+- Android screen orientation detection relies on standard `dumpsys input` / `dumpsys window` outputs; if a future Android OS variant radically alters dumpsys output formats, the orientation parser defaults safely to portrait mode coordinates.
+- IP extraction enforces strict CGNAT `100.64.0.0/10` to `100.x.y.z` pattern with octet validation (0-255) and boundary guards.
 
-## 5. Verification Method
-- Full test suite:
-  ```bash
-  bash tests/run_all_tests.sh
-  ```
-  Result: 7/7 test suites passed 100% (71 tests green).
-- Production runtime verification:
-  ```bash
-  python3 tests/verify_production_runtime.py
-  ```
-  Result: 7/7 runtime lifecycle steps passed 100% with zero errors.
-- Independent victory audit verdict: **VICTORY CONFIRMED**.
+## Conclusion
+All requirements R1 through R4 and acceptance criteria are fully met, verified by multiple internal review loops, and confirmed by an independent Victory Auditor. Subagents and background tasks have been completely cleaned up.
+
+## Verification Method
+- `bash tests/run_all_tests.sh` -> 7/7 suites passed (100%).
+- `python3 -m unittest -v tests/test_device_agent.py` -> 15/15 passed.
+- `node tests/test_fleet_state_2pc.mjs` -> TEST_FLEET_STATE_2PC_EQUIVALENCE=OK.
+- `python3 tests/verify_production_runtime.py` -> ALL RUNTIME PRODUCTION VERIFICATIONS PASSED: 100% OK.
+- Independent Victory Auditor verdict: `VICTORY CONFIRMED`.

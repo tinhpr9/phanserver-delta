@@ -148,6 +148,185 @@ def send_ack(
     return send_report(ack_url, secret, payload)
 
 
+def validate_tailscale_cgnat_ip(ip: Optional[str]) -> bool:
+    """Validate if an IP string is a valid Tailscale CGNAT IP (100.x.y.z where octets are 0-255)."""
+    if not ip or not isinstance(ip, str):
+        return False
+    m = re.match(r"^100\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$", ip.strip())
+    if not m:
+        return False
+    octets = [int(g) for g in m.groups()]
+    return all(0 <= o <= 255 for o in octets)
+
+
+def compute_screen_coordinates(width: int, height: int, rotation: int = 0) -> dict[str, Any]:
+    """
+    Computes adaptive touch coordinates for Tailscale based on screen resolution and rotation.
+    rotation: 0 (portrait 0°), 1 (landscape 90°), 2 (portrait 180°), 3 (landscape 270°).
+    If rotation is 0/2 but width > height, it is treated as landscape.
+    """
+    min_d = min(int(width), int(height))
+    max_d = max(int(width), int(height))
+    is_landscape = (rotation in (1, 3)) or (rotation not in (1, 3) and int(width) > int(height))
+    if is_landscape:
+        w = max_d
+        h = min_d
+        toggle_x = int(w * 0.92)
+        toggle_y = int(h * 0.12)
+    else:
+        w = min_d
+        h = max_d
+        toggle_x = int(w * 0.88)
+        toggle_y = int(h * 0.08)
+    center_x = int(w / 2)
+    center_y = int(h / 2)
+    return {
+        "is_landscape": is_landscape,
+        "width": w,
+        "height": h,
+        "toggle_x": toggle_x,
+        "toggle_y": toggle_y,
+        "center_x": center_x,
+        "center_y": center_y,
+    }
+
+
+def build_tailscale_command(mode: str = "on") -> str:
+    """Generate shell script command to control Tailscale on Android/UgPhone."""
+    mode = str(mode or "on").lower()
+    if mode == "off":
+        return """
+am broadcast --user 0 -a com.tailscale.ipn.DISCONNECT_VPN -n com.tailscale.ipn/.IPNReceiver >/dev/null 2>&1 || true
+am broadcast --user 0 -a com.tailscale.ipn.DISCONNECT_VPN -p com.tailscale.ipn >/dev/null 2>&1 || true
+cmd statusbar click-tile com.tailscale.ipn/.QuickToggleService >/dev/null 2>&1 || true
+settings delete secure always_on_vpn_app >/dev/null 2>&1 || true
+am force-stop --user 0 com.tailscale.ipn >/dev/null 2>&1 || true
+am force-stop com.tailscale.ipn >/dev/null 2>&1 || true
+echo "DISCONNECTED"
+"""
+    elif mode == "status":
+        return """
+IP=$(ip -4 addr show dev tun0 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d'/' -f1 | head -n 1)
+if [ -z "$IP" ]; then
+    IP=$(ip -4 addr show 2>/dev/null | grep -oE '100\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}' | head -n 1)
+fi
+
+if [ -n "$IP" ]; then
+    echo "CONNECTED: $IP"
+else
+    echo "DISCONNECTED"
+fi
+"""
+    else:
+        # mode == "on"
+        return """
+settings put secure always_on_vpn_app com.tailscale.ipn >/dev/null 2>&1 || true
+settings put secure always_on_vpn_lockdown 0 >/dev/null 2>&1 || true
+am broadcast --user 0 -a com.tailscale.ipn.CONNECT_VPN -n com.tailscale.ipn/.IPNReceiver >/dev/null 2>&1 || true
+am broadcast --user 0 -a com.tailscale.ipn.CONNECT_VPN -p com.tailscale.ipn >/dev/null 2>&1 || true
+cmd statusbar click-tile com.tailscale.ipn/.QuickToggleService >/dev/null 2>&1 || true
+am start --user 0 -n com.tailscale.ipn/.MainActivity >/dev/null 2>&1 || true
+sleep 1
+
+IP=$(ip -4 addr show dev tun0 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d'/' -f1 | head -n 1)
+if [ -z "$IP" ]; then
+    IP=$(ip -4 addr show 2>/dev/null | grep -oE '100\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}' | head -n 1)
+fi
+
+if [ -z "$IP" ]; then
+    ROTATION=$(dumpsys input 2>/dev/null | grep -m 1 'SurfaceOrientation' | awk -F':' '{print $2}' | tr -d ' \\r\\n')
+    if [ -z "$ROTATION" ]; then
+        ROTATION=$(dumpsys window 2>/dev/null | grep -m 1 -E 'mCurrentRotation|mDisplayOrientation|rotation=' | grep -oE '[0-3]' | head -n 1)
+    fi
+    [ -z "$ROTATION" ] && ROTATION=0
+
+    RAW_SIZE=$(wm size 2>/dev/null | tail -n 1 | awk '{print $NF}')
+    DIM_W=$(echo "$RAW_SIZE" | cut -d'x' -f1)
+    DIM_H=$(echo "$RAW_SIZE" | cut -d'x' -f2)
+
+    if [ -n "$DIM_W" ] && [ -n "$DIM_H" ] && [ "$DIM_W" -gt 0 ] 2>/dev/null; then
+        if [ "$DIM_W" -gt "$DIM_H" ]; then
+            MAX_D="$DIM_W"
+            MIN_D="$DIM_H"
+        else
+            MAX_D="$DIM_H"
+            MIN_D="$DIM_W"
+        fi
+    else
+        MIN_D=720
+        MAX_D=1280
+    fi
+
+    if [ "$ROTATION" -eq 1 ] || [ "$ROTATION" -eq 3 ]; then
+        WIDTH="$MAX_D"
+        HEIGHT="$MIN_D"
+        TOGGLE_X=$((WIDTH * 92 / 100))
+        TOGGLE_Y=$((HEIGHT * 12 / 100))
+    else
+        WIDTH="$MIN_D"
+        HEIGHT="$MAX_D"
+        TOGGLE_X=$((WIDTH * 88 / 100))
+        TOGGLE_Y=$((HEIGHT * 8 / 100))
+    fi
+    CENTER_X=$((WIDTH / 2))
+    CENTER_Y=$((HEIGHT / 2))
+
+    DUMP_XML="/data/local/tmp/uidump.xml"
+    rm -f "$DUMP_XML"
+    uiautomator dump "$DUMP_XML" >/dev/null 2>&1 || true
+    CLICKED=0
+    if [ -f "$DUMP_XML" ]; then
+        COORDS=$(grep -E 'text="(Connect|OK|Tiếp tục|Kết nối|Allow|Cho phép)"' "$DUMP_XML" | grep -o 'bounds="\\[[0-9]*,[0-9]*\\]\\[[0-9]*,[0-9]*\\]"' | head -n 1 | sed 's/bounds="//; s/"//; s/\\]\\[/,/; s/\\[//; s/\\]//')
+        if [ -n "$COORDS" ]; then
+            X1=$(echo "$COORDS" | cut -d',' -f1)
+            Y1=$(echo "$COORDS" | cut -d',' -f2)
+            X2=$(echo "$COORDS" | cut -d',' -f3)
+            Y2=$(echo "$COORDS" | cut -d',' -f4)
+            TAP_X=$(( (X1 + X2) / 2 ))
+            TAP_Y=$(( (Y1 + Y2) / 2 ))
+            input tap "$TAP_X" "$TAP_Y" >/dev/null 2>&1 || true
+            CLICKED=1
+        fi
+    fi
+
+    input tap "$TOGGLE_X" "$TOGGLE_Y" >/dev/null 2>&1 || true
+    input tap "$CENTER_X" "$CENTER_Y" >/dev/null 2>&1 || true
+    input keyevent KEYCODE_TAB >/dev/null 2>&1 || true
+    input keyevent KEYCODE_ENTER >/dev/null 2>&1 || true
+    input keyevent KEYCODE_DPAD_CENTER >/dev/null 2>&1 || true
+fi
+
+for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    IP=$(ip -4 addr show dev tun0 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d'/' -f1 | head -n 1)
+    if [ -z "$IP" ]; then
+        IP=$(ip -4 addr show 2>/dev/null | grep -oE '100\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}' | head -n 1)
+    fi
+    if [ -n "$IP" ]; then
+        break
+    fi
+    if [ "$i" -eq 4 ] || [ "$i" -eq 8 ]; then
+        if [ -n "$TOGGLE_X" ] && [ -n "$CENTER_X" ]; then
+            input tap "$TOGGLE_X" "$TOGGLE_Y" >/dev/null 2>&1 || true
+            input tap "$CENTER_X" "$CENTER_Y" >/dev/null 2>&1 || true
+            input keyevent KEYCODE_ENTER >/dev/null 2>&1 || true
+        fi
+    fi
+    sleep 1
+done
+
+if [ -n "$IP" ]; then
+    input keyevent KEYCODE_BACK >/dev/null 2>&1 || true
+    sleep 0.5
+    input keyevent KEYCODE_HOME >/dev/null 2>&1 || true
+    echo "CONNECTED: $IP"
+    exit 0
+else
+    echo "vpn_timeout_no_ip: Timeout 12s không nhận được IP Tailscale (100.x.y.z)" >&2
+    exit 1
+fi
+"""
+
+
 def handle_incoming_batch_action(
     message: dict[str, Any],
     device_id: str,
@@ -506,105 +685,57 @@ def handle_incoming_batch_action(
                     _run_as_root = None
 
             mode = str(message.get("mode") or "on").lower()
-            if mode == "off":
-                cmd = """
-                am broadcast -a com.tailscale.ipn.DISCONNECT_VPN -n com.tailscale.ipn/.IPNReceiver >/dev/null 2>&1 || true
-                am broadcast -a com.tailscale.ipn.DISCONNECT_VPN -p com.tailscale.ipn >/dev/null 2>&1 || true
-                cmd statusbar click-tile com.tailscale.ipn/.QuickToggleService >/dev/null 2>&1 || true
-                settings delete secure always_on_vpn_app >/dev/null 2>&1 || true
-                am force-stop com.tailscale.ipn >/dev/null 2>&1 || true
-                echo "DISCONNECTED"
-                """
-            elif mode == "status":
-                cmd = """
-                IP=$(ip addr show dev tun0 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d'/' -f1)
-                if [ -n "$IP" ]; then
-                    echo "CONNECTED: $IP"
-                else
-                    if pidof com.tailscale.ipn >/dev/null 2>&1; then
-                        echo "RUNNING (DISCONNECTED)"
-                    else
-                        echo "STOPPED"
-                    fi
-                fi
-                """
-            else:
-                # default: "on"
-                cmd = """
-                settings put secure always_on_vpn_app com.tailscale.ipn >/dev/null 2>&1 || true
-                settings put secure always_on_vpn_lockdown 0 >/dev/null 2>&1 || true
-                am broadcast -a com.tailscale.ipn.CONNECT_VPN -n com.tailscale.ipn/.IPNReceiver >/dev/null 2>&1 || true
-                am broadcast -a com.tailscale.ipn.CONNECT_VPN -p com.tailscale.ipn >/dev/null 2>&1 || true
-                cmd statusbar click-tile com.tailscale.ipn/.QuickToggleService >/dev/null 2>&1 || true
-                am start -n com.tailscale.ipn/.MainActivity >/dev/null 2>&1 || true
-                sleep 1
-
-                IP=$(ip addr show dev tun0 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d'/' -f1)
-                if [ -z "$IP" ]; then
-                    DUMP_XML="/data/local/tmp/uidump.xml"
-                    rm -f "$DUMP_XML"
-                    uiautomator dump "$DUMP_XML" >/dev/null 2>&1 || true
-                    CLICKED=0
-                    if [ -f "$DUMP_XML" ]; then
-                        COORDS=$(grep -E 'text="(Connect|OK|Tiếp tục|Kết nối|Allow|Cho phép)"' "$DUMP_XML" | grep -o 'bounds="\[[0-9]*,[0-9]*\]\[[0-9]*,[0-9]*\]"' | head -n 1 | sed 's/bounds="//; s/"//; s/\]\[/,/; s/\[//; s/\]//')
-                        if [ -n "$COORDS" ]; then
-                            X1=$(echo "$COORDS" | cut -d',' -f1)
-                            Y1=$(echo "$COORDS" | cut -d',' -f2)
-                            X2=$(echo "$COORDS" | cut -d',' -f3)
-                            Y2=$(echo "$COORDS" | cut -d',' -f4)
-                            TAP_X=$(( (X1 + X2) / 2 ))
-                            TAP_Y=$(( (Y1 + Y2) / 2 ))
-                            input tap "$TAP_X" "$TAP_Y" >/dev/null 2>&1 || true
-                            CLICKED=1
-                        fi
-                    fi
-
-                    if [ "$CLICKED" -eq 0 ]; then
-                        WIDTH=$(wm size 2>/dev/null | awk '{print $NF}' | cut -d'x' -f1)
-                        HEIGHT=$(wm size 2>/dev/null | awk '{print $NF}' | cut -d'x' -f2)
-                        if [ -n "$WIDTH" ] && [ -n "$HEIGHT" ] && [ "$WIDTH" -gt 0 ] 2>/dev/null; then
-                            CX=$((WIDTH / 2))
-                            CY=$((HEIGHT * 4 / 5))
-                            input tap "$CX" "$CY" >/dev/null 2>&1 || true
-                            input tap "$CX" "$((HEIGHT / 2))" >/dev/null 2>&1 || true
-                        fi
-                        input keyevent KEYCODE_TAB >/dev/null 2>&1 || true
-                        input keyevent KEYCODE_ENTER >/dev/null 2>&1 || true
-                        input keyevent KEYCODE_DPAD_CENTER >/dev/null 2>&1 || true
-                    fi
-                fi
-
-                for i in 1 2 3 4 5; do
-                    IP=$(ip addr show dev tun0 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d'/' -f1)
-                    if [ -n "$IP" ]; then
-                        break
-                    fi
-                    sleep 1
-                done
-
-                if [ -n "$IP" ]; then
-                    # Ẩn giao diện Tailscale để tránh che khuất màn hình game/Termux
-                    input keyevent KEYCODE_BACK >/dev/null 2>&1 || true
-                    echo "CONNECTED: $IP"
-                else
-                    echo "TRIGGERED"
-                fi
-                """
+            cmd = build_tailscale_command(mode)
 
             if _run_as_root:
-                res = _run_as_root(cmd, timeout=20)
+                res = _run_as_root(cmd, timeout=30)
                 success = res.returncode == 0
                 stdout_text = res.stdout.strip()
-                reason = None if success else res.stderr.strip()
+                reason = None if success else (res.stderr.strip() or "vpn_timeout_no_ip")
             else:
-                proc = subprocess.run(["sh", "-c", cmd], capture_output=True, text=True, timeout=20)
+                proc = subprocess.run(["sh", "-c", cmd], capture_output=True, text=True, timeout=30)
                 success = proc.returncode == 0
                 stdout_text = proc.stdout.strip()
-                reason = None if success else proc.stderr.strip()
+                reason = None if success else (proc.stderr.strip() or "vpn_timeout_no_ip")
 
-            status = "OPENED" if success else "FAILED"
-            details = stdout_text if stdout_text else ("OK" if success else None)
-            result = {"status": status, "executed": success, "reason": reason, "details": details}
+            # Strict status validation to prevent phantom successes (R1)
+            tailscale_ip_pattern = r"(?<![0-9a-zA-Z.])\b100\.\d{1,3}\.\d{1,3}\.\d{1,3}\b(?![0-9a-zA-Z./:])"
+            if mode == "on":
+                ip_match = re.search(tailscale_ip_pattern, stdout_text)
+                is_valid_ip = False
+                if ip_match:
+                    is_valid_ip = validate_tailscale_cgnat_ip(ip_match.group(0))
+
+                if success and stdout_text.startswith("CONNECTED:") and is_valid_ip:
+                    status = "OPENED"
+                    executed = True
+                    details = stdout_text
+                    reason = None
+                else:
+                    status = "FAILED"
+                    executed = False
+                    details = None
+                    reason = reason or "vpn_timeout_no_ip: Timeout 12s không nhận được IP Tailscale (100.x.y.z)"
+            elif mode == "status":
+                status = "OPENED"
+                executed = True
+                ip_match = re.search(tailscale_ip_pattern, stdout_text)
+                if success and ip_match and validate_tailscale_cgnat_ip(ip_match.group(0)):
+                    details = f"CONNECTED: {ip_match.group(0)}"
+                else:
+                    details = "DISCONNECTED"
+                reason = None
+            elif mode == "off":
+                status = "OPENED" if success else "FAILED"
+                executed = success
+                details = stdout_text if success else None
+                reason = None if success else (reason or "vpn_disconnect_failed")
+            else:
+                status = "OPENED" if success else "FAILED"
+                executed = success
+                details = stdout_text
+
+            result = {"status": status, "executed": executed, "reason": reason, "details": details}
         except Exception as e:
             result = {"status": "FAILED", "executed": False, "reason": str(e)[:160], "details": None}
 

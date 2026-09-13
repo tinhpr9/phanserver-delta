@@ -1,7 +1,7 @@
-# BRIEFING — 2026-09-12T15:40:00Z
+# BRIEFING — 2026-09-13T14:25:00Z
 
 ## Mission
-Investigate test harness, test files under tests/, and verify_production_runtime.py to analyze test execution, dependencies, mocks, pass/fail status, and missing implementations.
+Investigate Tailscale VPN device control, orientation detection, coordinate computation, IP/interface validation, and timeout handling to answer all questions in context.md.
 
 ## 🔒 My Identity
 - Archetype: Explorer
@@ -9,54 +9,46 @@ Investigate test harness, test files under tests/, and verify_production_runtime
 - Working directory: /root/phanserver-delta/.agents/teamwork_preview_explorer_survey_1
 - Original parent: ccc9cc2f-4aeb-4347-848c-5fbfc02675da
 - Milestone: Survey & Test Harness Diagnosis
+- Roles (2026-09-13): Tailscale Device Agent Explorer, VPN Automation Investigator
+- Parent (2026-09-13): 4ba35ff1-6d39-4ef8-ab5f-ffbaa4894c40
+- Milestone (2026-09-13): Tailscale Device Agent & UgPhone Investigation
 
 ## 🔒 Key Constraints
 - Read-only investigation — do NOT implement
 - Do NOT modify source code or tests (investigation only)
 - Write metadata/reports only to own folder /root/phanserver-delta/.agents/teamwork_preview_explorer_survey_1
 - Do not place source, tests, or data files in .agents/
+- Absolutely NO direct testing on real UgPhone devices (R4: only unit/mock tests)
 
 ## Current Parent
-- Conversation ID: ccc9cc2f-4aeb-4347-848c-5fbfc02675da
-- Updated: 2026-09-12T15:40:00Z
+- Conversation ID: 4ba35ff1-6d39-4ef8-ab5f-ffbaa4894c40
+- Updated: 2026-09-13T14:25:00Z
 
 ## Investigation State
 - **Explored paths**:
-  - `/root/phanserver-delta/.agents/ORIGINAL_REQUEST.md`
-  - `/root/phanserver-delta/.agents/teamwork_preview_orchestrator_1/plan.md`
+  - `/root/phanserver-delta/agent/agent.py` (lines 486–620)
+  - `/root/phanserver-delta/worker/fleet_state.js` (lines 916–996, 1576)
+  - `/root/phanserver-delta/worker/phanserver.js` (lines 489–533)
+  - `/root/phanserver-delta/rule.txt` (lines 289–293)
+  - `/root/phanserver-delta/agent/tests/test_agent.py` (lines 116–156)
+  - `/root/phanserver-delta/tests/test_fleet_state_2pc.mjs` (lines 292–315)
+  - `/root/phanserver-delta/tests/test_telegram_phanserver.mjs` (lines 283–309)
   - `/root/phanserver-delta/tests/run_all_tests.sh`
-  - `/root/phanserver-delta/tests/test_tong_hop_link.mjs`
-  - `/root/phanserver-delta/tests/test_telegram_phanserver.mjs`
-  - `/root/phanserver-delta/tests/test_fleet_state_2pc.mjs`
-  - `/root/phanserver-delta/delta/tests/test_delta_updater.py`
-  - `/root/phanserver-delta/delta/tests/test_https_redirect_guard.py`
-  - `/root/phanserver-delta/delta/tests/test_release_selector.py`
-  - `/root/phanserver-delta/agent/tests/test_agent.py`
-  - `/root/phanserver-delta/agent/tests/test_server_links.py`
-  - `/root/phanserver-delta/tests/test_account_manager.py`
-  - `/root/phanserver-delta/tests/test_e2e_flow.py`
   - `/root/phanserver-delta/tests/verify_production_runtime.py`
-  - `/root/phanserver-delta/agent/account_manager.py`
-  - `/root/phanserver-delta/agent/agent.py`
-  - `/root/phanserver-delta/worker/phanserver.js`
-  - `/root/phanserver-delta/worker/fleet_state.js`
-  - `/root/phanserver-delta/rule.txt`
-  - `/storage/emulated/0/Download/Shouko`
 - **Key findings**:
-  - `bash tests/run_all_tests.sh` runs 7 suites: 1. `test_tong_hop_link.mjs`, 2. `test_telegram_phanserver.mjs`, 3. `test_fleet_state_2pc.mjs`, 4. `delta/tests` (27 tests), 5. `agent/tests` (20 tests), 6. `test_account_manager.py` (5 tests), 7. `test_e2e_flow.py` (2 tests). All 7 suites pass 100%.
-  - `python3 tests/verify_production_runtime.py` executes 7 runtime steps on `/storage/emulated/0/Download/Shouko` and passes 100%.
-  - Gaps vs ORIGINAL_REQUEST.md:
-    1. Quota-Guard Cache: not implemented in `agent/account_manager.py` and not tested.
-    2. Automated Replacement from Reserve Pool (`acc_du_phong.txt`): not implemented in `agent/account_manager.py` and not tested.
-    3. Rule 34 Google Drive File ID verification: `sync_to_google_drive` is completely mocked in unit tests and not verified in `verify_production_runtime.py`.
-    4. Production runtime verification (`verify_production_runtime.py`) only exercises 2PC `server_links`, `agent_service.sh`, `UPDATE_DELTA`, and clean `sys.modules`; it has zero coverage for `account_manager.py` (check_ban, add_acc, backup, sync).
-- **Unexplored areas**: None within the scope of test harness investigation.
+  - Phantom success root cause: Shell script echoed `TRIGGERED` and exited 0 after only 5 seconds; Python interpreted exit code 0 as `status: OPENED`, causing Telegram bot to report false success.
+  - UgPhone tap failure root cause: No screen orientation check. Hardcoded `HEIGHT * 4 / 5 = 1024` on landscape mode (720px height) clicks out of screen bounds. Toggle Switch at top-right was never tapped.
+  - Missing `--user 0`: `am start -n com.tailscale.ipn/.MainActivity` lacks `--user 0` required for Android multi-user/container environments.
+  - Missing 12s timeout & CGNAT IP checks: Retry loop was only 5 seconds and only looked at `tun0`, neglecting `100.x.y.z` range across interfaces.
+  - Missing UI minimization: Only sent a single `BACK` key instead of `BACK` followed by `HOME`.
+- **Unexplored areas**: None within the scope of this investigation.
 
 ## Key Decisions Made
-- Document the exact execution environment, mocking strategies, passing baseline, and discrepancies against user requirements in `handoff.md`.
+- Fully documented all 8 questions and architectural solutions in `handoff.md`.
+- Read-only constraint preserved; zero production code or tests modified.
 
 ## Artifact Index
 - `/root/phanserver-delta/.agents/teamwork_preview_explorer_survey_1/DISPATCH.md` — Recorded dispatch instructions
 - `/root/phanserver-delta/.agents/teamwork_preview_explorer_survey_1/BRIEFING.md` — Persistent memory & status
 - `/root/phanserver-delta/.agents/teamwork_preview_explorer_survey_1/progress.md` — Liveness heartbeat & task tracking
-- `/root/phanserver-delta/.agents/teamwork_preview_explorer_survey_1/handoff.md` — Final 5-component handoff report
+- `/root/phanserver-delta/.agents/teamwork_preview_explorer_survey_1/handoff.md` — Comprehensive 5-component handoff report

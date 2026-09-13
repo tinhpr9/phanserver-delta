@@ -1,17 +1,20 @@
-# Progress — Explorer 1 (Test Harness Explorer)
+# Progress — Explorer 1 (Tailscale Device Agent Explorer)
 
-Last visited: 2026-09-12T15:40:20Z
+Last visited: 2026-09-13T14:25:00Z
 
 ## Status
-Task complete. Full survey report written to `handoff.md` and communicated to parent orchestrator via `send_message`.
+Investigation complete. All 8 questions in context.md thoroughly investigated and answered with concrete code locations, line numbers, root cause explanations, and exact repair strategies. Findings documented in handoff.md.
 
 ## Completed Steps
-- [x] Read ORIGINAL_REQUEST.md
-- [x] Initialized DISPATCH.md and BRIEFING.md
-- [x] Inspect tests/ directory structure and run_all_tests.sh
-- [x] Inspect each test suite in tests/ (tong_hop_link, telegram_phanserver, fleet_state_2pc, delta_updater, device_agent, account_manager, e2e_flow)
-- [x] Inspect tests/verify_production_runtime.py
-- [x] Run test scripts to capture runtime pass/fail status and stack traces (all 7 test suites and verify_production_runtime.py currently pass 100%)
-- [x] Identify root causes, mock setups, missing implementations, and acceptance criteria gaps (Quota-Guard Cache missing, acc_du_phong auto-replacement missing, Rule 34 File ID mock validation missing, verify_production_runtime does not exercise account manager)
-- [x] Produce synthesis and handoff.md
-- [x] Send report to parent agent via send_message
+- [x] Read ORIGINAL_REQUEST.md and context.md
+- [x] Update DISPATCH.md and BRIEFING.md
+- [x] Locate Tailscale control logic (CONTROL_TAILSCALE in agent/agent.py, worker/fleet_state.js, worker/phanserver.js)
+- [x] Analyze Tailscale launch command (absence of `--user 0` in `am start`)
+- [x] Analyze orientation detection and tap coordinates calculation (dumpsys input SurfaceOrientation 0/1/2/3, landscape vs portrait coordinate math)
+- [x] Analyze Connect button and Toggle switch tap logic (top-right for toggle switch, center for connect button)
+- [x] Analyze IP / interface verification (root cause of phantom `TRIGGERED` status OPENED, tun0 + 100.x.y.z CGNAT check)
+- [x] Analyze timeout handling (12s loop, exit 1, FAILED status, reason propagation, 30s subprocess timeout)
+- [x] Analyze BACK/HOME keys sequence (KEYCODE_BACK + KEYCODE_HOME to minimize Tailscale UI)
+- [x] Identify exact files and lines requiring modification (agent/agent.py, worker/fleet_state.js, tests/test_device_agent.py)
+- [x] Compile comprehensive findings into handoff.md
+- [ ] Send completion message to parent

@@ -43,6 +43,14 @@ export function normalizeDeviceIdList(values) {
   return result.sort(compareDeviceIds);
 }
 
+export function extractValidTailscaleIp(details) {
+  const match = String(details || "").match(/(?<![0-9a-zA-Z.])\b100\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\b(?![0-9a-zA-Z./:])/);
+  if (!match) return null;
+  const octets = [Number(match[1]), Number(match[2]), Number(match[3])];
+  if (octets.some((o) => o < 0 || o > 255 || isNaN(o))) return null;
+  return match[0];
+}
+
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
@@ -961,10 +969,33 @@ export class FleetState {
     const act = record.tailscale_actions?.[actionId];
     const device = act?.devices?.[deviceId];
     const status = String(body.status || "");
+    const mode = act?.mode || "on";
+
+    // Extract and strictly validate Tailscale CGNAT IP (100.x.y.z where octets <= 255)
+    const tailscaleIp = extractValidTailscaleIp(body.details);
+
+    // Strict success gating: mode 'on' requires valid IP and OPENED/SUCCESS status
+    let isSuccess = status === "OPENED" || status === "SUCCESS";
+    if (mode === "on") {
+      isSuccess = isSuccess && Boolean(tailscaleIp);
+    }
+
     if (device && device.status === "QUEUED") {
-      device.status = status;
-      device.executed = body.executed === true;
-      device.reason = status === "FAILED" ? String(body.reason || "device_failed").slice(0, 160) : null;
+      device.status = isSuccess ? status : "FAILED";
+      device.executed = isSuccess && body.executed === true;
+      if (!isSuccess) {
+        let reason = body.reason;
+        if (!reason) {
+          if (body.details === "TRIGGERED" || !tailscaleIp) {
+            reason = "Timeout 12s không nhận được IP Tailscale (100.x.y.z)";
+          } else {
+            reason = body.details || "device_failed";
+          }
+        }
+        device.reason = String(reason).slice(0, 160);
+      } else {
+        device.reason = null;
+      }
       device.details = body.details ? String(body.details).slice(0, 200) : null;
       device.updated_at = Date.now();
     }
@@ -975,14 +1006,44 @@ export class FleetState {
 
     const chatId = act?.telegram_chat_id || this.env?.TELEGRAM_ADMIN_USER_ID;
     if (chatId && this.env?.TELEGRAM_BOT_TOKEN) {
-      const escapeHtml = (str) => String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-      const isSuccess = status === "OPENED" || status === "SUCCESS";
-      const mode = act?.mode || "on";
-      const modeDesc = mode === "off" ? "TẮT" : (mode === "status" ? "KIỂM TRA TRẠNG THÁI" : "BẬT");
-      const details = body.details ? `\n📋 Trạng thái: <code>${escapeHtml(body.details)}</code>` : "";
-      const msg = isSuccess
-        ? `🌐 <b>ĐÃ ${modeDesc} TAILSCALE THÀNH CÔNG!</b>\n📱 Thiết bị: <code>${deviceId}</code>\n⚙️ Chế độ: <b>${mode.toUpperCase()}</b>${details}\n🔒 Mạng nội bộ Tailscale đã sẵn sàng.`
-        : `❌ <b>${modeDesc} TAILSCALE THẤT BẠI</b>\n📱 Thiết bị: <code>${deviceId}</code>\n⚠️ Lý do: ${escapeHtml(body.reason || "Lỗi thiết bị")}`;
+      const escapeHtml = (str) => String(str || "").replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      let msg = "";
+
+      if (mode === "on") {
+        if (isSuccess && tailscaleIp) {
+          msg = `🌐 <b>ĐÃ BẬT TAILSCALE THÀNH CÔNG! IP: ${tailscaleIp}</b>\n📱 Thiết bị: <code>${deviceId}</code>\n⚙️ Chế độ: <b>ON</b>\n🔒 Mạng nội bộ Tailscale đã sẵn sàng.`;
+        } else {
+          let failReason = body.reason;
+          if (!failReason) {
+            if (body.details === "TRIGGERED" || !tailscaleIp) {
+              failReason = "Timeout 12s không nhận được IP Tailscale (100.x.y.z)";
+            } else {
+              failReason = body.details || "Không thể kết nối Tailscale";
+            }
+          }
+          msg = `❌ <b>BẬT TAILSCALE THẤT BẠI: ${escapeHtml(failReason)}</b>\n📱 Thiết bị: <code>${deviceId}</code>\n⚠️ Lý do: ${escapeHtml(failReason)}`;
+        }
+      } else if (mode === "status") {
+        const isConnected = isSuccess && Boolean(tailscaleIp);
+        if (isConnected) {
+          msg = `🌐 <b>TRẠNG THÁI TAILSCALE: CONNECTED (${tailscaleIp})</b>\n📱 Thiết bị: <code>${deviceId}</code>\n📶 Trạng thái: <b>CONNECTED (${tailscaleIp})</b>\n🔒 Mạng nội bộ Tailscale đang hoạt động.`;
+        } else {
+          const rawDetail = body.details || body.reason || "Chưa kết nối";
+          msg = `⚠️ <b>TRẠNG THÁI TAILSCALE: DISCONNECTED</b>\n📱 Thiết bị: <code>${deviceId}</code>\n📶 Trạng thái: <b>DISCONNECTED</b>\n📋 Chi tiết: <code>${escapeHtml(rawDetail)}</code>`;
+        }
+      } else if (mode === "off") {
+        if (isSuccess) {
+          msg = `🌐 <b>ĐÃ TẮT TAILSCALE THÀNH CÔNG!</b>\n📱 Thiết bị: <code>${deviceId}</code>\n⚙️ Chế độ: <b>OFF</b>\n📶 Trạng thái: <b>DISCONNECTED</b>`;
+        } else {
+          const failReason = body.reason || "Lỗi thiết bị";
+          msg = `❌ <b>TẮT TAILSCALE THẤT BẠI: ${escapeHtml(failReason)}</b>\n📱 Thiết bị: <code>${deviceId}</code>\n⚠️ Lý do: ${escapeHtml(failReason)}`;
+        }
+      } else {
+        msg = isSuccess
+          ? `🌐 <b>ĐÃ ${mode.toUpperCase()} TAILSCALE THÀNH CÔNG!</b>\n📱 Thiết bị: <code>${deviceId}</code>`
+          : `❌ <b>${mode.toUpperCase()} TAILSCALE THẤT BẠI</b>\n📱 Thiết bị: <code>${deviceId}</code>\n⚠️ Lý do: ${escapeHtml(body.reason || "Lỗi thiết bị")}`;
+      }
+
       try {
         await fetch(`https://api.telegram.org/bot${this.env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
           method: "POST",
@@ -992,7 +1053,8 @@ export class FleetState {
       } catch (e) {}
     }
 
-    return json({ ok: true, action_id: actionId, device_id: deviceId, status: status || "SUCCESS" });
+    const returnStatus = (mode === "on" && !isSuccess) ? "FAILED" : (status || "SUCCESS");
+    return json({ ok: true, action_id: actionId, device_id: deviceId, status: returnStatus });
   }
 
   async queueCheckBan(record, requestedTargetIds, target = "all", options = {}) {

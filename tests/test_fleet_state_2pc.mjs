@@ -1,4 +1,4 @@
-import { FleetState } from "../worker/fleet_state.js";
+import { FleetState, extractValidTailscaleIp } from "../worker/fleet_state.js";
 
 let notifiedTelegram = null;
 const env = {
@@ -308,11 +308,172 @@ async function runTests() {
     body: JSON.stringify({ protocol: "fleet-batch-v1", batch_action: "CONTROL_TAILSCALE", device_id: "m1", action_id: tailscaleActionId, status: "OPENED", executed: true, details: "CONNECTED: 100.80.175.55" })
   }))).json();
   if (!tailscaleAck.ok || tailscaleAck.status !== "OPENED") throw new Error("CONTROL_TAILSCALE ack failed: " + JSON.stringify(tailscaleAck));
+  if (!notifiedTelegram?.text?.includes("ĐÃ BẬT TAILSCALE THÀNH CÔNG! IP: 100.80.175.55")) {
+    throw new Error("Telegram message missing real Tailscale IP format: " + notifiedTelegram?.text);
+  }
+  if (!notifiedTelegram?.text?.includes("m1")) {
+    throw new Error("Telegram message missing device ID: " + notifiedTelegram?.text);
+  }
   const afterTailscaleAck = await (await fleet.handleHeartbeat(new Request("https://localhost/report", {
     method: "POST",
     body: JSON.stringify({ device_id: "m1", device_group: "NOVA" })
   }))).json();
   if (afterTailscaleAck.command !== null) throw new Error("acknowledged CONTROL_TAILSCALE was delivered again");
+
+  // 7b. CONTROL_TAILSCALE failure / timeout reporting
+  const tsFailRes = await (await fleet.controlFleetHub(new Request("https://localhost/aot/hub/control", {
+    method: "POST",
+    body: JSON.stringify({ protocol: "fleet-batch-v1", kind: "control_tailscale", mode: "on", target_device_ids: ["m1"], telegram_chat_id: 12345 })
+  }))).json();
+  const tsFailActionId = tsFailRes.tailscale.action_id;
+  await fleet.handleHeartbeat(new Request("https://localhost/report", {
+    method: "POST",
+    body: JSON.stringify({ device_id: "m1", device_group: "NOVA" })
+  }));
+  const tsFailAck = await (await fleet.dispatchFleetAck(new Request("https://localhost/aot/ack", {
+    method: "POST",
+    body: JSON.stringify({ protocol: "fleet-batch-v1", batch_action: "CONTROL_TAILSCALE", device_id: "m1", action_id: tsFailActionId, status: "FAILED", executed: false, reason: "Timeout 12s không nhận được IP Tailscale (100.x.y.z)" })
+  }))).json();
+  if (!tsFailAck.ok || tsFailAck.status !== "FAILED") throw new Error("Expected FAILED status for timeout: " + JSON.stringify(tsFailAck));
+  if (!notifiedTelegram?.text?.includes("BẬT TAILSCALE THẤT BẠI: Timeout 12s không nhận được IP Tailscale (100.x.y.z)")) {
+    throw new Error("Telegram failure message format mismatch: " + notifiedTelegram?.text);
+  }
+
+  // 7c. CONTROL_TAILSCALE fake success elimination (TRIGGERED without IP must be rejected as FAILED)
+  const tsFakeRes = await (await fleet.controlFleetHub(new Request("https://localhost/aot/hub/control", {
+    method: "POST",
+    body: JSON.stringify({ protocol: "fleet-batch-v1", kind: "control_tailscale", mode: "on", target_device_ids: ["m1"], telegram_chat_id: 12345 })
+  }))).json();
+  const tsFakeActionId = tsFakeRes.tailscale.action_id;
+  await fleet.handleHeartbeat(new Request("https://localhost/report", {
+    method: "POST",
+    body: JSON.stringify({ device_id: "m1", device_group: "NOVA" })
+  }));
+  const tsFakeAck = await (await fleet.dispatchFleetAck(new Request("https://localhost/aot/ack", {
+    method: "POST",
+    body: JSON.stringify({ protocol: "fleet-batch-v1", batch_action: "CONTROL_TAILSCALE", device_id: "m1", action_id: tsFakeActionId, status: "OPENED", executed: true, details: "TRIGGERED" })
+  }))).json();
+  if (tsFakeAck.status !== "FAILED") throw new Error("Expected fake TRIGGERED success to be rejected as FAILED: " + JSON.stringify(tsFakeAck));
+  if (!notifiedTelegram?.text?.includes("BẬT TAILSCALE THẤT BẠI") || notifiedTelegram?.text?.includes("THÀNH CÔNG")) {
+    throw new Error("Fake TRIGGERED must not report success to Telegram: " + notifiedTelegram?.text);
+  }
+
+  // 7d. CONTROL_TAILSCALE status check connected & disconnected
+  const tsStatusRes = await (await fleet.controlFleetHub(new Request("https://localhost/aot/hub/control", {
+    method: "POST",
+    body: JSON.stringify({ protocol: "fleet-batch-v1", kind: "control_tailscale", mode: "status", target_device_ids: ["m1"], telegram_chat_id: 12345 })
+  }))).json();
+  const tsStatusActionId = tsStatusRes.tailscale.action_id;
+  await fleet.handleHeartbeat(new Request("https://localhost/report", {
+    method: "POST",
+    body: JSON.stringify({ device_id: "m1", device_group: "NOVA" })
+  }));
+  await fleet.dispatchFleetAck(new Request("https://localhost/aot/ack", {
+    method: "POST",
+    body: JSON.stringify({ protocol: "fleet-batch-v1", batch_action: "CONTROL_TAILSCALE", device_id: "m1", action_id: tsStatusActionId, status: "OPENED", executed: true, details: "CONNECTED: 100.80.175.55" })
+  }));
+  if (!notifiedTelegram?.text?.includes("TRẠNG THÁI TAILSCALE: CONNECTED (100.80.175.55)")) {
+    throw new Error("Telegram status connected format mismatch: " + notifiedTelegram?.text);
+  }
+
+  const tsStatusDisRes = await (await fleet.controlFleetHub(new Request("https://localhost/aot/hub/control", {
+    method: "POST",
+    body: JSON.stringify({ protocol: "fleet-batch-v1", kind: "control_tailscale", mode: "status", target_device_ids: ["m1"], telegram_chat_id: 12345 })
+  }))).json();
+  const tsStatusDisActionId = tsStatusDisRes.tailscale.action_id;
+  await fleet.handleHeartbeat(new Request("https://localhost/report", {
+    method: "POST",
+    body: JSON.stringify({ device_id: "m1", device_group: "NOVA" })
+  }));
+  await fleet.dispatchFleetAck(new Request("https://localhost/aot/ack", {
+    method: "POST",
+    body: JSON.stringify({ protocol: "fleet-batch-v1", batch_action: "CONTROL_TAILSCALE", device_id: "m1", action_id: tsStatusDisActionId, status: "OPENED", executed: true, details: "DISCONNECTED" })
+  }));
+  if (!notifiedTelegram?.text?.includes("TRẠNG THÁI TAILSCALE: DISCONNECTED")) {
+    throw new Error("Telegram status disconnected format mismatch: " + notifiedTelegram?.text);
+  }
+
+  // 7e. CONTROL_TAILSCALE off mode
+  const tsOffRes = await (await fleet.controlFleetHub(new Request("https://localhost/aot/hub/control", {
+    method: "POST",
+    body: JSON.stringify({ protocol: "fleet-batch-v1", kind: "control_tailscale", mode: "off", target_device_ids: ["m1"], telegram_chat_id: 12345 })
+  }))).json();
+  const tsOffActionId = tsOffRes.tailscale.action_id;
+  await fleet.handleHeartbeat(new Request("https://localhost/report", {
+    method: "POST",
+    body: JSON.stringify({ device_id: "m1", device_group: "NOVA" })
+  }));
+  await fleet.dispatchFleetAck(new Request("https://localhost/aot/ack", {
+    method: "POST",
+    body: JSON.stringify({ protocol: "fleet-batch-v1", batch_action: "CONTROL_TAILSCALE", device_id: "m1", action_id: tsOffActionId, status: "OPENED", executed: true, details: "DISCONNECTED" })
+  }));
+  if (!notifiedTelegram?.text?.includes("ĐÃ TẮT TAILSCALE THÀNH CÔNG!")) {
+    throw new Error("Telegram off format mismatch: " + notifiedTelegram?.text);
+  }
+
+  // 7f. CONTROL_TAILSCALE rejection of malformed IP octet > 255 (e.g. 100.300.1.1)
+  const tsBadOctetRes = await (await fleet.controlFleetHub(new Request("https://localhost/aot/hub/control", {
+    method: "POST",
+    body: JSON.stringify({ protocol: "fleet-batch-v1", kind: "control_tailscale", mode: "on", target_device_ids: ["m1"], telegram_chat_id: 12345 })
+  }))).json();
+  const tsBadOctetActionId = tsBadOctetRes.tailscale.action_id;
+  await fleet.handleHeartbeat(new Request("https://localhost/report", {
+    method: "POST",
+    body: JSON.stringify({ device_id: "m1", device_group: "NOVA", capabilities: ["allocate_server_2pc", "update_delta"] })
+  }));
+  notifiedTelegram = null;
+  const badOctetAck = await (await fleet.dispatchFleetAck(new Request("https://localhost/aot/ack", {
+    method: "POST",
+    body: JSON.stringify({ protocol: "fleet-batch-v1", batch_action: "CONTROL_TAILSCALE", device_id: "m1", action_id: tsBadOctetActionId, status: "OPENED", executed: true, details: "CONNECTED: 100.300.1.1" })
+  }))).json();
+  if (badOctetAck.status !== "FAILED") throw new Error("CONTROL_TAILSCALE accepted octet > 255: " + JSON.stringify(badOctetAck));
+  if (!notifiedTelegram?.text?.includes("BẬT TAILSCALE THẤT BẠI") || notifiedTelegram?.text?.includes("THÀNH CÔNG")) {
+    throw new Error("Telegram falsely reported success for invalid octet 100.300.1.1: " + notifiedTelegram?.text);
+  }
+
+  // 7g. CONTROL_TAILSCALE rejection of 4-digit octet suffix (e.g. 100.1.2.2555 - must not truncate to 100.1.2.255)
+  const ts4DigitRes = await (await fleet.controlFleetHub(new Request("https://localhost/aot/hub/control", {
+    method: "POST",
+    body: JSON.stringify({ protocol: "fleet-batch-v1", kind: "control_tailscale", mode: "on", target_device_ids: ["m1"], telegram_chat_id: 12345 })
+  }))).json();
+  const ts4DigitActionId = ts4DigitRes.tailscale.action_id;
+  await fleet.handleHeartbeat(new Request("https://localhost/report", {
+    method: "POST",
+    body: JSON.stringify({ device_id: "m1", device_group: "NOVA", capabilities: ["allocate_server_2pc", "update_delta"] })
+  }));
+  notifiedTelegram = null;
+  const fourDigitAck = await (await fleet.dispatchFleetAck(new Request("https://localhost/aot/ack", {
+    method: "POST",
+    body: JSON.stringify({ protocol: "fleet-batch-v1", batch_action: "CONTROL_TAILSCALE", device_id: "m1", action_id: ts4DigitActionId, status: "OPENED", executed: true, details: "CONNECTED: 100.1.2.2555" })
+  }))).json();
+  if (fourDigitAck.status !== "FAILED") throw new Error("CONTROL_TAILSCALE truncated 4-digit octet 100.1.2.2555: " + JSON.stringify(fourDigitAck));
+  if (notifiedTelegram?.text?.includes("100.1.2.255") || !notifiedTelegram?.text?.includes("BẬT TAILSCALE THẤT BẠI")) {
+    throw new Error("Telegram accepted truncated IP: " + notifiedTelegram?.text);
+  }
+
+  // 7h. Unit tests for extractValidTailscaleIp helper function
+  if (typeof extractValidTailscaleIp === "function") {
+    const validIPs = ["CONNECTED: 100.80.175.55", "100.64.0.1", "100.127.255.254", "100.0.0.0", "100.255.255.255"];
+    for (const ip of validIPs) {
+      if (!extractValidTailscaleIp(ip)) throw new Error("extractValidTailscaleIp failed for valid IP: " + ip);
+    }
+    const invalidIPs = [
+      "CONNECTED: 100.300.1.1",
+      "CONNECTED: 100.1.256.1",
+      "CONNECTED: 100.1.2.2555",
+      "CONNECTED: 1100.1.2.3",
+      "CONNECTED: 100.1.2.3.4",
+      "CONNECTED: .100.1.2.3",
+      "100.1.1",
+      "100.abc.1.1",
+      "TRIGGERED",
+      "",
+      null
+    ];
+    for (const ip of invalidIPs) {
+      if (extractValidTailscaleIp(ip) !== null) throw new Error("extractValidTailscaleIp accepted invalid IP: " + ip);
+    }
+  }
 
   // 8. CHECK_BAN is queued per device and acknowledged
   const checkbanRes = await (await fleet.controlFleetHub(new Request("https://localhost/aot/hub/control", {

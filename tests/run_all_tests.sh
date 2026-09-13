@@ -19,6 +19,7 @@ python3 -m unittest discover -s delta/tests
 
 echo "[5/7] Running device agent tests..."
 python3 -m unittest discover -s agent/tests
+python3 -m unittest tests/test_device_agent.py
 
 echo "[6/7] Running account manager & ban check tests..."
 pytest -q tests/test_account_manager.py
