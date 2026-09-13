@@ -398,25 +398,72 @@ def check_roblox_ban_status(usernames, max_workers=5, use_cache=True, cache_ttl=
     return results
 
 
-def pull_from_google_drive(base_dir=None) -> dict[str, str]:
-    """Tự động kéo acc.txt và Data_Tong_Cookies.txt từ Google Drive về nếu tệp trên máy bị thiếu/rỗng."""
+def pull_from_google_drive(base_dir=None, force=False) -> dict[str, str]:
+    """
+    Tự động kéo acc.txt và Data_Tong_Cookies.txt từ Google Drive về nếu tệp trên máy bị thiếu/rỗng hoặc cần làm mới.
+    Chiến lược kép:
+    1. HTTP Direct Download bằng File ID gốc (Hoạt động trên 100% môi trường Termux/Android không cần cài đặt rclone).
+    2. Fallback qua rclone copyto nếu có cấu hình rclone.
+    """
     paths = get_default_paths(base_dir)
     bdir = paths["base_dir"]
     os.makedirs(bdir, exist_ok=True)
-    rclone_bin = shutil.which("rclone") or "/data/data/com.termux/files/usr/bin/rclone" or "rclone"
     res = {}
-    if shutil.which(rclone_bin) or os.path.exists(rclone_bin):
+
+    def _http_download(fid: str, target_file: str, name: str) -> bool:
+        url = f"https://docs.google.com/uc?export=download&id={fid}"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
         try:
-            acc_f = paths["acc_file"]
-            if not os.path.exists(acc_f) or os.path.getsize(acc_f) == 0:
-                p = subprocess.run([rclone_bin, "copyto", "gdrive:acc.txt", acc_f], capture_output=True, text=True, timeout=30)
-                res["acc.txt"] = "PULLED" if p.returncode == 0 else f"ERR: {p.stderr[:80]}"
-            dt_f = paths["data_tong_file"]
-            if not os.path.exists(dt_f) or os.path.getsize(dt_f) == 0:
-                p2 = subprocess.run([rclone_bin, "copyto", "gdrive:Data_Tong_Cookies.txt", dt_f], capture_output=True, text=True, timeout=30)
-                res["Data_Tong_Cookies.txt"] = "PULLED" if p2.returncode == 0 else f"ERR: {p2.stderr[:80]}"
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = resp.read()
+                # Kiểm tra nếu Google trả về trang cảnh báo virus / download_warning đối với file lớn
+                if b"download_warning" in data or b"Google Drive - Virus scan warning" in data:
+                    text_html = data.decode("utf-8", errors="ignore")
+                    m = re.search(r'confirm=([^&"\'\s]+)', text_html)
+                    if m:
+                        confirm_token = m.group(1)
+                        conf_url = f"{url}&confirm={confirm_token}"
+                        req_conf = urllib.request.Request(conf_url, headers={"User-Agent": "Mozilla/5.0"})
+                        with urllib.request.urlopen(req_conf, timeout=30) as resp_conf:
+                            data = resp_conf.read()
+                if len(data) > 0 and b"<!DOCTYPE html>" not in data[:100]:
+                    temp_path = f"{target_file}.tmp_{int(time.time())}"
+                    with open(temp_path, "wb") as f:
+                        f.write(data)
+                    os.replace(temp_path, target_file)
+                    res[name] = f"PULLED_HTTP ({len(data)} bytes)"
+                    return True
         except Exception as e:
-            res["error"] = str(e)[:100]
+            print(f"[PULL_GDRIVE] Lỗi HTTP tải {name}: {e}", flush=True)
+        return False
+
+    acc_f = paths["acc_file"]
+    dt_f = paths["data_tong_file"]
+
+    # 1. Kéo acc.txt
+    need_acc = force or not os.path.exists(acc_f) or os.path.getsize(acc_f) == 0
+    if need_acc:
+        if not _http_download(RULE34_ACC_FILE_ID, acc_f, "acc.txt"):
+            rclone_bin = shutil.which("rclone") or "/data/data/com.termux/files/usr/bin/rclone" or "/usr/bin/rclone" or "rclone"
+            if shutil.which(rclone_bin) or os.path.exists(rclone_bin):
+                try:
+                    p = subprocess.run([rclone_bin, "copyto", "gdrive:acc.txt", acc_f], capture_output=True, text=True, timeout=30)
+                    res["acc.txt"] = "PULLED_RCLONE" if p.returncode == 0 else f"ERR: {p.stderr[:80]}"
+                except Exception as e:
+                    res["acc.txt"] = f"ERR: {e}"
+
+    # 2. Kéo Data_Tong_Cookies.txt
+    need_dt = force or not os.path.exists(dt_f) or os.path.getsize(dt_f) == 0
+    if need_dt:
+        if not _http_download(RULE34_DATA_TONG_FILE_ID, dt_f, "Data_Tong_Cookies.txt"):
+            rclone_bin = shutil.which("rclone") or "/data/data/com.termux/files/usr/bin/rclone" or "/usr/bin/rclone" or "rclone"
+            if shutil.which(rclone_bin) or os.path.exists(rclone_bin):
+                try:
+                    p2 = subprocess.run([rclone_bin, "copyto", "gdrive:Data_Tong_Cookies.txt", dt_f], capture_output=True, text=True, timeout=30)
+                    res["Data_Tong_Cookies.txt"] = "PULLED_RCLONE" if p2.returncode == 0 else f"ERR: {p2.stderr[:80]}"
+                except Exception as e:
+                    res["Data_Tong_Cookies.txt"] = f"ERR: {e}"
+
     return res
 
 
@@ -875,7 +922,7 @@ def run_full_checkban_pipeline(target, base_dir=None, auto_replace=True, use_cac
 
     if target_lower == "all" or is_single_m or target_lower == "unassigned":
         if not os.path.exists(acc_file) or os.path.getsize(acc_file) == 0:
-            pull_from_google_drive(base_dir)
+            pull_from_google_drive(base_dir, force=True)
         if not os.path.exists(acc_file):
             raise FileNotFoundError(f"Không tìm thấy file {acc_file}")
         with open(acc_file, "r", encoding="utf-8", errors="ignore") as f:
@@ -883,8 +930,8 @@ def run_full_checkban_pipeline(target, base_dir=None, auto_replace=True, use_cac
         sections = parse_acc_sections(content)
 
         if is_single_m and (target_lower not in sections or not sections[target_lower]["accounts"]):
-            # Thử kéo lại từ Google Drive nếu file cục bộ chưa có section này
-            pull_from_google_drive(base_dir)
+            # Thử kéo lại từ Google Drive với force=True nếu file cục bộ chưa có section này
+            pull_from_google_drive(base_dir, force=True)
             with open(acc_file, "r", encoding="utf-8", errors="ignore") as f:
                 content = f.read()
             sections = parse_acc_sections(content)
@@ -948,7 +995,7 @@ def run_full_checkban_pipeline(target, base_dir=None, auto_replace=True, use_cac
     # 2. Trích xuất cookie từ Data_Tong_Cookies.txt
     user_cookie_map = {}
     if not os.path.exists(data_tong_file) or os.path.getsize(data_tong_file) == 0:
-        pull_from_google_drive(base_dir)
+        pull_from_google_drive(base_dir, force=True)
 
     if os.path.exists(data_tong_file):
         with open(data_tong_file, "r", encoding="utf-8", errors="ignore") as f:
@@ -961,6 +1008,22 @@ def run_full_checkban_pipeline(target, base_dir=None, auto_replace=True, use_cac
                 c = parts[1].strip() if len(parts) > 1 else ""
                 if c:
                     user_cookie_map[u_norm] = c
+
+    # Nếu usernames_to_check không có cookie nào trong Data_Tong cục bộ, kéo lại từ Google Drive
+    found_any = any(u.lower() in user_cookie_map for u in usernames_to_check)
+    if not found_any and usernames_to_check:
+        pull_from_google_drive(base_dir, force=True)
+        if os.path.exists(data_tong_file):
+            with open(data_tong_file, "r", encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    line_str = line.strip()
+                    if not line_str or ":" not in line_str:
+                        continue
+                    parts = line_str.split(":", 1)
+                    u_norm = parts[0].strip().lower()
+                    c = parts[1].strip() if len(parts) > 1 else ""
+                    if c:
+                        user_cookie_map[u_norm] = c
 
     # 3. Kiểm tra qua ZeroPoint CookieChecker API
     zp_input = {}
