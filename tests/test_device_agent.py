@@ -408,6 +408,10 @@ class TestTailscaleDeviceAgent(unittest.TestCase):
         from agent.agent import CAPABILITIES
         self.assertIn("control_tailscale", CAPABILITIES)
 
+    def test_capabilities_includes_tab_list(self):
+        from agent.agent import CAPABILITIES
+        self.assertIn("tab_list", CAPABILITIES)
+
 
 class TestMoveAccDeviceAgent(unittest.TestCase):
     def setUp(self):

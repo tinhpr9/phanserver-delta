@@ -1,5 +1,5 @@
 import { parseTongHopLink } from "./tong_hop_link.js";
-import { normalizeDeviceId, normalizeDeviceGroup, normalizeDeviceIdList, compareDeviceIds } from "./fleet_state.js";
+import { normalizeDeviceId, normalizeDeviceGroup, normalizeDeviceIdList, compareDeviceIds, escapeHtml } from "./fleet_state.js";
 
 export async function telegram(env, method, payload) {
   if (env?.telegram) {
@@ -554,6 +554,7 @@ export async function handleUpdate(update, env, fleetState) {
 📱 <b>Quản trị Thiết bị & Trạng thái</b>:
 • <code>/status</code>: Báo cáo trạng thái tổng thể cả dàn
 • <code>/devices</code>: Danh sách thiết bị và trạng thái online/offline
+• <code>/tablist [m_code]</code>: Lấy danh sách các tab Roblox đang chạy và tài khoản đăng nhập
 • <code>/upgrade &lt;devices|all&gt;</code>: Tự động kéo code mới nhất từ GitHub và restart Agent
 
 🔗 <b>Phân chia Server & Kịch bản</b>:
@@ -905,6 +906,62 @@ export async function handleUpdate(update, env, fleetState) {
       });
     } catch (error) {
       await telegram(env, "sendMessage", { chat_id: chatId, text: "Lỗi MOVE_ACC: " + String(error.message || error) });
+    }
+    return;
+  }
+
+  if (input.match(/^\/(?:tablist|dstab)(?:\s|$)/i)) {
+    const raw = input.replace(/^\/(?:tablist|dstab)\s*/i, "").trim();
+    try {
+      let execDeviceId = null;
+      if (raw) {
+        // Explicit target specified by user: strictly resolve and validate
+        const single = await resolveAndValidateTelegramTargets(raw, env, fleetState);
+        if (!single || single.length === 0) {
+          throw new Error(`Thiết bị ${raw.toUpperCase()} không khả dụng.`);
+        }
+        if (single.length > 1) {
+          throw new Error("Lệnh /tablist chỉ hỗ trợ tra cứu từng thiết bị một (ví dụ: /tablist m77).");
+        }
+        execDeviceId = single[0];
+      } else {
+        // No target specified: default to m77 if online, else first online device
+        const onlineIds = await resolveAndValidateTelegramTargets("all", env, fleetState);
+        if (!onlineIds || onlineIds.length === 0) {
+          throw new Error("Không có thiết bị nào đang ONLINE để thực hiện.");
+        }
+        const normalizedOnline = onlineIds.map(id => normalizeDeviceId(id) || String(id).toLowerCase());
+        if (normalizedOnline.includes("m77")) {
+          execDeviceId = "m77";
+        } else {
+          execDeviceId = normalizedOnline[0];
+        }
+      }
+
+      const result = await fleetStateCall(env, fleetState, "/aot/hub/control", {
+        method: "POST",
+        body: {
+          protocol: "fleet-batch-v1",
+          kind: "tab_list",
+          target_device_ids: [execDeviceId],
+          telegram_chat_id: chatId
+        }
+      });
+      if (!result?.response?.ok) {
+        const errCode = result?.data?.error;
+        if (errCode === "offline_device") {
+          throw new Error(`Thiết bị ${execDeviceId.toUpperCase()} đang OFFLINE.`);
+        }
+        throw new Error(errCode || "tablist_queue_failed");
+      }
+
+      await telegram(env, "sendMessage", {
+        chat_id: chatId,
+        text: `📱 <b>ĐÃ XẾP LỆNH LẤY DANH SÁCH TAB</b>\nThiết bị: <code>${escapeHtml(execDeviceId.toUpperCase())}</code>\n⚡ Agent đang truy vấn ADB để lấy danh sách Roblox instances và tài khoản đăng nhập...`,
+        parse_mode: "HTML"
+      });
+    } catch (error) {
+      await telegram(env, "sendMessage", { chat_id: chatId, text: "Lỗi TAB_LIST: " + String(error.message || error) });
     }
     return;
   }

@@ -867,6 +867,96 @@ async function runTests() {
     throw new Error("MOVE_ACC fail Telegram alert verification failed: " + JSON.stringify(notifiedTelegram));
   }
 
+  // 12. TAB_LIST queued per device, delivered via heartbeat, acknowledged and reported to Telegram
+  const tabQueueRes = await (await fleet.controlFleetHub(new Request("https://localhost/aot/hub/control", {
+    method: "POST",
+    body: JSON.stringify({
+      protocol: "fleet-batch-v1",
+      kind: "tab_list",
+      target_device_ids: ["m1"],
+      telegram_chat_id: 12345
+    })
+  }))).json();
+  if (!tabQueueRes.ok || !tabQueueRes.tablist?.action_id) {
+    throw new Error("TAB_LIST queue failed: " + JSON.stringify(tabQueueRes));
+  }
+  const tabActId = tabQueueRes.tablist.action_id;
+
+  const tabCmdRes = await (await fleet.handleHeartbeat(new Request("https://localhost/report", {
+    method: "POST",
+    body: JSON.stringify({ device_id: "m1", device_group: "NOVA" })
+  }))).json();
+  if (tabCmdRes.command?.action !== "TAB_LIST" || tabCmdRes.command?.action_id !== tabActId) {
+    throw new Error("TAB_LIST was not delivered by heartbeat: " + JSON.stringify(tabCmdRes));
+  }
+
+  const tabAck = await (await fleet.dispatchFleetAck(new Request("https://localhost/aot/ack", {
+    method: "POST",
+    body: JSON.stringify({
+      protocol: "fleet-batch-v1",
+      batch_action: "TAB_LIST",
+      device_id: "m1",
+      action_id: tabActId,
+      status: "OPENED",
+      executed: true,
+      details: JSON.stringify({
+        tabs: [
+          { tab: 1, package: "com.tinh.vv.hi", username: "username_a" },
+          { tab: 2, package: "com.tinh.vv.hj", username: "username_b" },
+          { tab: 3, package: "com.tinh.vv.hk", username: null }
+        ]
+      })
+    })
+  }))).json();
+  if (!tabAck.ok || tabAck.status !== "OPENED") throw new Error("TAB_LIST ack failed: " + JSON.stringify(tabAck));
+
+  const expectedTabHtml = `📱 <b>Tab List — M1</b>\nTab 1: username_a\nTab 2: username_b\nTab 3: ❓ (unknown)`;
+  if (!notifiedTelegram?.text?.includes(expectedTabHtml)) {
+    throw new Error("TAB_LIST Telegram message format mismatch. Got:\n" + notifiedTelegram?.text);
+  }
+
+  const afterTabAck = await (await fleet.handleHeartbeat(new Request("https://localhost/report", {
+    method: "POST",
+    body: JSON.stringify({ device_id: "m1", device_group: "NOVA" })
+  }))).json();
+  if (afterTabAck.command !== null) throw new Error("acknowledged TAB_LIST was delivered again");
+
+  // 13. TAB_LIST timeout alert after 60s
+  const tabQueueRes2 = await (await fleet.controlFleetHub(new Request("https://localhost/aot/hub/control", {
+    method: "POST",
+    body: JSON.stringify({
+      protocol: "fleet-batch-v1",
+      kind: "tab_list",
+      target_device_ids: ["m1"],
+      telegram_chat_id: 12345
+    })
+  }))).json();
+  const tabActId2 = tabQueueRes2.tablist.action_id;
+
+  // Deliver the command
+  await fleet.handleHeartbeat(new Request("https://localhost/report", {
+    method: "POST",
+    body: JSON.stringify({ device_id: "m1", device_group: "NOVA" })
+  }));
+
+  // Simulate 65 seconds elapsed without ack
+  const recWithPending = await fleet.readFleet();
+  const pendingCmd = recWithPending.pending_actions["m1"].find(c => c.action_id === tabActId2);
+  if (pendingCmd) {
+    pendingCmd.delivered_at = Date.now() - 65000;
+    await fleet.writeFleet(recWithPending);
+  }
+
+  notifiedTelegram = null;
+  await fleet.handleHeartbeat(new Request("https://localhost/report", {
+    method: "POST",
+    body: JSON.stringify({ device_id: "m1", device_group: "NOVA" })
+  }));
+
+  if (!notifiedTelegram?.text?.includes("LẤY TAB LIST THẤT BẠI (TIMEOUT)") || !notifiedTelegram?.text?.includes("M1")) {
+    throw new Error("TAB_LIST timeout Telegram alert failed. Got:\n" + notifiedTelegram?.text);
+  }
+
   console.log("TEST_FLEET_STATE_2PC_EQUIVALENCE=OK");
 }
 

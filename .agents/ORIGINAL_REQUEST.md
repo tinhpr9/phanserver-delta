@@ -91,3 +91,50 @@ Integrity mode: development
 ### Automated Test Suite
 - [ ] Bộ kiểm thử `tests/test_device_agent.py` hoặc test chuyên biệt cho Tailscale kiểm chứng đầy đủ các kịch bản: Connect thành công có IP, Timeout không có IP (báo FAILED), Disconnect, Status check.
 - [ ] Toàn bộ test suite `bash tests/run_all_tests.sh` vượt qua 100%.
+
+## 2026-09-14T10:22:49Z
+
+This is a single self-contained fix; keep it small and focused.
+
+Thêm lệnh `/tablist` vào hệ thống phanserver-delta: khi người dùng gọi lệnh này qua Telegram Bot, agent trên M77 sẽ dùng ADB để lấy tài khoản Roblox đang đăng nhập trong từng tab/instance đang chạy, và báo cáo danh sách `Tab 1: user1`, `Tab 2: user2`... qua Telegram HTML.
+
+Working directory: /root/phanserver-delta
+Integrity mode: development
+
+## Requirements
+
+### R1. ADB-Based Tab-to-Account Mapping
+Agent trên thiết bị M77 phải truy vấn danh sách Roblox app instances đang chạy bằng ADB (ví dụ: `adb shell dumpsys activity` hoặc `adb shell pm list packages`), rồi với mỗi instance, xác định tài khoản Roblox đang đăng nhập (từ shared preferences, app data, hoặc activity state). Kết quả là mapping `Tab N → username` theo thứ tự.
+
+### R2. Telegram Command `/tablist` — On-Demand Only
+Lệnh `/tablist` chỉ được kích hoạt khi người dùng gọi qua Telegram Bot (`Preiumbot`). Tuyệt đối không có polling ngầm, cron, hoặc background scan. Kết quả trả về dạng HTML:
+```
+📱 <b>Tab List — M77</b>
+Tab 1: username_a
+Tab 2: username_b
+Tab 3: ❓ (unknown)
+...
+```
+
+### R3. Worker + Agent Integration
+Lệnh `/tablist` phải đi qua đúng pipeline hiện có:
+- Telegram Bot (phanserver.js) nhận lệnh → gửi `TAB_LIST` action xuống agent qua fleet-batch-v1
+- Agent (agent.py) nhận `TAB_LIST` → chạy ADB → gửi kết quả về Worker → Worker forward kết quả về Telegram
+- Thêm `"tab_list"` vào CAPABILITIES list của agent
+
+## Acceptance Criteria
+
+### Functional
+- [ ] `/tablist` gửi từ Telegram → nhận báo cáo HTML trong vòng 60 giây
+- [ ] Báo cáo liệt kê đúng số lượng Roblox instances đang chạy trên M77
+- [ ] Mỗi tab hiển thị đúng username hoặc `❓` nếu không xác định được
+
+### Non-Regression
+- [ ] `bash tests/run_all_tests.sh` vẫn pass 7/7 suites
+- [ ] `python3 tests/verify_production_runtime.py` pass 100%
+- [ ] Rule 34: File ID `acc.txt` và `Data_Tong_Cookies.txt` không thay đổi
+
+### Safety
+- [ ] Không có ADB command nào gây crash hoặc reboot thiết bị thật
+- [ ] Không tự động gọi Roblox API (chỉ đọc local ADB data)
+

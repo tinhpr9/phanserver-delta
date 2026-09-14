@@ -5,6 +5,10 @@ const AOT_BATCH_TTL_MS = 30000;
 const AOT_HUB_PROTOCOL_VERSION = "fleet-batch-v1";
 const PENDING_ALLOCATE_TTL_MS = 300000; // 5 minutes
 
+export function escapeHtml(str) {
+  return String(str ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
 export function normalizeDeviceId(value) {
   const raw = String(value || "").trim();
   const dynamicMatch = raw.match(/^m([1-9]\d{0,5})$/i);
@@ -229,12 +233,34 @@ export class FleetState {
             body: JSON.stringify({ chat_id: chatId, text: msg, parse_mode: "HTML" })
           }).catch(() => {});
         }
+      } else if (item.action === "TAB_LIST" && !item.timeout_alerted) {
+        item.timeout_alerted = true;
+        const act = record.tablist_actions?.[item.action_id];
+        if (act && act.devices?.[deviceId] && act.devices[deviceId].status === "QUEUED") {
+          act.devices[deviceId].status = "FAILED";
+          act.devices[deviceId].reason = reason;
+          act.devices[deviceId].updated_at = now;
+        }
+        const chatId = act?.telegram_chat_id || this.env?.TELEGRAM_ADMIN_USER_ID;
+        if (chatId && this.env?.TELEGRAM_BOT_TOKEN) {
+          const devName = (act?.device_id || deviceId || "M77").toUpperCase();
+          const msg = `❌ <b>LẤY TAB LIST THẤT BẠI (TIMEOUT)</b>\n📱 Thiết bị: <code>${escapeHtml(devName)}</code>\n⚠️ Thiết bị không phản hồi sau 60 giây. Vui lòng kiểm tra kết nối mạng hoặc Agent.`;
+          fetch(`https://api.telegram.org/bot${this.env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ chat_id: chatId, text: msg, parse_mode: "HTML" })
+          }).catch(() => {});
+        }
       }
     };
 
     for (const item of actions) {
-      if (!item.acknowledged_at && item.delivered_at && now - item.delivered_at > 90000) {
-        handleExpiredAction(item, "Timeout 90s không nhận được phản hồi từ thiết bị");
+      if (!item.acknowledged_at) {
+        if (item.action === "TAB_LIST" && ((item.delivered_at && now - item.delivered_at > 60000) || (!item.delivered_at && item.created_at && now - item.created_at > 60000))) {
+          handleExpiredAction(item, "Timeout 60s không nhận được phản hồi từ thiết bị");
+        } else if (item.delivered_at && now - item.delivered_at > 90000) {
+          handleExpiredAction(item, "Timeout 90s không nhận được phản hồi từ thiết bị");
+        }
       }
     }
     const command = actions.find(item => !item.acknowledged_at) || null;
@@ -466,6 +492,14 @@ export class FleetState {
         targetM,
         body.count || 1,
         { telegram_chat_id: body.telegram_chat_id, sync_drive: body.sync_drive !== false }
+      );
+    }
+
+    if (body.kind === "tab_list") {
+      return this.queueTabList(
+        record,
+        Array.isArray(body.target_device_ids) ? body.target_device_ids : [],
+        { telegram_chat_id: body.telegram_chat_id }
       );
     }
 
@@ -1673,6 +1707,155 @@ export class FleetState {
     return json({ ok: true, action_id: actionId, device_id: deviceId, status: status || "SUCCESS" });
   }
 
+  async queueTabList(record, requestedTargetIds, options = {}) {
+    const fresh = await this.readFleet();
+    const targets = [];
+    const seen = new Set();
+    for (const raw of requestedTargetIds) {
+      const id = normalizeDeviceId(raw);
+      const device = id && fresh.devices[id];
+      if (!id || seen.has(id) || !device) return json({ ok: false, error: "invalid_batch_target" }, 400);
+      if (!this.isDeviceOnline(id, device)) return json({ ok: false, error: "offline_device", device_id: id }, 409);
+      seen.add(id);
+      targets.push(id);
+    }
+    if (!targets.length) return json({ ok: false, error: "invalid_batch_targets" }, 400);
+
+    const actionId = `tablist-${Date.now()}-${crypto.randomUUID().replace(/-/g, "").slice(0, 8)}`;
+    const command = {
+      type: "aot_batch_action",
+      protocol: AOT_HUB_PROTOCOL_VERSION,
+      action_id: actionId,
+      action: "TAB_LIST",
+      target_device_ids: targets,
+      created_at: Date.now()
+    };
+    const devices = {};
+    for (const id of targets) {
+      fresh.pending_actions[id] = fresh.pending_actions[id] || [];
+      // Replace any existing un-delivered TAB_LIST command to avoid queue pileup on rapid invocations
+      fresh.pending_actions[id] = fresh.pending_actions[id].filter(
+        cmd => !(cmd.action === "TAB_LIST" && !cmd.delivered_at && !cmd.acknowledged_at)
+      );
+      fresh.pending_actions[id].push({ ...command, target_device_ids: [id] });
+      devices[id] = { device_id: id, status: "QUEUED", updated_at: Date.now() };
+    }
+    fresh.tablist_actions = fresh.tablist_actions || {};
+    fresh.tablist_actions[actionId] = {
+      action_id: actionId,
+      action: "TAB_LIST",
+      created_at: Date.now(),
+      devices,
+      device_id: targets[0],
+      telegram_chat_id: options.telegram_chat_id
+    };
+    await this.writeFleet(fresh);
+    return json({ ok: true, tablist: { action_id: actionId, devices: Object.values(devices) } });
+  }
+
+  async acknowledgeTabList(record, body, deviceId, actionId) {
+    const act = record.tablist_actions?.[actionId];
+    const device = act?.devices?.[deviceId];
+    const status = String(body.status || "");
+    const isSuccess = status === "OPENED" || status === "SUCCESS";
+
+    if (device && device.status === "QUEUED") {
+      device.status = isSuccess ? status : "FAILED";
+      device.executed = isSuccess && body.executed === true;
+      device.reason = status === "FAILED" ? String(body.reason || "tablist_failed").slice(0, 160) : null;
+      device.details = body.details ? String(body.details) : null;
+      device.updated_at = Date.now();
+    }
+    for (const command of record.pending_actions?.[deviceId] || []) {
+      if (command.action_id === actionId) command.acknowledged_at = Date.now();
+    }
+    await this.writeFleet(record);
+
+    const chatId = act?.telegram_chat_id || this.env?.TELEGRAM_ADMIN_USER_ID;
+    if (chatId && this.env?.TELEGRAM_BOT_TOKEN) {
+      let detailsObj = null;
+      let parseFailed = false;
+      if (body.details) {
+        if (typeof body.details === "string") {
+          try {
+            detailsObj = JSON.parse(body.details);
+          } catch (e) {
+            parseFailed = true;
+          }
+        } else if (typeof body.details === "object" && body.details !== null) {
+          detailsObj = body.details;
+        } else {
+          parseFailed = true;
+        }
+      }
+
+      let msg = "";
+      const devName = (act?.device_id || deviceId || "M77").toUpperCase();
+      if (isSuccess && parseFailed) {
+        msg = `⚠️ <b>Tab List — ${escapeHtml(devName)}</b>\n(Dữ liệu tab phản hồi không đúng định dạng)`;
+      } else if (isSuccess && detailsObj) {
+        const rawTabs = Array.isArray(detailsObj.tabs) ? detailsObj.tabs : (Array.isArray(detailsObj) ? detailsObj : []);
+        const tabs = rawTabs.filter(t => t && typeof t === "object" && !Array.isArray(t));
+        msg = `📱 <b>Tab List — ${escapeHtml(devName)}</b>\n`;
+        if (tabs.length === 0) {
+          msg += `(Không có tab Roblox nào đang chạy)`;
+        } else {
+          // Strictly sort tabs ascending by tab number
+          const sortedTabs = tabs.slice().sort((a, b) => {
+            const ta = Number(a?.tab ?? a?.tab_index ?? a?.index ?? 0) || 0;
+            const tb = Number(b?.tab ?? b?.tab_index ?? b?.index ?? 0) || 0;
+            return ta - tb;
+          });
+          const lines = [];
+          for (let i = 0; i < sortedTabs.length; i++) {
+            const t = sortedTabs[i];
+            const rawTabNum = t?.tab ?? t?.tab_index ?? t?.index ?? (i + 1);
+            const tabNum = escapeHtml(String(rawTabNum));
+            let rawU = "";
+            if (typeof t?.username === "string") {
+              rawU = t.username.trim();
+            } else if (typeof t?.username === "number") {
+              rawU = String(t.username);
+            }
+            const isUnknown = !rawU ||
+              rawU === "❓" ||
+              rawU.startsWith("❓") ||
+              rawU.toLowerCase() === "unknown" ||
+              rawU.toLowerCase() === "none" ||
+              rawU.toLowerCase() === "null" ||
+              rawU.toLowerCase() === "undefined" ||
+              rawU.toLowerCase() === "guest" ||
+              rawU.toLowerCase() === "default";
+            const uname = isUnknown ? "❓ (unknown)" : escapeHtml(rawU.slice(0, 50));
+            const line = `Tab ${tabNum}: ${uname}`;
+            // Telegram 4096-char bound: truncate cleanly if approaching limit
+            if (msg.length + lines.join("\n").length + line.length > 3900) {
+              const remaining = sortedTabs.length - i;
+              lines.push(`... và còn ${remaining} tab khác`);
+              break;
+            }
+            lines.push(line);
+          }
+          msg += lines.join("\n");
+        }
+      } else if (isSuccess) {
+        msg = `📱 <b>Tab List — ${escapeHtml(devName)}</b>\n(Không có tab Roblox nào đang chạy)`;
+      } else {
+        msg = `❌ <b>LẤY TAB LIST THẤT BẠI</b>\n📱 Thiết bị: <code>${escapeHtml(devName)}</code>\n⚠️ Lý do: ${escapeHtml(body.reason || "Lỗi truy vấn thiết bị")}`;
+      }
+
+      try {
+        await fetch(`https://api.telegram.org/bot${this.env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ chat_id: chatId, text: msg, parse_mode: "HTML" })
+        });
+      } catch (e) {}
+    }
+
+    return json({ ok: true, action_id: actionId, device_id: deviceId, status: status || "SUCCESS" });
+  }
+
   async dispatchFleetBatch(record, action, requestedTargetIds, options = {}) {
     if (action !== AOT_ALLOCATE_SERVER_ACTION) {
       return json({ ok: false, error: "invalid_batch_action" }, 400);
@@ -1818,6 +2001,7 @@ export class FleetState {
     if (action === "ADD_ACC") return this.acknowledgeAddAcc(record, body, id, actionId);
     if (action === "DEL_ACC") return this.acknowledgeDelAcc(record, body, id, actionId);
     if (action === "MOVE_ACC") return this.acknowledgeMoveAcc(record, body, id, actionId);
+    if (action === "TAB_LIST") return this.acknowledgeTabList(record, body, id, actionId);
     if (action !== AOT_ALLOCATE_SERVER_ACTION) return json({ ok: false, error: "invalid_aot_ack" }, 400);
     const batch = record.last_batch;
     const device = batch?.devices?.[id];

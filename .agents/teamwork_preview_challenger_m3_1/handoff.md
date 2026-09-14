@@ -1,185 +1,174 @@
-# Handoff Report: Milestone M3 — Empirical Adversarial Stress-Testing
+# Handoff Report: Adversarial Stress Testing of Milestone 3 (/moveacc)
 
-**Agent**: Challenger 1 (Critic & Domain Specialist)  
-**Working Directory**: `/root/phanserver-delta/.agents/teamwork_preview_challenger_m3_1`  
-**Date**: 2026-09-12T17:37:45Z  
+**Challenger**: Challenger 1 (critic, specialist)  
+**Target Milestone**: Milestone 3 (/moveacc core algorithm & test verification)  
+**Date**: 2026-09-14T06:54:55Z  
 **Verdict**: **APPROVE**
 
 ---
 
 ## 1. Observation
 
-### 1.1 Baseline Verification Execution
-Direct execution of standard repository verification suites:
-1. `bash tests/run_all_tests.sh`:
-   ```
-   =========================================
-     RUNNING PHANSERVER-DELTA TEST SUITE
-   =========================================
-   [1/7] Running test_tong_hop_link.mjs... -> TEST_TONG_HOP_LINK_EQUIVALENCE=OK
-   [2/7] Running test_telegram_phanserver.mjs... -> TEST_TELEGRAM_PHANSERVER_EQUIVALENCE=OK
-   [3/7] Running test_fleet_state_2pc.mjs... -> TEST_FLEET_STATE_2PC_EQUIVALENCE=OK
-   [4/7] Running delta updater tests... -> Ran 27 tests in 0.745s OK
-   [5/7] Running device agent tests... -> Ran 20 tests in 1.583s OK
-   [6/7] Running account manager & ban check tests... -> 15 passed in 1.27s OK
-   [7/7] Running E2E flow tests... -> Ran 2 tests in 0.266s OK
-   =========================================
-     ALL PHANSERVER-DELTA TESTS PASSED!
-   =========================================
-   ```
-   Exit status: 0. 7 of 7 test suites passed cleanly.
+### 1.1 Source Code and Architecture Inspection
+- **Implementation**: `/root/phanserver-delta/agent/account_manager.py`
+  * Lines 961–1139: `move_accounts(source_m, target_m, count=1, base_dir=None, sync_drive=True)`
+  * Lines 284–340: `parse_acc_sections(acc_content)`
+  * Lines 1041–1045:
+    ```python
+    src_boundary_pattern = re.compile(rf"^\s*{re.escape(src_norm)}(?=[_(\s]|$)", re.IGNORECASE)
+    dst_boundary_pattern = re.compile(rf"^\s*{re.escape(dst_norm)}(?=[_(\s]|$)", re.IGNORECASE)
+    section_ident_pattern = re.compile(r"^\s*([Mm]\d+)(?=[_(\s]|$)", re.IGNORECASE)
+    ```
+  * Lines 1055–1058:
+    ```python
+    if ":" not in stripped:
+        matched_code = None
+        if src_boundary_pattern.match(stripped):
+            matched_code = src_key
+    ```
+  * Lines 1025–1029:
+    ```python
+    selected_objects = random.sample(src_accounts, count)
+    selected_usernames = [a["username"] for a in selected_objects]
+    selected_lines = [a["raw_line"].strip() for a in selected_objects]
+    ```
+  * Lines 1030–1033:
+    ```python
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_acc = f"{acc_file}.bak_{timestamp}"
+    shutil.copy2(acc_file, backup_acc)
+    ```
+  * Lines 1100–1110 (Target section auto-creation):
+    ```python
+    if not dst_found:
+        while out_lines and not out_lines[-1].strip():
+            out_lines.pop()
+        if out_lines:
+            out_lines.append("")
+        out_lines.append(f"{dst_norm}___(gag2)")
+        for sl in selected_lines:
+            out_lines.append(sl)
+        dst_inserted = True
+    ```
+  * Line 1125:
+    ```python
+    sync_result = sync_to_google_drive(base_dir=base_dir, sync_data_tong=False)
+    ```
 
-2. `python3 tests/verify_production_runtime.py`:
-   - Step 1: Documented service start & status check (`deploy/agent_service.sh start/status`) passed.
-   - Step 2: Device m72 transition to ONLINE/READY with capabilities `['allocate_server_2pc', 'update_delta', 'check_ban', 'add_acc']` verified.
-   - Step 3: Canary 2PC PREPARE/COMMIT execution with 3 tabs verified.
-   - Step 4: Duplicate replay idempotency verified.
-   - Step 5: Real UPDATE_DELTA execution & SHA256 corruption rejection verified.
-   - Step 6: Rerun state stability verified.
-   - Step 7: Zero Aotscript module dependencies verified.
-   ```
-   ==================================================
-   ALL RUNTIME PRODUCTION VERIFICATIONS PASSED: 100% OK
-   ==================================================
-   ```
-   Exit status: 0.
+### 1.2 Empirical Stress Test Execution Results
+An adversarial test suite was authored and executed at `/root/phanserver-delta/tests/test_adversarial_moveacc_challenger1.py`:
+- Command: `python3 -m unittest tests/test_adversarial_moveacc_challenger1.py -v`
+- Execution Result:
+  ```
+  test_01_regex_boundary_tricky_m_accounts_and_sections ... ok
+  test_01b_regex_boundary_whitespace_and_formatting_variants ... ok
+  test_02_random_sampling_integrity_and_distribution ... ok
+  test_02b_validation_errors_and_edge_cases ... ok
+  test_03_data_tong_cookies_strict_invariance_stress ... ok
+  test_04_local_backup_accuracy_and_timestamp ... ok
+  test_05_account_conservation_under_heavy_sequential_moves ... ok
+  test_06_duplicate_usernames_in_source_section ... ok
+  test_07_credential_lines_with_extra_colons_and_tokens ... ok
 
-### 1.2 Adversarial Test Harness Implementations and Results
-Two adversarial test suites were designed, authored, and executed:
-- `tests/test_adversarial_m3.py` (19 tests covering Python account engine, Quota-Guard, dual-storage, Rule 34 sync, and reserve pool).
-- `tests/test_adversarial_worker_m3.mjs` (6 tests covering Worker/Telegram bot control, anti-bot loop, HTML reporting, and XSS defense).
+  ----------------------------------------------------------------------
+  Ran 9 tests in 5.809s
 
-Commands executed:
-```bash
-python3 -m unittest -v tests/test_adversarial_m3.py && node tests/test_adversarial_worker_m3.mjs
-```
+  OK
+  ```
 
-Verbatim Results:
-```
-test_add_accounts_rejects_empty_lines ... ok
-test_clean_banned_accounts_when_no_accounts_banned ... ok
-test_crlf_windows_line_endings_support ... ok
-test_multiple_cookies_for_same_user_in_data_tong ... ok
-test_roblox_500_internal_server_error_resilience ... ok
-test_cookie_extraction_and_nhat_ky_ban_logging_integrity ... ok
-test_dual_backups_created_on_clean_and_add ... ok
-test_dual_storage_when_data_tong_initially_missing ... ok
-test_end_to_end_pipeline_multi_section_replacement ... ok
-test_reserve_pool_depletion_and_undersupply ... ok
-test_section_regex_adversarial_account_names ... ok
-test_quota_guard_cache_clearing_and_selective_invalidation ... ok
-test_quota_guard_concurrent_requests_stress ... ok
-test_quota_guard_ttl_expiry_and_refresh ... ok
-test_roblox_api_429_retry_after_variations ... ok
-test_roblox_batch_chunking_and_payload_invariants ... ok
-test_rclone_copyto_command_arguments ... ok
-test_rclone_process_failure_handling ... ok
-test_rule34_file_id_drift_raises_runtime_error ... ok
+### 1.3 Project Test Runner Execution
+- Command: `bash tests/run_all_tests.sh`
+- Result:
+  ```
+  [1/7] Running test_tong_hop_link.mjs... OK
+  [2/7] Running test_telegram_phanserver.mjs... OK
+  [3/7] Running test_fleet_state_2pc.mjs... OK
+  [4/7] Running delta updater tests... Ran 27 tests in 0.535s, OK
+  [5/7] Running device agent tests... Ran 29 tests in 3.622s, OK; Ran 20 tests in 0.662s, OK
+  [6/7] Running account manager & moveacc tests... 37 passed in 13.13s (100%)
+  [7/7] Running E2E flow tests... Ran 2 tests in 0.342s, OK
+  ALL PHANSERVER-DELTA TESTS PASSED!
+  ```
 
-----------------------------------------------------------------------
-Ran 19 tests in 2.784s
-
-OK
-Running Worker & Telegram Adversarial Tests...
-TEST_ADVERSARIAL_WORKER_M3=OK
-```
-Exit status: 0. All 25 adversarial tests passed 100%.
+### 1.4 Production Runtime Verification
+- Command: `python3 tests/verify_production_runtime.py`
+- Result:
+  ```
+  [STEP] 1. Agent Service Startup: OK
+  [STEP] 2. Prove Device Transitions Offline -> Online/Ready: OK
+  [STEP] 3. Real /phanserver 2PC Execution on Canary Device: OK
+  [STEP] 4. Idempotency & Duplicate Replay Test: OK
+  [STEP] 5. Real UPDATE_DELTA Execution: OK
+  [STEP] 6. Rerun Same Production Paths: OK
+  [STEP] 7. Real /moveacc Transfer & Rule 34 Dual-Storage Invariance: OK
+  [STEP] 8. Old Repo Runtime Dependency Audit: OK
+  ALL RUNTIME PRODUCTION VERIFICATIONS PASSED: 100% OK
+  ```
 
 ---
 
 ## 2. Logic Chain
 
-### 2.1 Area 1: Roblox API Ban Detection & Quota-Guard Cache
-- **Observation**: `_QUOTA_GUARD_CACHE` is guarded by `_CACHE_LOCK` (`agent/account_manager.py:38-41`). In `check_roblox_ban_status()`, lookups check `now - cached["timestamp"] < cache_ttl` before issuing API requests.
-- **Stress-Test Logic**:
-  - `test_quota_guard_ttl_expiry_and_refresh`: Advanced virtual time across 350s. Cache returned active entries before 300s (`cached: True`, 0 duplicate network calls) and expired entries after 300s, cleanly triggering re-fetch and cache re-population.
-  - `test_quota_guard_concurrent_requests_stress`: Dispatched 20 concurrent threads running multi-user check requests simultaneously. No `RuntimeError: dictionary changed size during iteration`, no deadlocks, and exact results returned.
-  - `test_roblox_api_429_retry_after_variations`: Evaluated floating-point string headers (`2.5` -> slept 2.5s), invalid string fallback (`bad_header` -> exponential backoff 1.0s), negative value fallback (`-5` -> backoff), extreme value ceiling (`120` -> clamped to 60.0s), minimum floor (`0.001` -> clamped to 0.1s), and HTTPError propagation on retries exhaustion.
-  - `test_roblox_batch_chunking_and_payload_invariants`: Tested 250 users; verified payload chunk sizes (100, 100, 50) and verified `"excludeBannedUsers": False` is preserved in all batch lookup payloads.
-- **Inference**: R1 is fully satisfied and hardened against concurrency, rate limits, and cache edge cases.
+1. **Regex Precision Boundary Verification**:
+   - *Observation 1.1*: Section parsing strictly requires `":" not in line` and lookahead `rf"^\s*{re.escape(norm_m_code)}(?=[_(\s]|$)"`.
+   - *Adversarial Challenge*: Tested mock `acc.txt` containing usernames starting with `M` and machine prefixes (`MegaRegan426:pass`, `Mega_Wiley623:pass`, `M00nlUWarden:pass`, `M426_Special:pass`, `M109_TrickUser:pass`, `M10(gag2)____` vs `M109(gag2)____` vs `M1090___(gag2)`).
+   - *Result*: `parse_acc_sections` accurately identified only valid machine sections (`m10`, `m109`, `m1`, `m100`, `m1090`, `m426`, `m0`). None of the account usernames were parsed as section headers. Lookahead boundaries prevented `M10` from matching `M109` or `M1090`. Moving accounts from `M109` to `M77` never touched `M109_TrickUser` (which was located in `M10`) or any accounts in `M10`.
 
-### 2.2 Area 2: Dual-Storage Account Isolation
-- **Observation**: Both `clean_banned_accounts()` and `add_accounts()` call `shutil.copy2` on both `acc.txt` and `Data_Tong_Cookies.txt` generating `.bak_<timestamp>` files (`agent/account_manager.py:313-318, 426-431`).
-- **Stress-Test Logic**:
-  - `test_dual_backups_created_on_clean_and_add`: Verified both files produce `.bak_<timestamp>` with exact byte contents of pre-modified state.
-  - `test_dual_storage_when_data_tong_initially_missing`: When `Data_Tong_Cookies.txt` does not exist, operations complete gracefully, create `backup_acc`, and return `backup_data_tong = None` without raising errors.
-  - `test_cookie_extraction_and_nhat_ky_ban_logging_integrity`: Banned accounts extracted to `acc_bi_ban.txt` preserve entire cookie payloads (including `_|WARNING:...`). `nhat_ky_ban.txt` records `<username>:::banned <date> - <target>`. Banned accounts are stripped from both storage files while leaving surviving accounts intact.
-  - `test_multiple_cookies_for_same_user_in_data_tong`: Confirmed all matching cookie entries for a banned account are archived when duplicates exist.
-- **Inference**: R2 dual-storage isolation is airtight and fails safe.
+2. **Random Sampling Stress Verification**:
+   - *Observation 1.1*: `move_accounts` relies on `random.sample(src_accounts, count)`.
+   - *Adversarial Challenge*: Ran `move_accounts` across 100 iterations with count=1, 50 iterations with count=2, and count=all (10 accounts).
+   - *Result*: In every multi-count transfer, `len(moved_accounts) == len(set(moved_accounts))`. Over 100 runs, account selections were non-deterministic and well-distributed. Moving all accounts reduced source count to 0 while keeping the section header intact. Validation errors were strictly raised for `count > available`, `source == dest`, `count <= 0`, non-existent source, and empty source. When destination machine did not exist, it was cleanly auto-created at the end of `acc.txt` with `{TARGET_M}___(gag2)`.
 
-### 2.3 Area 3: Rule 34 Google Drive In-Place Sync
-- **Observation**: `sync_to_google_drive()` executes `rclone copyto` to `gdrive:acc.txt` and `gdrive:Data_Tong_Cookies.txt`, followed by `verify_google_drive_file_ids()` (`agent/account_manager.py:614-657`).
-- **Stress-Test Logic**:
-  - `test_rclone_copyto_command_arguments`: Verified exact subprocess invocations use `copyto` (in-place overwrite), preserving remote File IDs on Google Drive instead of creating new IDs.
-  - `test_rule34_file_id_drift_raises_runtime_error`: Simulated File ID drift on `acc.txt` (expected `12oxXXlSPvHbB0YRUMQcHhLHiE4gemiVg`) and `Data_Tong_Cookies.txt` (expected `1k8B2Vkdu-w3-K-O92vMeC1HQbKGaZb0B`). The verification gate immediately raised `RuntimeError("Rule 34 Violated! ...")` with fail-closed behavior.
-  - `test_rclone_process_failure_handling`: Subprocess non-zero returncodes raise informative exceptions.
-- **Inference**: Rule 34 File ID preservation is strictly enforced and will block execution if Google Drive File IDs drift.
+3. **Data_Tong_Cookies.txt Strict Invariance**:
+   - *Observation 1.1*: `move_accounts` exclusively calls `sync_to_google_drive(..., sync_data_tong=False)` and performs zero file write or backup operations on `Data_Tong_Cookies.txt`.
+   - *Adversarial Challenge*: Recorded SHA-256 hash, byte size, nanosecond timestamp (`st_mtime_ns`), and filesystem inode (`st_ino`) before executing multiple moves.
+   - *Result*: Post-execution SHA-256 hash, byte size, nanosecond mtime, and inode remained 100% identical. Zero `.bak` files were created for `Data_Tong_Cookies.txt`.
 
-### 2.4 Area 4: Automated Replacement from Reserve Account Pool
-- **Observation**: Section parsing uses `section_pattern = re.compile(r"^\s*([Mm]\d+)(?:[_\s(].*)?$", re.IGNORECASE)` with `":" not in stripped` (`agent/account_manager.py:99-108`).
-- **Stress-Test Logic**:
-  - `test_section_regex_adversarial_account_names`: Adversarial account usernames starting with M (`Mega_Wiley623:pass`, `M00nlUWarden3200644:pass`, `M123_Player456:pass`) were parsed as account credentials and never misidentified as section headers.
-  - `test_duplicate_sections_merging`: Multiple `M0` section headers in the same file were merged cleanly into a single machine section `sections["m0"]`.
-  - `test_unassigned_top_accounts`: Accounts at the top of `acc.txt` preceding any machine header were captured under `sections["unassigned"]`.
-  - `test_reserve_pool_depletion_and_undersupply`: Tested pool with 2 accounts when 5 were requested. Replenished 2 accounts, left 0 in reserve, and preserved header comments in `acc_du_phong.txt`. Subsequent check with 0 accounts returned 0 replacements without throwing `IndexError` or corrupting files.
-  - `test_end_to_end_pipeline_multi_section_replacement`: End-to-end multi-section ban cleanup and replacement succeeded across disparate sections (`m77`, `m109`).
-- **Inference**: R3 reserve pool auto-replacement is resilient to section collisions, duplicate headers, and pool exhaustion.
+4. **Local Backup Verification**:
+   - *Observation 1.1*: `move_accounts` uses `shutil.copy2(acc_file, backup_acc)` with timestamp pattern `f"{acc_file}.bak_{timestamp}"` before opening `acc_file` in write mode.
+   - *Adversarial Challenge*: Inspected generated backup files on disk across multiple transfer scenarios.
+   - *Result*: Backup filename matched `r"acc\.txt\.bak_\d{8}_\d{6}$"`. SHA-256 checksum of backup matched the pre-modification `acc.txt` byte-for-byte. Post-move `acc.txt` checksum differed from backup.
 
-### 2.5 Area 5: Worker & Telegram Control Stability
-- **Observation**: `worker/phanserver.js:139` checks `if (from?.is_bot) return;` and `worker/fleet_state.js:1067-1113` renders Telegram HTML reports.
-- **Stress-Test Logic**:
-  - `runWorkerAdversarialTests()`: Simulated flood of messages and callbacks with `is_bot: true`. All were dropped before reaching bot command dispatchers.
-  - Verified HTML reporting when `banned === 0` and `error > 0` outputs `<b>${errCount}</b> tài khoản gặp lỗi tra cứu API.`.
-  - Verified HTML reporting when `banned === 0` and `error === 0` outputs `✅ <b>Tất cả tài khoản đều HOẠT ĐỘNG TỐT (100% LIVE)!</b>`.
-  - Verified `replace_result` with 0 replacements suppresses the replenishment line.
-  - Verified HTML escaping prevents XSS payloads in target names and API error strings.
-- **Inference**: R4 Telegram bot control and worker integration meet all formatting and security specifications.
+5. **Conservation of Accounts Under Randomized Stress**:
+   - *Adversarial Challenge*: Executed 50 consecutive random transfers across multiple sections with random count sizes (1–3).
+   - *Result*: The total account count (32) and exact multiset of usernames were 100% conserved across all sections. Zero accounts were dropped, duplicated, or truncated.
 
 ---
 
 ## 3. Caveats
 
-1. **Google Drive Remote Network Call in Local Sandbox**:
-   - `sync_to_google_drive` interacts with remote Google Drive via `rclone`. In unit and adversarial testing, subprocess interactions and command-line arguments are verified with mocks; live rclone execution is subject to Google Drive API availability and OAuth tokens in real-world deployment.
-2. **Stale PID Files in Production Verification**:
-   - If an ungracefully terminated agent leaves a stale PID file in `/tmp/phanserver_delta_agent.pid` matching an unrelated PID on the system, `deploy/agent_service.sh stop` must be invoked to clear the stale file prior to starting the service.
-3. **No Caveats in Code Functionality**: All tests run deterministically and pass without regressions.
+- **Google Drive Remote Testing**: Sync calls to Google Drive were verified via mock/local unit tests and production verification harness; actual remote network calls to Google Drive API require configured rclone remote credentials on production devices.
+- **Hardware Failure / Power Outage**: In-place write to disk was not tested under simulated sudden kernel panics or filesystem corruption (standard Python filesystem guarantees apply).
 
 ---
 
-## 4. Conclusion & Explicit Verdict
+## 4. Conclusion
 
-### Challenge Summary
-- **Overall Risk Assessment**: **LOW**
-- Core engine, caching, dual-storage isolation, Rule 34 Google Drive sync, reserve pool replenishment, and Telegram HTML reporting are thoroughly tested, robust against boundary conditions, and completely free of regressions.
+**Verdict: APPROVE**
 
-### Explicit Verdict
-# **VERDICT: APPROVE**
+The core `/moveacc` algorithm in `agent/account_manager.py` and its integration across the codebase satisfy all requirements of Milestone 3 and the authoritative user request:
+1. Regex precision boundaries reliably prevent false positives from `M`-prefixed account names (`MegaRegan426`, `Mega_Wiley623`, `M00nlUWarden`, `M426_Special`, `M109_TrickUser`) and machine prefix overlaps (`M10` vs `M109` vs `M1090`).
+2. Random sampling via `random.sample` guarantees uniqueness per transfer, handles all count sizes (1, 2, all), and rejects invalid parameters.
+3. `Data_Tong_Cookies.txt` is strictly invariant (SHA-256, mtime, size, inode, zero backups).
+4. Local `.bak_<timestamp>` backup is reliably created prior to file modification.
+5. All project test suites (7/7 in `run_all_tests.sh`) and production verification scripts pass 100%.
 
 ---
 
 ## 5. Verification Method
 
-To independently reproduce all adversarial and standard verification results:
+To independently verify these findings, run:
 
 ```bash
-cd /root/phanserver-delta
+# 1. Run Challenger 1's adversarial stress suite (9 tests)
+python3 -m unittest tests/test_adversarial_moveacc_challenger1.py -v
 
-# 1. Run Python Adversarial Stress Harness (19 tests)
-python3 -m unittest -v tests/test_adversarial_m3.py
+# 2. Run official moveacc test suite
+pytest -v tests/test_moveacc.py
 
-# 2. Run Worker / Telegram Adversarial Test (6 tests)
-node tests/test_adversarial_worker_m3.mjs
-
-# 3. Run Standard 7-Suite Test Orchestrator
+# 3. Run master regression test runner (7/7 suites)
 bash tests/run_all_tests.sh
 
-# 4. Run Production Runtime Verification
+# 4. Run production runtime verification
 python3 tests/verify_production_runtime.py
 ```
-
-**Invalidation Conditions**:
-- If any test in `test_adversarial_m3.py` or `test_adversarial_worker_m3.mjs` fails.
-- If `bash tests/run_all_tests.sh` fails any of the 7 suites.
-- If `python3 tests/verify_production_runtime.py` exits with non-zero status.
-- If File IDs on Google Drive deviate from `12oxXXlSPvHbB0YRUMQcHhLHiE4gemiVg` or `1k8B2Vkdu-w3-K-O92vMeC1HQbKGaZb0B`.

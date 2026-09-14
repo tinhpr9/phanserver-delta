@@ -1,7 +1,7 @@
-# BRIEFING — 2026-09-13T14:19:22Z
+# BRIEFING — 2026-09-14T10:23:55Z
 
 ## Mission
-Oversee Tailscale VPN fix on UgPhone virtual devices (eliminate fake TRIGGERED status, adaptive screen orientation clicking, genuine IP 100.x.y.z reporting on Telegram, safe automated unit testing without hitting real devices).
+Add /tablist command to phanserver-delta: on-demand ADB query of Roblox accounts in running tabs on M77, HTML report to Telegram, worker/agent integration, 100% test pass.
 
 ## 🔒 My Identity
 - Archetype: sentinel
@@ -10,6 +10,8 @@ Oversee Tailscale VPN fix on UgPhone virtual devices (eliminate fake TRIGGERED s
 - Victory Auditor: bf562aac-b562-49de-83fa-2f62eef85153
 - Orchestrator Gen 2: 4ba35ff1-6d39-4ef8-ab5f-ffbaa4894c40
 - Victory Auditor Gen 2: 3e91423b-21eb-435e-801d-8255265135ff
+- Active SWE Orchestrator: 3c4c29c7-007c-4735-a512-9ca25b2b53d4
+- Victory Auditor Gen 3: a10f5355-6e4a-42e0-95dc-da98fb834e61
 
 ## 🔒 Key Constraints
 - No technical decisions — relay only
@@ -18,18 +20,20 @@ Oversee Tailscale VPN fix on UgPhone virtual devices (eliminate fake TRIGGERED s
 - Run 2 crons: Progress Reporting (*/8) and Liveness Check (*/10)
 - Clean up all tasks/subagents upon completion
 - Never test on real UgPhone devices; mock unit/integration testing only
+- Rule 34: File ID acc.txt and Data_Tong_Cookies.txt must never change
+- On-demand only: no background cron or polling for /tablist
 
 ## User Context
-- **Last user request**: Fix Tailscale VPN on UgPhone (m77): remove fake TRIGGERED success, support adaptive coordinates for landscape/portrait, report real 100.x.y.z IP via Telegram bot, strictly mock unit test without touching real UgPhone.
+- **Last user request**: Add /tablist command to phanserver-delta (on-demand Roblox tab account query via ADB on M77, Telegram HTML output, worker+agent integration). Single self-contained fix, keep small and focused.
 - **Pending clarifications**: none
-- **Delivered results**: Tailscale UgPhone VPN activation fixes complete (R1-R4). Eliminated fake TRIGGERED/OPENED, implemented adaptive landscape/portrait screen orientation touch coordinates, verified IP on tun0 and 100.x.y.z CGNAT range, auto-dismissed UI post-connection via BACK/HOME, enhanced Telegram bot /vpn formatting with real IP and failure reasons, all verified with 100% test pass (run_all_tests.sh 7/7, verify_production_runtime.py 7/7) and verified by independent Victory Auditor.
+- **Delivered results**: /tablist command fully implemented and verified across agent, worker, and test suites. Genuine ADB tab-to-account extraction on M77, on-demand Telegram HTML formatting with length bounding and 60s timeout handling, fleet-batch-v1 integration, "tab_list" in capabilities, 7/7 test suites and production runtime passing 100%, Rule 34 preserved, confirmed by independent Victory Auditor.
 
 ## Project Status
 - **Phase**: complete
-- **Active Orchestrator**: 4ba35ff1-6d39-4ef8-ab5f-ffbaa4894c40 (killed after verified completion)
-- **Victory Auditor**: 3e91423b-21eb-435e-801d-8255265135ff (killed after verified completion)
-- **Crons**: task-16 (killed), task-18 (killed)
-- **Routing Decision**: General (teamwork_preview_orchestrator) - multi-part SWE requirement across device agent, Telegram bot, worker, screen orientation adaptive clicking, and tests without lightness signal.
+- **Active Orchestrator**: 3c4c29c7-007c-4735-a512-9ca25b2b53d4 (killed upon verified completion)
+- **Active Victory Auditor**: a10f5355-6e4a-42e0-95dc-da98fb834e61 (killed upon verified completion)
+- **Crons**: task-26 (killed), task-28 (killed)
+- **Routing Decision**: SWE Light (teamwork_preview_swe) - single self-contained fix with explicit "keep it small and focused" lightness signal.
 
 ## Victory Audit Status
 - **Triggered**: yes
@@ -39,6 +43,8 @@ Oversee Tailscale VPN fix on UgPhone virtual devices (eliminate fake TRIGGERED s
 ## Artifact Index
 - /root/phanserver-delta/.agents/ORIGINAL_REQUEST.md — Verbatim user request
 - /root/phanserver-delta/.agents/sentinel/BRIEFING.md — Sentinel briefing
-- /root/phanserver-delta/.agents/teamwork_preview_orchestrator_2/handoff.md — Orchestrator handoff report
-- /root/phanserver-delta/.agents/teamwork_preview_victory_auditor_2/handoff.md — Victory Auditor handoff report
+- /root/phanserver-delta/.agents/teamwork_preview_swe_1/handoff.md — SWE Orchestrator handoff
+- /root/phanserver-delta/.agents/teamwork_preview_victory_auditor_3/handoff.md — Victory Auditor report
 - /root/phanserver-delta/.agents/sentinel/handoff.md — Sentinel handoff report
+
+

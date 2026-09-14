@@ -69,7 +69,7 @@ except ImportError:
 
 AGENT_VERSION = "phanserver-delta-agent-1.0.0"
 PROTOCOL_VERSION = "fleet-batch-v1"
-CAPABILITIES = ["allocate_server_2pc", "update_delta", "check_ban", "add_acc", "del_acc", "control_tailscale", "move_acc"]
+CAPABILITIES = ["allocate_server_2pc", "update_delta", "check_ban", "add_acc", "del_acc", "control_tailscale", "move_acc", "tab_list"]
 
 
 def validate_tailscale_cgnat_ip(ip: Optional[str]) -> bool:
@@ -328,6 +328,176 @@ else
     exit 1
 fi
 """
+
+
+TAB_PACKAGE_MAP = {
+    "com.tinh.vv.hi": 1,
+    "com.tinh.vv.hj": 2,
+    "com.tinh.vv.hk": 3,
+    "com.tinh.vv.hl": 4,
+    "com.tinh.vv.hm": 5,
+    "com.tinh.vv.hn": 6,
+    "com.tinh.vv.ho": 7,
+    "com.tinh.vv.hp": 8,
+    "com.tinh.vv.hq": 9,
+    "com.tinh.vv.hr": 10,
+}
+
+
+def run_adb_shell(command: str | list[str], timeout: int = 15) -> str:
+    """Execute an ADB shell command and return stdout."""
+    raw_cmd = command if isinstance(command, str) else " ".join(command)
+    # 1. Try adb shell
+    try:
+        res = subprocess.run(["adb", "shell", raw_cmd], capture_output=True, text=True, timeout=timeout)
+        if res.returncode == 0 and res.stdout:
+            return res.stdout
+    except Exception:
+        pass
+    # 2. Direct shell / su fallback for rooted Android/local environment without adb daemon
+    for shell_cmd in [["sh", "-c", raw_cmd], ["su", "-c", raw_cmd]]:
+        try:
+            res = subprocess.run(shell_cmd, capture_output=True, text=True, timeout=timeout)
+            if res.returncode == 0 and res.stdout:
+                return res.stdout
+        except Exception:
+            pass
+    return ""
+
+
+def extract_username_from_text(text: str) -> Optional[str]:
+    """Extract Roblox username from XML shared preferences, JSON, or key-value activity state."""
+    if not text:
+        return None
+    invalid_usernames = ("null", "none", "unknown", "false", "true", "undefined", "default", "guest", "❓")
+    # 1. Check XML string tags: <string name="...Username...">username</string> or with attributes
+    xml_patterns = [
+        r'<(?:string|entry)\s+[^>]*?(?:name|key)=["\'][^"\']*(?i:username|roblox_?user|account_?name|current_?user|display_?name|screen_?name)[^"\']*["\'][^>]*>\s*([a-zA-Z0-9_]{3,30})\s*</(?:string|entry)>',
+        r'<(?:string|entry)\s+[^>]*?(?:name|key)=["\'][^"\']*(?i:username|roblox_?user|account_?name|current_?user|display_?name|screen_?name)[^"\']*["\'][^>]*?value=["\']\s*([a-zA-Z0-9_]{3,30})\s*["\']',
+        r'<(?:string|entry)\s+[^>]*?value=["\']\s*([a-zA-Z0-9_]{3,30})\s*["\'][^>]*?(?:name|key)=["\'][^"\']*(?i:username|roblox_?user|account_?name|current_?user|display_?name|screen_?name)[^"\']*["\']',
+        r'<(?:string|entry)\s+[^>]*?(?:name|key)=["\'](?:Roblox)?(?:User|Account|Current)?(?:Name)?["\'][^>]*>\s*([a-zA-Z0-9_]{3,30})\s*</(?:string|entry)>',
+    ]
+    for pat in xml_patterns:
+        m = re.search(pat, text, re.IGNORECASE)
+        if m:
+            val = m.group(1).strip()
+            if val and val.lower() not in invalid_usernames:
+                return val
+
+    # 2. Check JSON keys: "username": "...", "RobloxUsername": "..."
+    json_patterns = [
+        r'["\'](?:username|roblox_?username|account_?name|user_name|current_?user|account|display_?name|screen_?name)["\']\s*:\s*["\']\s*([a-zA-Z0-9_]{3,30})\s*["\']',
+    ]
+    for pat in json_patterns:
+        m = re.search(pat, text, re.IGNORECASE)
+        if m:
+            val = m.group(1).strip()
+            if val and val.lower() not in invalid_usernames:
+                return val
+
+    # 3. Check key-value or activity state
+    kv_patterns = [
+        r'(?i:\busername|\broblox_?username|\baccount_?name|\bdisplay_?name|\bscreen_?name)\s*[:=]\s*["\']?\s*([a-zA-Z0-9_]{3,30})\b',
+    ]
+    for pat in kv_patterns:
+        m = re.search(pat, text, re.IGNORECASE)
+        if m:
+            val = m.group(1).strip()
+            if val and val.lower() not in invalid_usernames:
+                return val
+
+    return None
+
+
+def query_tab_list() -> list[dict[str, Any]]:
+    """
+    Query running Roblox app instances using ADB, map them to Tab numbers,
+    and determine the logged-in Roblox username per instance.
+    Returns a list of dicts: [{'tab': 1, 'package': '...', 'username': '...'}, ...]
+    """
+    # 1. Discover running Roblox instances via ADB dumpsys activity
+    dumpsys_out = run_adb_shell("dumpsys activity activities")
+    if not dumpsys_out:
+        dumpsys_out = run_adb_shell("dumpsys activity")
+
+    matched_pkgs = []
+    if dumpsys_out:
+        # Match package before activity slash (e.g. com.tinh.vv.hi/com.roblox.client...)
+        for m in re.finditer(r"\b(com\.tinh\.vv\.[a-z0-9_\.]+|com\.roblox\.client)/", dumpsys_out):
+            matched_pkgs.append(m.group(1))
+        # Match affinity / realActivity
+        for m in re.finditer(r"(?:[A=]|affinity=[\"']?|realActivity=)(com\.tinh\.vv\.[a-z0-9_\.]+|com\.roblox\.client)\b", dumpsys_out):
+            matched_pkgs.append(m.group(1))
+        # Match ProcessRecord
+        for m in re.finditer(r"ProcessRecord\{[^\}]*\b(com\.tinh\.vv\.[a-z0-9_\.]+|com\.roblox\.client)\b", dumpsys_out):
+            matched_pkgs.append(m.group(1))
+
+    # Also discover running packages via ps (supports ps -A for multi-user/Android 8+)
+    ps_out = run_adb_shell("ps -A")
+    if not ps_out:
+        ps_out = run_adb_shell("ps")
+    if ps_out:
+        for m in re.finditer(r"\b(com\.tinh\.vv\.[a-z0-9_\.]+|com\.roblox\.client)\b", ps_out):
+            matched_pkgs.append(m.group(1))
+
+    # Deduplicate while preserving discovery order
+    seen_pkgs = set()
+    running_pkgs = []
+    for pkg in matched_pkgs:
+        if pkg not in seen_pkgs:
+            seen_pkgs.add(pkg)
+            running_pkgs.append(pkg)
+
+    # 2. Assign tab numbers with collision prevention:
+    # Pass 1: Canonical assignments for mapped clone packages (1..10)
+    used_tabs = set()
+    assigned = []
+    unmapped = []
+    for pkg in running_pkgs:
+        canonical_tab = TAB_PACKAGE_MAP.get(pkg)
+        if canonical_tab is not None:
+            used_tabs.add(canonical_tab)
+            assigned.append((canonical_tab, pkg))
+        else:
+            unmapped.append(pkg)
+
+    # Pass 2: Assign lowest available tabs for unmapped packages without colliding
+    for pkg in unmapped:
+        t = 1
+        while t in used_tabs:
+            t += 1
+        used_tabs.add(t)
+        assigned.append((t, pkg))
+
+    # 3. Determine logged-in username for each running instance
+    tab_list = []
+    for tab_num, pkg in assigned:
+        # Check shared preferences first (including multi-user profile paths /data/user/*/)
+        cmd_prefs = f"cat /data/data/{pkg}/shared_prefs/{pkg}_preferences.xml /data/data/{pkg}/shared_prefs/com.roblox.client_preferences.xml /data/data/{pkg}/shared_prefs/*.xml /data/user/*/{pkg}/shared_prefs/*.xml 2>/dev/null"
+        prefs_content = run_adb_shell(cmd_prefs)
+        username = extract_username_from_text(prefs_content)
+
+        # Check app data files if not found
+        if not username:
+            cmd_files = f"cat /data/data/{pkg}/files/*.json /data/data/{pkg}/files/user* /data/data/{pkg}/files/*.txt /data/data/{pkg}/files/*.dat /data/user/*/{pkg}/files/*.json /data/user/*/{pkg}/files/user* /data/user/*/{pkg}/files/*.txt /data/user/*/{pkg}/files/*.dat 2>/dev/null"
+            files_content = run_adb_shell(cmd_files)
+            username = extract_username_from_text(files_content)
+
+        # Check activity state in dumpsys output if not found
+        if not username and dumpsys_out:
+            pkg_lines = [line for line in dumpsys_out.splitlines() if pkg in line]
+            if pkg_lines:
+                username = extract_username_from_text("\n".join(pkg_lines))
+
+        tab_list.append({
+            "tab": tab_num,
+            "package": pkg,
+            "username": username,
+        })
+
+    # Sort by tab number ascending
+    tab_list.sort(key=lambda x: x["tab"])
+    return tab_list
 
 
 def handle_incoming_batch_action(
@@ -942,6 +1112,46 @@ def handle_incoming_batch_action(
             report_url, secret, device_id, action_id,
             status=status, reason=err_msg,
             executed=executed, batch_action="MOVE_ACC",
+            details=details_str,
+        )
+        return True
+
+    if action == "TAB_LIST":
+        completed = state.setdefault("tablist_action_results", {})
+        cached = completed.get(action_id)
+        if isinstance(cached, dict):
+            send_ack(
+                report_url, secret, device_id, action_id,
+                status=str(cached.get("status", "OPENED")),
+                reason=cached.get("reason"),
+                executed=cached.get("executed") is True,
+                batch_action="TAB_LIST",
+                details=cached.get("details"),
+            )
+            return True
+        try:
+            tabs = query_tab_list()
+            status = "OPENED"
+            executed = True
+            err_msg = None
+            details_str = json.dumps({"tabs": tabs, "device_id": device_id}, ensure_ascii=False)
+        except Exception as e:
+            status = "FAILED"
+            executed = False
+            err_msg = str(e)[:160]
+            details_str = None
+
+        completed[action_id] = {"status": status, "executed": executed, "reason": err_msg, "details": details_str}
+        try:
+            state_path.parent.mkdir(parents=True, exist_ok=True)
+            save_state = {k: list(v) if isinstance(v, set) else v for k, v in state.items()}
+            state_path.write_text(json.dumps(save_state), encoding="utf-8")
+        except Exception:
+            pass
+        send_ack(
+            report_url, secret, device_id, action_id,
+            status=status, reason=err_msg,
+            executed=executed, batch_action="TAB_LIST",
             details=details_str,
         )
         return True

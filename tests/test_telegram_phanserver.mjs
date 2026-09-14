@@ -651,6 +651,265 @@ async function runTests() {
         !lastTelegramReport?.text?.includes("Dàn máy nguồn M109 không còn tài khoản nào")) {
       throw new Error("FleetState moveacc failure HTML reporting failed: " + JSON.stringify(lastTelegramReport));
     }
+
+    // Tab list test: Telegram command /tablist
+    fleetControlCalls = [];
+    await triggerMessage("/tablist");
+    if (fleetControlCalls.length === 0 || fleetControlCalls[fleetControlCalls.length - 1].kind !== "tab_list") {
+      throw new Error("/tablist did not queue tab_list action: " + JSON.stringify(fleetControlCalls));
+    }
+    if (!sentMessages.some(m => m.text?.includes("ĐÃ XẾP LỆNH LẤY DANH SÁCH TAB"))) {
+      throw new Error("/tablist response missing queuing message: " + JSON.stringify(sentMessages));
+    }
+
+    // Tab list test: FleetState queueTabList and acknowledgeTabList
+    const qTabRes = await (await fsFleet.controlFleetHub(new Request("https://localhost/aot/hub/control", {
+      method: "POST",
+      body: JSON.stringify({
+        protocol: "fleet-batch-v1",
+        kind: "tab_list",
+        target_device_ids: ["m1"],
+        telegram_chat_id: 123
+      })
+    }))).json();
+    if (!qTabRes.ok || !qTabRes.tablist?.action_id) {
+      throw new Error("FleetState tablist queue failed: " + JSON.stringify(qTabRes));
+    }
+    const tabActionId = qTabRes.tablist.action_id;
+
+    const tabAckRes = await (await fsFleet.dispatchFleetAck(new Request("https://localhost/aot/ack", {
+      method: "POST",
+      body: JSON.stringify({
+        protocol: "fleet-batch-v1",
+        batch_action: "TAB_LIST",
+        device_id: "m1",
+        action_id: tabActionId,
+        status: "OPENED",
+        executed: true,
+        details: JSON.stringify({
+          tabs: [
+            { tab: 1, package: "com.tinh.vv.hi", username: "username_a" },
+            { tab: 2, package: "com.tinh.vv.hj", username: "username_b" },
+            { tab: 3, package: "com.tinh.vv.hk", username: null }
+          ]
+        })
+      })
+    }))).json();
+    if (!tabAckRes.ok) throw new Error("FleetState tablist ack failed: " + JSON.stringify(tabAckRes));
+
+    const expectedHtml = `📱 <b>Tab List — M1</b>\nTab 1: username_a\nTab 2: username_b\nTab 3: ❓ (unknown)`;
+    if (!lastTelegramReport?.text || !lastTelegramReport.text.includes(expectedHtml)) {
+      throw new Error("FleetState tablist report HTML format mismatch. Got:\n" + lastTelegramReport?.text + "\nExpected:\n" + expectedHtml);
+    }
+
+    // Test: /tablist with specific offline target should NOT silently fallback
+    sentMessages = [];
+    const origResolveTargets = env.resolveAndValidateTelegramTargets;
+    try {
+      env.resolveAndValidateTelegramTargets = async (t) => {
+        if (t === "m72") throw new Error("Thiết bị m72 đang OFFLINE.");
+        return ["m1"];
+      };
+      await triggerMessage("/tablist m72");
+      if (!sentMessages.some(m => m.text?.includes("Thiết bị m72 đang OFFLINE"))) {
+        throw new Error("/tablist m72 offline validation failed. Got: " + JSON.stringify(sentMessages));
+      }
+    } finally {
+      env.resolveAndValidateTelegramTargets = origResolveTargets;
+    }
+
+    // Test: /tablist with no devices online
+    sentMessages = [];
+    try {
+      env.resolveAndValidateTelegramTargets = async () => [];
+      await triggerMessage("/tablist");
+      if (!sentMessages.some(m => m.text?.includes("Không có thiết bị nào đang ONLINE"))) {
+        throw new Error("/tablist no online devices check failed. Got: " + JSON.stringify(sentMessages));
+      }
+    } finally {
+      env.resolveAndValidateTelegramTargets = origResolveTargets;
+    }
+
+    // Test: Sorting and unknown filtering in acknowledgeTabList
+    const qTabRes2 = await (await fsFleet.controlFleetHub(new Request("https://localhost/aot/hub/control", {
+      method: "POST",
+      body: JSON.stringify({
+        protocol: "fleet-batch-v1",
+        kind: "tab_list",
+        target_device_ids: ["m1"],
+        telegram_chat_id: 123
+      })
+    }))).json();
+    const tabActionId2 = qTabRes2.tablist.action_id;
+
+    lastTelegramReport = null;
+    await fsFleet.dispatchFleetAck(new Request("https://localhost/aot/ack", {
+      method: "POST",
+      body: JSON.stringify({
+        protocol: "fleet-batch-v1",
+        batch_action: "TAB_LIST",
+        device_id: "m1",
+        action_id: tabActionId2,
+        status: "OPENED",
+        executed: true,
+        details: JSON.stringify({
+          tabs: [
+            { tab: 2, package: "com.tinh.vv.hj", username: "None" },
+            { tab: 1, package: "com.tinh.vv.hi", username: "player_one" },
+            { tab: 3, package: "com.tinh.vv.hk", username: "null" }
+          ]
+        })
+      })
+    }));
+    const expectedHtml2 = `📱 <b>Tab List — M1</b>\nTab 1: player_one\nTab 2: ❓ (unknown)\nTab 3: ❓ (unknown)`;
+    if (!lastTelegramReport?.text || !lastTelegramReport.text.includes(expectedHtml2)) {
+      throw new Error("acknowledgeTabList sort & unknown filtering failed. Got:\n" + lastTelegramReport?.text);
+    }
+
+    // Test: Rapid concurrent queueTabList replaces un-delivered actions to avoid queue bloat
+    const q1 = await (await fsFleet.controlFleetHub(new Request("https://localhost/aot/hub/control", {
+      method: "POST",
+      body: JSON.stringify({ protocol: "fleet-batch-v1", kind: "tab_list", target_device_ids: ["m1"], telegram_chat_id: 123 })
+    }))).json();
+    const q2 = await (await fsFleet.controlFleetHub(new Request("https://localhost/aot/hub/control", {
+      method: "POST",
+      body: JSON.stringify({ protocol: "fleet-batch-v1", kind: "tab_list", target_device_ids: ["m1"], telegram_chat_id: 123 })
+    }))).json();
+    const fleetRec = await fsFleet.readFleet();
+    const pendingTabCmds = (fleetRec.pending_actions["m1"] || []).filter(c => c.action === "TAB_LIST" && !c.delivered_at && !c.acknowledged_at);
+    if (pendingTabCmds.length !== 1 || pendingTabCmds[0].action_id !== q2.tablist.action_id) {
+      throw new Error("Rapid queueTabList replacement failed. Pending count: " + pendingTabCmds.length);
+    }
+
+    // Test: Robustness against null/malformed tab items and HTML escaping of special characters
+    const qTabRes3 = await (await fsFleet.controlFleetHub(new Request("https://localhost/aot/hub/control", {
+      method: "POST",
+      body: JSON.stringify({ protocol: "fleet-batch-v1", kind: "tab_list", target_device_ids: ["m1"], telegram_chat_id: 123 })
+    }))).json();
+    const tabActionId3 = qTabRes3.tablist.action_id;
+
+    lastTelegramReport = null;
+    await fsFleet.dispatchFleetAck(new Request("https://localhost/aot/ack", {
+      method: "POST",
+      body: JSON.stringify({
+        protocol: "fleet-batch-v1",
+        batch_action: "TAB_LIST",
+        device_id: "m1",
+        action_id: tabActionId3,
+        status: "OPENED",
+        executed: true,
+        details: JSON.stringify({
+          tabs: [
+            null, // Malformed null entry
+            { tab: 1, package: "com.tinh.vv.hi", username: "gamer<123>&pro" },
+            undefined, // Malformed undefined entry
+            { tab: 2, package: "com.tinh.vv.hj", username: "<b>fake_tag</b>" }
+          ]
+        })
+      })
+    }));
+    const expectedHtml3 = `📱 <b>Tab List — M1</b>\nTab 1: gamer&lt;123&gt;&amp;pro\nTab 2: &lt;b&gt;fake_tag&lt;/b&gt;`;
+    if (!lastTelegramReport?.text || !lastTelegramReport.text.includes(expectedHtml3)) {
+      throw new Error("HTML escaping / null resilience failed. Got:\n" + lastTelegramReport?.text);
+    }
+
+    // Test: Large tab list (200 tabs) is safely bounded within Telegram's 4096 character limit
+    const qTabRes4 = await (await fsFleet.controlFleetHub(new Request("https://localhost/aot/hub/control", {
+      method: "POST",
+      body: JSON.stringify({ protocol: "fleet-batch-v1", kind: "tab_list", target_device_ids: ["m1"], telegram_chat_id: 123 })
+    }))).json();
+    const tabActionId4 = qTabRes4.tablist.action_id;
+
+    const hugeTabs = [];
+    for (let i = 1; i <= 200; i++) {
+      hugeTabs.push({ tab: i, package: `com.tinh.vv.clone${i}`, username: `VeryLongRobloxPlayerNameNumber_${i}` });
+    }
+    lastTelegramReport = null;
+    await fsFleet.dispatchFleetAck(new Request("https://localhost/aot/ack", {
+      method: "POST",
+      body: JSON.stringify({
+        protocol: "fleet-batch-v1",
+        batch_action: "TAB_LIST",
+        device_id: "m1",
+        action_id: tabActionId4,
+        status: "OPENED",
+        executed: true,
+        details: JSON.stringify({ tabs: hugeTabs })
+      })
+    }));
+    if (!lastTelegramReport?.text || lastTelegramReport.text.length > 4000) {
+      throw new Error("Large tab list exceeded safe message length bound: length=" + lastTelegramReport?.text?.length);
+    }
+    if (!lastTelegramReport.text.includes("... và còn")) {
+      throw new Error("Large tab list missing truncation notice. Got:\n" + lastTelegramReport.text.slice(-200));
+    }
+
+    // Test: Corrupted / malformed JSON string in details should report format warning, NOT falsely claim 0 tabs
+    const qTabRes5 = await (await fsFleet.controlFleetHub(new Request("https://localhost/aot/hub/control", {
+      method: "POST",
+      body: JSON.stringify({ protocol: "fleet-batch-v1", kind: "tab_list", target_device_ids: ["m1"], telegram_chat_id: 123 })
+    }))).json();
+    const tabActionId5 = qTabRes5.tablist.action_id;
+
+    lastTelegramReport = null;
+    await fsFleet.dispatchFleetAck(new Request("https://localhost/aot/ack", {
+      method: "POST",
+      body: JSON.stringify({
+        protocol: "fleet-batch-v1",
+        batch_action: "TAB_LIST",
+        device_id: "m1",
+        action_id: tabActionId5,
+        status: "OPENED",
+        executed: true,
+        details: "{malformed_json_syntax_error"
+      })
+    }));
+    if (!lastTelegramReport?.text || !lastTelegramReport.text.includes("Dữ liệu tab phản hồi không đúng định dạng")) {
+      throw new Error("Corrupted details handling failed. Got:\n" + lastTelegramReport?.text);
+    }
+
+    // Test: Malformed tabNum with HTML characters and array element in tabs
+    const qTabRes6 = await (await fsFleet.controlFleetHub(new Request("https://localhost/aot/hub/control", {
+      method: "POST",
+      body: JSON.stringify({ protocol: "fleet-batch-v1", kind: "tab_list", target_device_ids: ["m1"], telegram_chat_id: 123 })
+    }))).json();
+    const tabActionId6 = qTabRes6.tablist.action_id;
+
+    lastTelegramReport = null;
+    await fsFleet.dispatchFleetAck(new Request("https://localhost/aot/ack", {
+      method: "POST",
+      body: JSON.stringify({
+        protocol: "fleet-batch-v1",
+        batch_action: "TAB_LIST",
+        device_id: "m1",
+        action_id: tabActionId6,
+        status: "OPENED",
+        executed: true,
+        details: JSON.stringify({
+          tabs: [
+            ["should_be_filtered_array"],
+            { tab: "1<special>", username: "safe_user" }
+          ]
+        })
+      })
+    }));
+    if (!lastTelegramReport?.text || !lastTelegramReport.text.includes("Tab 1&lt;special&gt;: safe_user")) {
+      throw new Error("tabNum HTML escaping failed. Got:\n" + lastTelegramReport?.text);
+    }
+
+    // Test: /tablist with multiple targets should reject with clear single-device message
+    sentMessages = [];
+    await triggerMessage("/tablist m1,m2");
+    if (!sentMessages.some(m => m.text?.includes("Lệnh /tablist chỉ hỗ trợ tra cứu từng thiết bị một"))) {
+      throw new Error("/tablist multi-device rejection failed. Got: " + JSON.stringify(sentMessages));
+    }
+
+    // Test: /TABLIST M1 case insensitivity
+    sentMessages = [];
+    await triggerMessage("/TABLIST M1");
+    if (!sentMessages.some(m => m.text?.includes("ĐÃ XẾP LỆNH LẤY DANH SÁCH TAB") && m.text?.includes("M1"))) {
+      throw new Error("/TABLIST M1 case insensitivity failed. Got: " + JSON.stringify(sentMessages));
+    }
   } finally {
     globalThis.fetch = origFetchFs;
   }
