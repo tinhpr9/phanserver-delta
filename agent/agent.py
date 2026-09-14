@@ -52,11 +52,15 @@ for p in (str(ROOT), str(AGENT_DIR), str(DELTA_DIR)):
         sys.path.insert(0, p)
 
 try:
-    from agent import account_manager, config, server_links
+    from agent import account_manager, config, dns_fallback, server_links
 except ImportError:
     import account_manager
     import config
+    import dns_fallback
     import server_links
+
+# Install resilient DNS fallback for Android VPN environments immediately
+dns_fallback.install_dns_fallback()
 
 try:
     from delta import delta_updater
@@ -767,7 +771,7 @@ def handle_incoming_batch_action(
         if sync:
             t.join()
         elif t.is_alive():
-            t.join(timeout=0.2)
+            t.join(timeout=2.0)
         return True
 
     if action == "CHECK_BAN":
