@@ -409,5 +409,135 @@ class TestTailscaleDeviceAgent(unittest.TestCase):
         self.assertIn("control_tailscale", CAPABILITIES)
 
 
+class TestMoveAccDeviceAgent(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.root_path = pathlib.Path(self.temp_dir.name)
+        self.links_path = self.root_path / "server_links.txt"
+        self.state_path = self.root_path / "state.json"
+        self.report_url = "https://mock.worker/report"
+        self.secret = "mock-secret"
+        self.device_id = "m77"
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_capabilities_includes_move_acc(self):
+        from agent.agent import CAPABILITIES
+        self.assertIn("move_acc", CAPABILITIES)
+
+    @mock.patch("agent.agent.send_ack", return_value=True)
+    @mock.patch("agent.account_manager.move_accounts")
+    def test_moveacc_success_dispatches_opened_ack(self, mock_move, mock_ack):
+        mock_move.return_value = {
+            "source_m": "M109",
+            "target_m": "M77",
+            "count": 1,
+            "moved_accounts": ["MegaRegan426"],
+            "source_remaining_count": 3,
+            "target_current_count": 3,
+            "backup_acc": "/fake/acc.txt.bak_20260914",
+            "sync_result": {"acc_sync": True, "rule34_verified": True},
+        }
+
+        state = {}
+        message = {
+            "protocol": "fleet-batch-v1",
+            "action": "MOVE_ACC",
+            "action_id": "moveacc-agent-01",
+            "source_m": "m109",
+            "target_m": "m77",
+            "count": 1,
+            "sync_drive": True,
+            "target_device_ids": [self.device_id],
+        }
+
+        success = handle_incoming_batch_action(
+            message, self.device_id, self.report_url, self.secret, state, self.state_path, self.links_path
+        )
+        self.assertTrue(success)
+        mock_move.assert_called_once_with(
+            "m109", "m77", count=1, base_dir=None, sync_drive=True
+        )
+        self.assertEqual(mock_ack.call_count, 1)
+        kwargs = mock_ack.call_args.kwargs
+        self.assertEqual(kwargs["batch_action"], "MOVE_ACC")
+        self.assertEqual(kwargs["status"], "OPENED")
+        self.assertTrue(kwargs["executed"])
+        self.assertIsNone(kwargs["reason"])
+        details = json.loads(kwargs["details"])
+        self.assertEqual(details["source_m"], "M109")
+        self.assertEqual(details["target_m"], "M77")
+
+    @mock.patch("agent.agent.send_ack", return_value=True)
+    @mock.patch("agent.account_manager.move_accounts")
+    def test_moveacc_failure_dispatches_failed_ack(self, mock_move, mock_ack):
+        mock_move.side_effect = ValueError("Dàn máy nguồn M109 chỉ có 1 tài khoản, không đủ 3 tài khoản để chuyển.")
+
+        state = {}
+        message = {
+            "protocol": "fleet-batch-v1",
+            "action": "MOVE_ACC",
+            "action_id": "moveacc-agent-fail-01",
+            "source_m": "m109",
+            "target_m": "m77",
+            "count": 3,
+            "sync_drive": True,
+            "target_device_ids": [self.device_id],
+        }
+
+        success = handle_incoming_batch_action(
+            message, self.device_id, self.report_url, self.secret, state, self.state_path, self.links_path
+        )
+        self.assertTrue(success)
+        self.assertEqual(mock_ack.call_count, 1)
+        kwargs = mock_ack.call_args.kwargs
+        self.assertEqual(kwargs["batch_action"], "MOVE_ACC")
+        self.assertEqual(kwargs["status"], "FAILED")
+        self.assertFalse(kwargs["executed"])
+        self.assertIn("không đủ 3 tài khoản", kwargs["reason"])
+        self.assertIsNone(kwargs["details"])
+
+    @mock.patch("agent.agent.send_ack", return_value=True)
+    @mock.patch("agent.account_manager.move_accounts")
+    def test_moveacc_idempotency_cached_response(self, mock_move, mock_ack):
+        mock_move.return_value = {
+            "source_m": "M109",
+            "target_m": "M77",
+            "count": 1,
+            "moved_accounts": ["User1"],
+            "source_remaining_count": 2,
+            "target_current_count": 5,
+        }
+
+        state = {}
+        message = {
+            "protocol": "fleet-batch-v1",
+            "action": "MOVE_ACC",
+            "action_id": "moveacc-idemp-agent-01",
+            "source_m": "m109",
+            "target_m": "m77",
+            "count": 1,
+            "target_device_ids": [self.device_id],
+        }
+
+        # 1st invocation
+        handle_incoming_batch_action(
+            message, self.device_id, self.report_url, self.secret, state, self.state_path, self.links_path
+        )
+        self.assertEqual(mock_move.call_count, 1)
+
+        # 2nd invocation (duplicate replay)
+        mock_ack.reset_mock()
+        handle_incoming_batch_action(
+            message, self.device_id, self.report_url, self.secret, state, self.state_path, self.links_path
+        )
+        self.assertEqual(mock_move.call_count, 1, "move_accounts must not be called again on replay")
+        self.assertEqual(mock_ack.call_count, 1)
+        kwargs = mock_ack.call_args.kwargs
+        self.assertEqual(kwargs["status"], "OPENED")
+        self.assertTrue(kwargs["executed"])
+
+
 if __name__ == "__main__":
     unittest.main()

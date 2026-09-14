@@ -549,6 +549,7 @@ export async function handleUpdate(update, env, fleetState) {
 • <code>/checkban [m_code|all|users]</code>: Quét Roblox API kiểm tra ban, tự dọn dẹp acc.txt & sync Drive (Rule 34)
 • <code>/addacc &lt;m_code&gt; &lt;user:pass...&gt;</code>: Nạp tài khoản vào dàn máy và sync Google Drive
 • <code>/delacc &lt;m_code|all&gt; &lt;user1 [user2...]&gt;</code>: Xóa tài khoản khỏi acc.txt & Data_Tong_Cookies và sync Google Drive
+• <code>/moveacc &lt;nguồn&gt; &lt;đích&gt; [số_lượng]</code>: Bốc ngẫu nhiên tài khoản giữa các dàn máy và sync Google Drive (Rule 34)
 
 📱 <b>Quản trị Thiết bị & Trạng thái</b>:
 • <code>/status</code>: Báo cáo trạng thái tổng thể cả dàn
@@ -797,6 +798,113 @@ export async function handleUpdate(update, env, fleetState) {
       });
     } catch (error) {
       await telegram(env, "sendMessage", { chat_id: chatId, text: "Lỗi DEL_ACC: " + String(error.message || error) });
+    }
+    return;
+  }
+
+  if (input.match(/^\/(?:moveacc|chuyenacc)(?:\s|$)/i)) {
+    const raw = input.replace(/^\/(?:moveacc|chuyenacc)\s*/i, "").trim();
+    if (!raw) {
+      await telegram(env, "sendMessage", {
+        chat_id: chatId,
+        text: "Cú pháp:\n<code>/moveacc &lt;nguồn&gt; &lt;đích&gt; [số_lượng]</code>\n\nVí dụ: <code>/moveacc m109 m77</code> (mặc định 1 acc) hoặc <code>/moveacc m109 m77 2</code>",
+        parse_mode: "HTML"
+      });
+      return;
+    }
+
+    const tokens = raw.split(/[\r\n\s]+/).filter(Boolean);
+    if (tokens.length < 2) {
+      await telegram(env, "sendMessage", {
+        chat_id: chatId,
+        text: "Cú pháp:\n<code>/moveacc &lt;nguồn&gt; &lt;đích&gt; [số_lượng]</code>\n\nVí dụ: <code>/moveacc m109 m77</code> (mặc định 1 acc) hoặc <code>/moveacc m109 m77 2</code>",
+        parse_mode: "HTML"
+      });
+      return;
+    }
+
+    const sourceM = tokens[0].trim().toUpperCase();
+    const targetM = tokens[1].trim().toUpperCase();
+
+    if (sourceM.toLowerCase() === targetM.toLowerCase()) {
+      await telegram(env, "sendMessage", {
+        chat_id: chatId,
+        text: `⚠️ Mã máy nguồn và đích không được trùng nhau (${sourceM} = ${targetM}).`,
+        parse_mode: "HTML"
+      });
+      return;
+    }
+
+    let count = 1;
+    if (tokens.length >= 3) {
+      const parsedCount = parseInt(tokens[2], 10);
+      if (!/^\d+$/.test(tokens[2]) || isNaN(parsedCount) || parsedCount < 1) {
+        await telegram(env, "sendMessage", {
+          chat_id: chatId,
+          text: "⚠️ Số lượng tài khoản chuyển phải là số nguyên dương lớn hơn 0.",
+          parse_mode: "HTML"
+        });
+        return;
+      }
+      count = parsedCount;
+    }
+
+    try {
+      let execDeviceId = null;
+      try {
+        const onlineIds = await resolveAndValidateTelegramTargets("all", env, fleetState);
+        if (onlineIds && onlineIds.length > 0) {
+          const normSrc = sourceM.toLowerCase();
+          const normDst = targetM.toLowerCase();
+          if (onlineIds.includes(normSrc)) {
+            execDeviceId = normSrc;
+          } else if (onlineIds.includes(normDst)) {
+            execDeviceId = normDst;
+          } else {
+            execDeviceId = onlineIds[0];
+          }
+        }
+      } catch (e) {}
+
+      if (!execDeviceId) {
+        try {
+          const single = await resolveAndValidateTelegramTargets(sourceM, env, fleetState);
+          if (single && single.length > 0) execDeviceId = single[0];
+        } catch (e) {}
+      }
+
+      if (!execDeviceId) {
+        await telegram(env, "sendMessage", {
+          chat_id: chatId,
+          text: "⚠️ <b>KHÔNG CÓ THIẾT BỊ NÀO ONLINE</b>\nĐể điều chuyển tài khoản và đồng bộ theo Rule 34, cần ít nhất 1 thiết bị trong dàn online.",
+          parse_mode: "HTML"
+        });
+        return;
+      }
+
+      const result = await fleetStateCall(env, fleetState, "/aot/hub/control", {
+        method: "POST",
+        body: {
+          protocol: "fleet-batch-v1",
+          kind: "move_acc",
+          target_device_ids: [execDeviceId],
+          source_m: sourceM,
+          target_m: targetM,
+          source: sourceM,
+          dest: targetM,
+          count: count,
+          telegram_chat_id: chatId
+        }
+      });
+      if (!result?.response?.ok) throw new Error(result?.data?.error || "moveacc_queue_failed");
+
+      await telegram(env, "sendMessage", {
+        chat_id: chatId,
+        text: `🔄 <b>ĐÃ XẾP LỆNH ĐIỀU CHUYỂN TÀI KHOẢN</b>\n📱 Thiết bị thực thi: <code>${execDeviceId}</code>\n📤 Nguồn: <b>${sourceM}</b> ➔ 📥 Đích: <b>${targetM}</b>\n🔢 Số lượng: <b>${count}</b> acc\n⚡ Agent đang thực hiện bốc ngẫu nhiên và đồng bộ Google Drive...`,
+        parse_mode: "HTML"
+      });
+    } catch (error) {
+      await telegram(env, "sendMessage", { chat_id: chatId, text: "Lỗi MOVE_ACC: " + String(error.message || error) });
     }
     return;
   }

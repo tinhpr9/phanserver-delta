@@ -19,6 +19,7 @@ import sys
 import json
 import time
 import shutil
+import random
 import threading
 import urllib.request
 import urllib.error
@@ -294,7 +295,7 @@ def parse_acc_sections(acc_content):
     unassigned_accounts = []
     lines = acc_content.splitlines()
 
-    section_pattern = re.compile(r"^\s*([Mm]\d+)(?:[_\s(].*)?$", re.IGNORECASE)
+    section_pattern = re.compile(r"^\s*([Mm]\d+)(?=[_(\s]|$)", re.IGNORECASE)
 
     for line in lines:
         stripped = line.strip()
@@ -957,6 +958,186 @@ def delete_accounts(m_code_or_target, usernames, base_dir=None, sync_drive=True)
     }
 
 
+def move_accounts(source_m, target_m, count=1, base_dir=None, sync_drive=True):
+    """
+    Điều chuyển ngẫu nhiên N tài khoản từ dàn máy nguồn sang dàn máy đích trong acc.txt.
+    - source_m: Mã máy nguồn (ví dụ 'm109', 'M109').
+    - target_m: Mã máy đích (ví dụ 'm77', 'M77').
+    - count: Số lượng tài khoản bốc ngẫu nhiên (mặc định 1).
+    - base_dir: Thư mục chứa các tệp (mặc định get_default_paths()).
+    - sync_drive: Đồng bộ Google Drive in-place qua rclone copyto (chỉ sync acc.txt, Rule 34).
+    
+    Quy tắc nghiệp vụ:
+    - Bốc ngẫu nhiên bằng random.sample.
+    - Cắt khỏi section nguồn và chèn vào section đích trong acc.txt.
+    - Nếu section đích chưa tồn tại, tự động tạo mới header '{TARGET_M}___(gag2)' ở cuối tệp.
+    - Tuyệt đối KHÔNG can thiệp, sửa đổi hay tạo backup cho Data_Tong_Cookies.txt.
+    - Tạo bản sao lưu .bak_<timestamp> cho acc.txt trước khi sửa đổi.
+    - Giữ nguyên File ID gốc của acc.txt (12oxXXlSPvHbB0YRUMQcHhLHiE4gemiVg) theo Rule 34.
+    """
+    if not source_m or not target_m:
+        raise ValueError("Mã máy nguồn và máy đích không được để trống.")
+
+    src_norm = str(source_m).strip().upper()
+    dst_norm = str(target_m).strip().upper()
+    src_key = src_norm.lower()
+    dst_key = dst_norm.lower()
+
+    if src_norm == dst_norm:
+        raise ValueError("Mã máy nguồn và máy đích không được trùng nhau.")
+
+    try:
+        count = int(count)
+    except (ValueError, TypeError):
+        raise ValueError("Số lượng tài khoản chuyển phải lớn hơn hoặc bằng 1.")
+
+    if count < 1:
+        raise ValueError("Số lượng tài khoản chuyển phải lớn hơn hoặc bằng 1.")
+
+    paths = get_default_paths(base_dir)
+    acc_file = paths["acc_file"]
+
+    # Đảm bảo tệp acc.txt tồn tại
+    if not os.path.exists(acc_file):
+        try:
+            pull_from_google_drive(base_dir=base_dir, force=True)
+        except Exception:
+            pass
+
+    if not os.path.exists(acc_file):
+        raise FileNotFoundError(f"Không tìm thấy tệp: {acc_file}")
+
+    with open(acc_file, "r", encoding="utf-8", errors="ignore") as f:
+        old_content = f.read()
+
+    sections = parse_acc_sections(old_content)
+    if src_key not in sections:
+        raise ValueError(f"Không tìm thấy section máy nguồn {src_norm} trong acc.txt.")
+
+    src_accounts = sections[src_key]["accounts"]
+    total_src_before = len(src_accounts)
+    if total_src_before == 0:
+        raise ValueError(f"Dàn máy nguồn {src_norm} không còn tài khoản nào.")
+
+    if count > total_src_before:
+        raise ValueError(f"Dàn máy nguồn {src_norm} chỉ có {total_src_before} tài khoản, không đủ {count} tài khoản để chuyển.")
+
+    # Bốc ngẫu nhiên bằng random.sample
+    selected_objects = random.sample(src_accounts, count)
+    selected_usernames = [a["username"] for a in selected_objects]
+    selected_lines = [a["raw_line"].strip() for a in selected_objects]
+
+    # Tạo bản sao lưu cục bộ cho acc.txt trước khi sửa đổi
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_acc = f"{acc_file}.bak_{timestamp}"
+    shutil.copy2(acc_file, backup_acc)
+
+    # Đếm số lượng cần cắt cho từng username
+    to_cut_counts = {}
+    for a in selected_objects:
+        u = a["username"].strip().lower()
+        to_cut_counts[u] = to_cut_counts.get(u, 0) + 1
+
+    # Precision regex nhận diện section ranh giới
+    src_boundary_pattern = re.compile(rf"^\s*{re.escape(src_norm)}(?=[_(\s]|$)", re.IGNORECASE)
+    dst_boundary_pattern = re.compile(rf"^\s*{re.escape(dst_norm)}(?=[_(\s]|$)", re.IGNORECASE)
+    section_ident_pattern = re.compile(r"^\s*([Mm]\d+)(?=[_(\s]|$)", re.IGNORECASE)
+
+    lines = old_content.splitlines()
+    out_lines = []
+    current_sec = "unassigned"
+    dst_found = False
+    dst_inserted = False
+
+    for line in lines:
+        stripped = line.strip()
+
+        # Kiểm tra tiêu đề section (bắt buộc KHÔNG chứa ':')
+        if ":" not in stripped:
+            matched_code = None
+            if src_boundary_pattern.match(stripped):
+                matched_code = src_key
+            elif dst_boundary_pattern.match(stripped):
+                matched_code = dst_key
+                dst_found = True
+            else:
+                m_sec = section_ident_pattern.match(stripped)
+                if m_sec:
+                    matched_code = m_sec.group(1).lower()
+
+            if matched_code is not None:
+                # Nếu trước đó đang trong section đích và chuẩn bị sang section khác:
+                # Chèn các tài khoản chuyển vào cuối section đích
+                if current_sec == dst_key and not dst_inserted:
+                    while out_lines and not out_lines[-1].strip():
+                        out_lines.pop()
+                    for sl in selected_lines:
+                        out_lines.append(sl)
+                    out_lines.append("")
+                    dst_inserted = True
+
+                current_sec = matched_code
+                out_lines.append(line)
+                continue
+
+        # Cắt tài khoản được chọn khỏi section nguồn
+        if ":" in stripped and current_sec == src_key:
+            user = stripped.split(":")[0].strip().lower()
+            if to_cut_counts.get(user, 0) > 0:
+                to_cut_counts[user] -= 1
+                continue  # Bỏ qua dòng này (cắt khỏi nguồn)
+
+        out_lines.append(line)
+
+    # Nếu section đích nằm ở cuối tệp
+    if dst_found and not dst_inserted:
+        while out_lines and not out_lines[-1].strip():
+            out_lines.pop()
+        for sl in selected_lines:
+            out_lines.append(sl)
+        dst_inserted = True
+
+    # Nếu section đích chưa từng có trong file: tự động tạo mới header ở cuối
+    if not dst_found:
+        while out_lines and not out_lines[-1].strip():
+            out_lines.pop()
+        if out_lines:
+            out_lines.append("")
+        out_lines.append(f"{dst_norm}___(gag2)")
+        for sl in selected_lines:
+            out_lines.append(sl)
+        dst_inserted = True
+
+    # Ghi lại acc.txt
+    new_acc_content = "\n".join(out_lines) + "\n"
+    with open(acc_file, "w", encoding="utf-8") as f:
+        f.write(new_acc_content)
+
+    # Tính toán thống kê
+    dst_accounts_before = len(sections[dst_key]["accounts"]) if dst_key in sections else 0
+    source_remaining_count = total_src_before - count
+    target_current_count = dst_accounts_before + count
+
+    # Đồng bộ Google Drive nếu được yêu cầu (chỉ sync acc.txt, Rule 34)
+    sync_result = None
+    if sync_drive:
+        try:
+            sync_result = sync_to_google_drive(base_dir=base_dir, sync_data_tong=False)
+        except Exception as e:
+            sync_result = {"error": str(e), "acc_sync": False, "rule34_verified": False}
+
+    return {
+        "source_m": src_norm,
+        "target_m": dst_norm,
+        "count": count,
+        "moved_accounts": selected_usernames,
+        "source_remaining_count": source_remaining_count,
+        "target_current_count": target_current_count,
+        "backup_acc": backup_acc,
+        "sync_result": sync_result
+    }
+
+
 def replace_banned_accounts_from_reserve(m_code, num_needed, base_dir=None, reserve_accounts=None, sync_drive=False):
     """
     Tự động đọc tài khoản từ kho dự trữ acc_du_phong.txt (hoặc qua tham số reserve_accounts),
@@ -1054,15 +1235,16 @@ def replace_banned_accounts_from_reserve(m_code, num_needed, base_dir=None, rese
     }
 
 
-def verify_google_drive_file_ids(rclone_bin=None):
+def verify_google_drive_file_ids(rclone_bin=None, check_data_tong=True):
     """
-    Xác thực File ID của acc.txt và Data_Tong_Cookies.txt trên Google Drive theo Rule 34.
+    Xác thực File ID của acc.txt (và Data_Tong_Cookies.txt nếu check_data_tong=True) trên Google Drive theo Rule 34.
     File ID acc.txt: 12oxXXlSPvHbB0YRUMQcHhLHiE4gemiVg
     File ID Data_Tong_Cookies.txt: 1k8B2Vkdu-w3-K-O92vMeC1HQbKGaZb0B
     """
     bin_path = rclone_bin or shutil.which("rclone") or "/usr/bin/rclone"
     file_ids = {}
-    for fname in ["acc.txt", "Data_Tong_Cookies.txt"]:
+    fnames = ["acc.txt", "Data_Tong_Cookies.txt"] if check_data_tong else ["acc.txt"]
+    for fname in fnames:
         cmd = [bin_path, "lsf", f"gdrive:{fname}", "--format", "ip"]
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
@@ -1092,7 +1274,7 @@ def verify_google_drive_file_ids(rclone_bin=None):
         raise RuntimeError(
             f"Rule 34 Violated! acc.txt File ID bị biến động: {file_ids['acc.txt']} != {RULE34_ACC_FILE_ID}"
         )
-    if "Data_Tong_Cookies.txt" in file_ids and file_ids["Data_Tong_Cookies.txt"] != RULE34_DATA_TONG_FILE_ID:
+    if check_data_tong and "Data_Tong_Cookies.txt" in file_ids and file_ids["Data_Tong_Cookies.txt"] != RULE34_DATA_TONG_FILE_ID:
         raise RuntimeError(
             f"Rule 34 Violated! Data_Tong_Cookies.txt File ID bị biến động: {file_ids['Data_Tong_Cookies.txt']} != {RULE34_DATA_TONG_FILE_ID}"
         )
@@ -1100,9 +1282,9 @@ def verify_google_drive_file_ids(rclone_bin=None):
     return {"verified": True, "file_ids": file_ids}
 
 
-def sync_to_google_drive(base_dir=None, verify_rule34=True):
+def sync_to_google_drive(base_dir=None, verify_rule34=True, sync_data_tong=True):
     """
-    Đồng bộ trực tiếp acc.txt và Data_Tong_Cookies.txt lên Google Drive qua rclone copyto.
+    Đồng bộ trực tiếp acc.txt (và Data_Tong_Cookies.txt nếu sync_data_tong=True) lên Google Drive qua rclone copyto.
     Bảo toàn 100% File ID gốc theo Rule 34 (Hard Rule) và có cổng xác thực verify_rule34.
     """
     paths = get_default_paths(base_dir)
@@ -1115,7 +1297,7 @@ def sync_to_google_drive(base_dir=None, verify_rule34=True):
 
     sync_results = {
         "acc.txt": "NOT_FOUND",
-        "Data_Tong_Cookies.txt": "NOT_FOUND",
+        "Data_Tong_Cookies.txt": "SKIPPED" if not sync_data_tong else "NOT_FOUND",
         "acc_sync": False,
         "data_tong_sync": False,
         "rule34_verified": False,
@@ -1130,7 +1312,7 @@ def sync_to_google_drive(base_dir=None, verify_rule34=True):
         sync_results["acc.txt"] = "OK"
         sync_results["acc_sync"] = True
 
-    if os.path.exists(data_tong_file):
+    if sync_data_tong and os.path.exists(data_tong_file):
         cmd = [rclone_bin, "copyto", data_tong_file, "gdrive:Data_Tong_Cookies.txt"]
         proc = subprocess.run(cmd, capture_output=True, text=True)
         if proc.returncode != 0:
@@ -1139,7 +1321,7 @@ def sync_to_google_drive(base_dir=None, verify_rule34=True):
         sync_results["data_tong_sync"] = True
 
     if verify_rule34:
-        v_res = verify_google_drive_file_ids(rclone_bin)
+        v_res = verify_google_drive_file_ids(rclone_bin, check_data_tong=sync_data_tong)
         sync_results["rule34_verified"] = v_res.get("verified", False)
         sync_results["file_ids"] = v_res.get("file_ids", {})
 
@@ -1463,6 +1645,7 @@ if __name__ == "__main__":
         print("  python3 -m agent.account_manager checkban <m_code|all|usernames>")
         print("  python3 -m agent.account_manager addacc <m_code> <user:pass...>")
         print("  python3 -m agent.account_manager replace <m_code> <count>")
+        print("  python3 -m agent.account_manager moveacc <source_m> <target_m> [count]")
         sys.exit(1)
 
     subcmd = sys.argv[1].lower()
@@ -1488,5 +1671,14 @@ if __name__ == "__main__":
         cnt = int(sys.argv[3])
         rep_res = replace_banned_accounts_from_reserve(m_code, cnt, sync_drive=True)
         print(json.dumps(rep_res, indent=2, ensure_ascii=False))
+    elif subcmd in ("moveacc", "move"):
+        if len(sys.argv) < 4:
+            print("Cú pháp: python3 -m agent.account_manager moveacc <source_m> <target_m> [count]")
+            sys.exit(1)
+        source_m = sys.argv[2]
+        target_m = sys.argv[3]
+        cnt = int(sys.argv[4]) if len(sys.argv) > 4 else 1
+        move_res = move_accounts(source_m, target_m, count=cnt, sync_drive=True)
+        print(json.dumps(move_res, indent=2, ensure_ascii=False))
     else:
         print(f"Lệnh không hợp lệ: {subcmd}")

@@ -349,9 +349,71 @@ async function runTests() {
     throw new Error("delacc confirmation failed: " + (sentMessages[0]?.text || ""));
   }
 
+  // 16c. Move account command (/moveacc and /chuyenacc)
+  // Syntax help on empty args
+  await triggerMessage("/moveacc");
+  if (!sentMessages[0]?.text.includes("Cú pháp:") || !sentMessages[0]?.text.includes("/moveacc")) {
+    throw new Error("moveacc syntax help failed: " + (sentMessages[0]?.text || ""));
+  }
+
+  // Syntax help on 1 arg
+  await triggerMessage("/moveacc m109");
+  if (!sentMessages[0]?.text.includes("Cú pháp:") || !sentMessages[0]?.text.includes("/moveacc")) {
+    throw new Error("moveacc syntax help on 1 arg failed: " + (sentMessages[0]?.text || ""));
+  }
+
+  // Same source and dest error
+  await triggerMessage("/moveacc m109 m109");
+  if (!sentMessages[0]?.text.includes("không được trùng nhau") || !sentMessages[0]?.text.includes("M109 = M109")) {
+    throw new Error("moveacc source==dest validation failed: " + (sentMessages[0]?.text || ""));
+  }
+
+  // Invalid count errors (0 or string)
+  await triggerMessage("/moveacc m109 m77 0");
+  if (!sentMessages[0]?.text.includes("số nguyên dương")) {
+    throw new Error("moveacc count=0 validation failed: " + (sentMessages[0]?.text || ""));
+  }
+  await triggerMessage("/moveacc m109 m77 abc");
+  if (!sentMessages[0]?.text.includes("số nguyên dương")) {
+    throw new Error("moveacc count=abc validation failed: " + (sentMessages[0]?.text || ""));
+  }
+
+  // Offline fleet error
+  const origResolve = env.resolveAndValidateTelegramTargets;
+  try {
+    env.resolveAndValidateTelegramTargets = async () => [];
+    await triggerMessage("/moveacc m109 m77 1");
+    if (!sentMessages[0]?.text.includes("KHÔNG CÓ THIẾT BỊ NÀO ONLINE")) {
+      throw new Error("moveacc offline fleet check failed: " + (sentMessages[0]?.text || ""));
+    }
+  } finally {
+    env.resolveAndValidateTelegramTargets = origResolve;
+  }
+
+  // Successful dispatch with count
+  await triggerMessage("/moveacc m109 m77 2");
+  const moveaccCall = fleetControlCalls.at(-1);
+  if (moveaccCall?.kind !== "move_acc" || moveaccCall?.source_m !== "M109" || moveaccCall?.target_m !== "M77" || moveaccCall?.count !== 2) {
+    throw new Error("moveacc dispatch test failed: " + JSON.stringify(moveaccCall));
+  }
+  if (!sentMessages[0]?.text.includes("ĐÃ XẾP LỆNH ĐIỀU CHUYỂN TÀI KHOẢN") ||
+      !sentMessages[0]?.text.includes("M109") ||
+      !sentMessages[0]?.text.includes("M77") ||
+      !sentMessages[0]?.text.includes("2") ||
+      sentMessages[0]?.parse_mode !== "HTML") {
+    throw new Error("moveacc confirmation text failed: " + (sentMessages[0]?.text || ""));
+  }
+
+  // Successful dispatch with default count 1 and alias /chuyenacc
+  await triggerMessage("/chuyenacc m109 m77");
+  const chuyenaccCall = fleetControlCalls.at(-1);
+  if (chuyenaccCall?.kind !== "move_acc" || chuyenaccCall?.source_m !== "M109" || chuyenaccCall?.target_m !== "M77" || chuyenaccCall?.count !== 1) {
+    throw new Error("chuyenacc default count dispatch test failed: " + JSON.stringify(chuyenaccCall));
+  }
+
   // 17. Help command
   await triggerMessage("/help");
-  if (!sentMessages[0]?.text.includes("DANH SÁCH LỆNH PREIUMBOT") || !sentMessages[0]?.text.includes("/delacc")) {
+  if (!sentMessages[0]?.text.includes("DANH SÁCH LỆNH PREIUMBOT") || !sentMessages[0]?.text.includes("/delacc") || !sentMessages[0]?.text.includes("/moveacc")) {
     throw new Error("help command output failed: " + (sentMessages[0]?.text || ""));
   }
 
@@ -507,6 +569,87 @@ async function runTests() {
     if (!lastTelegramReport?.text?.includes("XÓA TÀI KHOẢN THÀNH CÔNG") ||
         !lastTelegramReport?.text?.includes("testuser")) {
       throw new Error("FleetState delacc reporting failed: " + JSON.stringify(lastTelegramReport));
+    }
+
+    // 21. FleetState HTML moveacc reporting test (success with counts, accounts list, Rule 34 sync, and failure alert)
+    const qMoveRes = await (await fsFleet.controlFleetHub(new Request("https://localhost/aot/hub/control", {
+      method: "POST",
+      body: JSON.stringify({
+        protocol: "fleet-batch-v1",
+        kind: "move_acc",
+        source_m: "M109",
+        target_m: "M77",
+        count: 2,
+        target_device_ids: ["m1"],
+        telegram_chat_id: 123
+      })
+    }))).json();
+    const moveActionId = qMoveRes.moveacc.action_id;
+
+    // Acknowledge moveacc success with details
+    const moveAckRes = await (await fsFleet.dispatchFleetAck(new Request("https://localhost/aot/ack", {
+      method: "POST",
+      body: JSON.stringify({
+        protocol: "fleet-batch-v1",
+        batch_action: "MOVE_ACC",
+        device_id: "m1",
+        action_id: moveActionId,
+        status: "OPENED",
+        executed: true,
+        details: JSON.stringify({
+          source_m: "M109",
+          target_m: "M77",
+          count: 2,
+          moved_accounts: ["UserA", "UserB"],
+          source_remaining_count: 5,
+          target_current_count: 8,
+          sync_result: { acc_sync: true, rule34_verified: true }
+        })
+      })
+    }))).json();
+
+    if (!moveAckRes.ok) throw new Error("FleetState moveacc ack failed: " + JSON.stringify(moveAckRes));
+    if (!lastTelegramReport?.text?.includes("ĐIỀU CHUYỂN TÀI KHOẢN THÀNH CÔNG") ||
+        !lastTelegramReport?.text?.includes("UserA") ||
+        !lastTelegramReport?.text?.includes("UserB") ||
+        !lastTelegramReport?.text?.includes("Còn lại ở <b>M109</b>: <b>5</b> tài khoản") ||
+        !lastTelegramReport?.text?.includes("Hiện có ở <b>M77</b>: <b>8</b> tài khoản") ||
+        !lastTelegramReport?.text?.includes("Rule 34")) {
+      throw new Error("FleetState moveacc success HTML reporting failed: " + JSON.stringify(lastTelegramReport));
+    }
+
+    // Acknowledge moveacc failure
+    const qMoveFailRes = await (await fsFleet.controlFleetHub(new Request("https://localhost/aot/hub/control", {
+      method: "POST",
+      body: JSON.stringify({
+        protocol: "fleet-batch-v1",
+        kind: "move_acc",
+        source_m: "M109",
+        target_m: "M77",
+        count: 1,
+        target_device_ids: ["m1"],
+        telegram_chat_id: 123
+      })
+    }))).json();
+    const failActionId = qMoveFailRes.moveacc.action_id;
+
+    const moveFailAck = await (await fsFleet.dispatchFleetAck(new Request("https://localhost/aot/ack", {
+      method: "POST",
+      body: JSON.stringify({
+        protocol: "fleet-batch-v1",
+        batch_action: "MOVE_ACC",
+        device_id: "m1",
+        action_id: failActionId,
+        status: "FAILED",
+        executed: false,
+        reason: "Dàn máy nguồn M109 không còn tài khoản nào."
+      })
+    }))).json();
+
+    if (!moveFailAck.ok) throw new Error("FleetState moveacc failure ack failed: " + JSON.stringify(moveFailAck));
+    if (!lastTelegramReport?.text?.includes("ĐIỀU CHUYỂN TÀI KHOẢN THẤT BẠI") ||
+        !lastTelegramReport?.text?.includes("Dàn máy nguồn M109 không còn tài khoản nào")) {
+      throw new Error("FleetState moveacc failure HTML reporting failed: " + JSON.stringify(lastTelegramReport));
     }
   } finally {
     globalThis.fetch = origFetchFs;

@@ -69,7 +69,7 @@ except ImportError:
 
 AGENT_VERSION = "phanserver-delta-agent-1.0.0"
 PROTOCOL_VERSION = "fleet-batch-v1"
-CAPABILITIES = ["allocate_server_2pc", "update_delta", "check_ban", "add_acc", "del_acc", "control_tailscale"]
+CAPABILITIES = ["allocate_server_2pc", "update_delta", "check_ban", "add_acc", "del_acc", "control_tailscale", "move_acc"]
 
 
 def validate_tailscale_cgnat_ip(ip: Optional[str]) -> bool:
@@ -895,6 +895,53 @@ def handle_incoming_batch_action(
             report_url, secret, device_id, action_id,
             status=status, reason=err_msg,
             executed=executed, batch_action="DEL_ACC",
+            details=details_str,
+        )
+        return True
+
+    if action == "MOVE_ACC":
+        completed = state.setdefault("moveacc_action_results", {})
+        cached = completed.get(action_id)
+        if isinstance(cached, dict):
+            send_ack(
+                report_url, secret, device_id, action_id,
+                status=str(cached.get("status", "OPENED")),
+                reason=cached.get("reason"),
+                executed=cached.get("executed") is True,
+                batch_action="MOVE_ACC",
+                details=cached.get("details"),
+            )
+            return True
+        try:
+            source_m = message.get("source_m") or message.get("src") or message.get("source")
+            target_m = message.get("target_m") or message.get("dst") or message.get("target")
+            count = int(message.get("count") or 1)
+            sync_drive = message.get("sync_drive", True)
+            base_dir = message.get("base_dir")
+            move_res = account_manager.move_accounts(
+                source_m, target_m, count=count, base_dir=base_dir, sync_drive=sync_drive
+            )
+            status = "OPENED"
+            executed = True
+            err_msg = None
+            details_str = json.dumps(move_res, ensure_ascii=False)
+        except Exception as e:
+            status = "FAILED"
+            executed = False
+            err_msg = str(e)[:160]
+            details_str = None
+
+        completed[action_id] = {"status": status, "executed": executed, "reason": err_msg, "details": details_str}
+        try:
+            state_path.parent.mkdir(parents=True, exist_ok=True)
+            save_state = {k: list(v) if isinstance(v, set) else v for k, v in state.items()}
+            state_path.write_text(json.dumps(save_state), encoding="utf-8")
+        except Exception:
+            pass
+        send_ack(
+            report_url, secret, device_id, action_id,
+            status=status, reason=err_msg,
+            executed=executed, batch_action="MOVE_ACC",
             details=details_str,
         )
         return True

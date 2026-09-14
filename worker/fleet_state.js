@@ -80,6 +80,7 @@ export class FleetState {
     if (!record.pending_allocates) record.pending_allocates = {};
     if (!record.delta_updates) record.delta_updates = {};
     if (!record.pending_actions) record.pending_actions = {};
+    if (!record.moveacc_actions) record.moveacc_actions = {};
     return record;
   }
 
@@ -451,6 +452,19 @@ export class FleetState {
         Array.isArray(body.target_device_ids) ? body.target_device_ids : [],
         body.m_code || "all",
         body.usernames || body.lines || [],
+        { telegram_chat_id: body.telegram_chat_id, sync_drive: body.sync_drive !== false }
+      );
+    }
+
+    if (body.kind === "move_acc") {
+      const sourceM = body.source_m || body.source || body.src;
+      const targetM = body.target_m || body.dest || body.dst || body.target;
+      return this.queueMoveAcc(
+        record,
+        Array.isArray(body.target_device_ids) ? body.target_device_ids : [],
+        sourceM,
+        targetM,
+        body.count || 1,
         { telegram_chat_id: body.telegram_chat_id, sync_drive: body.sync_drive !== false }
       );
     }
@@ -1532,6 +1546,133 @@ export class FleetState {
     return json({ ok: true, action_id: actionId, device_id: deviceId, status: status || "SUCCESS" });
   }
 
+  async queueMoveAcc(record, requestedTargetIds, sourceM, targetM, count = 1, options = {}) {
+    const fresh = await this.readFleet();
+    const targets = [];
+    const seen = new Set();
+    for (const raw of requestedTargetIds) {
+      const id = normalizeDeviceId(raw);
+      const device = id && fresh.devices[id];
+      if (!id || seen.has(id) || !device) return json({ ok: false, error: "invalid_batch_target" }, 400);
+      if (!this.isDeviceOnline(id, device)) return json({ ok: false, error: "offline_device", device_id: id }, 409);
+      seen.add(id);
+      targets.push(id);
+    }
+    if (!targets.length) return json({ ok: false, error: "invalid_batch_targets" }, 400);
+
+    const actionId = `moveacc-${Date.now()}-${crypto.randomUUID().replace(/-/g, "").slice(0, 8)}`;
+    const src = String(sourceM || "").toUpperCase();
+    const dst = String(targetM || "").toUpperCase();
+    const moveCount = Math.max(1, parseInt(count, 10) || 1);
+    const command = {
+      type: "aot_batch_action",
+      protocol: AOT_HUB_PROTOCOL_VERSION,
+      action_id: actionId,
+      action: "MOVE_ACC",
+      source_m: src,
+      target_m: dst,
+      source: src,
+      dest: dst,
+      count: moveCount,
+      sync_drive: options.sync_drive !== false,
+      target_device_ids: targets,
+      created_at: Date.now()
+    };
+    const devices = {};
+    for (const id of targets) {
+      fresh.pending_actions[id] = fresh.pending_actions[id] || [];
+      fresh.pending_actions[id].push({ ...command, target_device_ids: [id] });
+      devices[id] = { device_id: id, status: "QUEUED", updated_at: Date.now() };
+    }
+    fresh.moveacc_actions = fresh.moveacc_actions || {};
+    fresh.moveacc_actions[actionId] = {
+      action_id: actionId,
+      action: "MOVE_ACC",
+      source_m: src,
+      target_m: dst,
+      source: src,
+      dest: dst,
+      count: moveCount,
+      created_at: Date.now(),
+      devices,
+      telegram_chat_id: options.telegram_chat_id
+    };
+    await this.writeFleet(fresh);
+    return json({ ok: true, moveacc: { action_id: actionId, source_m: src, target_m: dst, count: moveCount, devices: Object.values(devices) } });
+  }
+
+  async acknowledgeMoveAcc(record, body, deviceId, actionId) {
+    const act = record.moveacc_actions?.[actionId];
+    const device = act?.devices?.[deviceId];
+    const status = String(body.status || "");
+    if (device && device.status === "QUEUED") {
+      device.status = status;
+      device.executed = body.executed === true;
+      device.reason = status === "FAILED" ? String(body.reason || "moveacc_failed").slice(0, 160) : null;
+      device.details = body.details ? String(body.details) : null;
+      device.updated_at = Date.now();
+    }
+    for (const command of record.pending_actions?.[deviceId] || []) {
+      if (command.action_id === actionId) command.acknowledged_at = Date.now();
+    }
+    await this.writeFleet(record);
+
+    const chatId = act?.telegram_chat_id || this.env?.TELEGRAM_ADMIN_USER_ID;
+    if (chatId && this.env?.TELEGRAM_BOT_TOKEN) {
+      const escapeHtml = (str) => String(str ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      const isSuccess = status === "OPENED" || status === "SUCCESS";
+      let detailsObj = null;
+      if (body.details) {
+        try {
+          detailsObj = typeof body.details === "string" ? JSON.parse(body.details) : body.details;
+        } catch (e) {}
+      }
+
+      let msg = "";
+      if (isSuccess && detailsObj) {
+        const src = escapeHtml(detailsObj.source_m || detailsObj.source || act?.source_m || act?.source || "N/A");
+        const dst = escapeHtml(detailsObj.target_m || detailsObj.dest || act?.target_m || act?.dest || "N/A");
+        const movedUsers = Array.isArray(detailsObj.moved_accounts)
+          ? detailsObj.moved_accounts
+          : (Array.isArray(detailsObj.moved_usernames) ? detailsObj.moved_usernames : []);
+        const movedCount = detailsObj.count ?? detailsObj.moved_count ?? (movedUsers.length || act?.count || 1);
+        const remainingSrc = detailsObj.source_remaining_count ?? detailsObj.remaining_source_count ?? 0;
+        const currentDst = detailsObj.target_current_count ?? detailsObj.current_dest_count ?? 0;
+        const syncInfo = detailsObj.sync_result || detailsObj.sync || {};
+
+        msg = `🔄 <b>ĐIỀU CHUYỂN TÀI KHOẢN THÀNH CÔNG!</b>\n`;
+        msg += `📱 Thiết bị thực thi: <code>${escapeHtml(deviceId)}</code>\n`;
+        msg += `📤 Nguồn: <b>${src}</b> ➔ 📥 Đích: <b>${dst}</b>\n`;
+        msg += `🎲 Đã chuyển ngẫu nhiên (<b>${movedCount}</b>):\n`;
+        if (movedUsers.length > 0) {
+          msg += movedUsers.map(u => `• <code>${escapeHtml(u)}</code>`).join("\n") + "\n";
+        }
+        msg += `\n📊 <b>Trạng thái sau điều chuyển:</b>\n`;
+        msg += `• Còn lại ở <b>${src}</b>: <b>${remainingSrc}</b> tài khoản\n`;
+        msg += `• Hiện có ở <b>${dst}</b>: <b>${currentDst}</b> tài khoản\n`;
+        if (syncInfo.error) {
+          msg += `⚠️ Google Drive sync lỗi: <code>${escapeHtml(syncInfo.error)}</code>`;
+        } else {
+          msg += `☁️ <b>Google Drive</b>: Đã đồng bộ an toàn (Bảo toàn File ID gốc theo Rule 34).`;
+        }
+      } else if (isSuccess) {
+        msg = `🔄 <b>ĐÃ ĐIỀU CHUYỂN TÀI KHOẢN THÀNH CÔNG</b>\n📱 Thiết bị: <code>${escapeHtml(deviceId)}</code>\n📤 Nguồn: <b>${escapeHtml(act?.source_m || act?.source || "")}</b> ➔ 📥 Đích: <b>${escapeHtml(act?.target_m || act?.dest || "")}</b>`;
+      } else {
+        msg = `❌ <b>ĐIỀU CHUYỂN TÀI KHOẢN THẤT BẠI</b>\n📱 Thiết bị: <code>${escapeHtml(deviceId)}</code>\n⚠️ Lý do: ${escapeHtml(body.reason || "Lỗi điều chuyển tài khoản")}`;
+      }
+
+      try {
+        await fetch(`https://api.telegram.org/bot${this.env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ chat_id: chatId, text: msg, parse_mode: "HTML" })
+        });
+      } catch (e) {}
+    }
+
+    return json({ ok: true, action_id: actionId, device_id: deviceId, status: status || "SUCCESS" });
+  }
+
   async dispatchFleetBatch(record, action, requestedTargetIds, options = {}) {
     if (action !== AOT_ALLOCATE_SERVER_ACTION) {
       return json({ ok: false, error: "invalid_batch_action" }, 400);
@@ -1676,6 +1817,7 @@ export class FleetState {
     if (action === "CHECK_BAN") return this.acknowledgeCheckBan(record, body, id, actionId);
     if (action === "ADD_ACC") return this.acknowledgeAddAcc(record, body, id, actionId);
     if (action === "DEL_ACC") return this.acknowledgeDelAcc(record, body, id, actionId);
+    if (action === "MOVE_ACC") return this.acknowledgeMoveAcc(record, body, id, actionId);
     if (action !== AOT_ALLOCATE_SERVER_ACTION) return json({ ok: false, error: "invalid_aot_ack" }, 400);
     const batch = record.last_batch;
     const device = batch?.devices?.[id];

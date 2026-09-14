@@ -21,8 +21,8 @@ echo "[5/7] Running device agent tests..."
 python3 -m unittest discover -s agent/tests
 python3 -m unittest tests/test_device_agent.py
 
-echo "[6/7] Running account manager & ban check tests..."
-pytest -q tests/test_account_manager.py
+echo "[6/7] Running account manager & moveacc tests..."
+pytest -q tests/test_account_manager.py tests/test_moveacc.py
 
 echo "[7/7] Running E2E flow tests..."
 python3 tests/test_e2e_flow.py

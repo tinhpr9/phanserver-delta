@@ -766,6 +766,107 @@ async function runTests() {
   }))).json();
   if (!addAck.ok || addAck.status !== "OPENED") throw new Error("ADD_ACC ack failed: " + JSON.stringify(addAck));
 
+  // 10. MOVE_ACC queueMoveAcc, heartbeat delivery, ACK processing, and Telegram HTML report
+  notifiedTelegram = null;
+  const moveaccRes = await (await fleet.controlFleetHub(new Request("https://localhost/aot/hub/control", {
+    method: "POST",
+    body: JSON.stringify({
+      protocol: "fleet-batch-v1",
+      kind: "move_acc",
+      source_m: "m109",
+      target_m: "m77",
+      count: 2,
+      target_device_ids: ["m1"],
+      telegram_chat_id: 12345
+    })
+  }))).json();
+  if (!moveaccRes.ok || !moveaccRes.moveacc?.action_id) throw new Error("MOVE_ACC queue failed: " + JSON.stringify(moveaccRes));
+  const moveActionId = moveaccRes.moveacc.action_id;
+
+  // Heartbeat delivers MOVE_ACC
+  const moveCmdRes = await (await fleet.handleHeartbeat(new Request("https://localhost/report", {
+    method: "POST",
+    body: JSON.stringify({ device_id: "m1", device_group: "NOVA" })
+  }))).json();
+  if (moveCmdRes.command?.action !== "MOVE_ACC" || moveCmdRes.command?.action_id !== moveActionId) {
+    throw new Error("MOVE_ACC was not delivered by heartbeat: " + JSON.stringify(moveCmdRes));
+  }
+  if (moveCmdRes.command?.source_m !== "M109" || moveCmdRes.command?.target_m !== "M77" || moveCmdRes.command?.count !== 2) {
+    throw new Error("MOVE_ACC command payload mismatch: " + JSON.stringify(moveCmdRes.command));
+  }
+
+  // Acknowledge MOVE_ACC success with rich details and verify HTML report
+  const moveAck = await (await fleet.dispatchFleetAck(new Request("https://localhost/aot/ack", {
+    method: "POST",
+    body: JSON.stringify({
+      protocol: "fleet-batch-v1",
+      batch_action: "MOVE_ACC",
+      device_id: "m1",
+      action_id: moveActionId,
+      status: "OPENED",
+      executed: true,
+      details: JSON.stringify({
+        source_m: "M109",
+        target_m: "M77",
+        count: 2,
+        moved_accounts: ["MegaRegan426", "User_Alpha1"],
+        source_remaining_count: 5,
+        target_current_count: 8,
+        backup_acc: "/storage/emulated/0/Download/Shouko/acc.txt.bak_20260914",
+        sync_result: { acc_sync: true, rule34_verified: true, file_ids: { "acc.txt": "12oxXXlSPvHbB0YRUMQcHhLHiE4gemiVg" } }
+      })
+    })
+  }))).json();
+  if (!moveAck.ok || moveAck.status !== "OPENED") throw new Error("MOVE_ACC ack failed: " + JSON.stringify(moveAck));
+  if (!notifiedTelegram?.text?.includes("ĐIỀU CHUYỂN TÀI KHOẢN THÀNH CÔNG") ||
+      !notifiedTelegram?.text?.includes("MegaRegan426") ||
+      !notifiedTelegram?.text?.includes("User_Alpha1") ||
+      !notifiedTelegram?.text?.includes("Còn lại ở <b>M109</b>: <b>5</b> tài khoản") ||
+      !notifiedTelegram?.text?.includes("Hiện có ở <b>M77</b>: <b>8</b> tài khoản") ||
+      !notifiedTelegram?.text?.includes("Rule 34")) {
+    throw new Error("MOVE_ACC Telegram report verification failed: " + JSON.stringify(notifiedTelegram));
+  }
+
+  // MOVE_ACC failure ACK and failure alert formatting
+  notifiedTelegram = null;
+  const moveFailRes = await (await fleet.controlFleetHub(new Request("https://localhost/aot/hub/control", {
+    method: "POST",
+    body: JSON.stringify({
+      protocol: "fleet-batch-v1",
+      kind: "move_acc",
+      source_m: "M109",
+      target_m: "M77",
+      count: 5,
+      target_device_ids: ["m1"],
+      telegram_chat_id: 12345
+    })
+  }))).json();
+  const failActionId = moveFailRes.moveacc.action_id;
+
+  // Consume from heartbeat
+  await fleet.handleHeartbeat(new Request("https://localhost/report", {
+    method: "POST",
+    body: JSON.stringify({ device_id: "m1", device_group: "NOVA" })
+  }));
+
+  const failAck = await (await fleet.dispatchFleetAck(new Request("https://localhost/aot/ack", {
+    method: "POST",
+    body: JSON.stringify({
+      protocol: "fleet-batch-v1",
+      batch_action: "MOVE_ACC",
+      device_id: "m1",
+      action_id: failActionId,
+      status: "FAILED",
+      executed: false,
+      reason: "Dàn máy nguồn M109 chỉ có 2 tài khoản, không đủ 5 tài khoản để chuyển."
+    })
+  }))).json();
+  if (!failAck.ok || failAck.status !== "FAILED") throw new Error("MOVE_ACC fail ack failed: " + JSON.stringify(failAck));
+  if (!notifiedTelegram?.text?.includes("ĐIỀU CHUYỂN TÀI KHOẢN THẤT BẠI") ||
+      !notifiedTelegram?.text?.includes("không đủ 5 tài khoản")) {
+    throw new Error("MOVE_ACC fail Telegram alert verification failed: " + JSON.stringify(notifiedTelegram));
+  }
+
   console.log("TEST_FLEET_STATE_2PC_EQUIVALENCE=OK");
 }
 
