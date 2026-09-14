@@ -70,7 +70,7 @@ M77___(gag2)
 Account_Beta1:pass_beta1
 Account_Beta2:pass_beta2
 
-MEmpty___(gag2)
+M888___(gag2)
 """
 
 SAMPLE_DATA_TONG = """Account_Alpha1:pass_alpha1:_|WARNING:-DO-NOT-SHARE-THIS|cookie_alpha1
@@ -216,6 +216,7 @@ class TestAdversarialM3AgentSync(unittest.TestCase):
             "count": 1,
             "sync_drive": False,
             "base_dir": self.test_dir,
+            "target_device_ids": [device_id],
         }
 
         sent_acks = []
@@ -265,6 +266,7 @@ class TestAdversarialM3AgentSync(unittest.TestCase):
             "count": 1,
             "sync_drive": False,
             "base_dir": self.test_dir,
+            "target_device_ids": ["m72"],
         }
         sent_acks = []
 
@@ -307,11 +309,12 @@ class TestAdversarialM3AgentSync(unittest.TestCase):
             "protocol": "fleet-batch-v1",
             "action_id": action_id,
             "action": "MOVE_ACC",
-            "source_m": "MEmpty",
+            "source_m": "M888",
             "target_m": "M77",
             "count": 1,
             "sync_drive": False,
             "base_dir": self.test_dir,
+            "target_device_ids": ["m72"],
         }
         sent_acks = []
 
@@ -452,6 +455,122 @@ class TestAdversarialM3AgentSync(unittest.TestCase):
         self.assertFalse(res["sync_result"]["acc_sync"])
         self.assertFalse(res["sync_result"]["rule34_verified"])
         self.assertIn("Rule 34 Violated!", res["sync_result"]["error"])
+
+    @mock.patch("agent.account_manager.verify_google_drive_file_ids")
+    @mock.patch("subprocess.run")
+    def test_2pc_with_rule34_sync_drive_true_and_zero_duplicate_sync_on_replay(self, mock_subproc, mock_verify):
+        """Stress Test 2.5: Full agent MOVE_ACC with sync_drive=True verifies Rule 34 preservation
+        in ACK details and ensures zero secondary rclone execution on duplicate replay."""
+        mock_proc = mock.MagicMock()
+        mock_proc.returncode = 0
+        mock_proc.stdout = ""
+        mock_proc.stderr = ""
+        mock_subproc.return_value = mock_proc
+
+        mock_verify.return_value = {
+            "verified": True,
+            "file_ids": {"acc.txt": RULE34_ACC_FILE_ID},
+        }
+
+        state = {"moveacc_action_results": {}}
+        action_id = "moveacc-rule34-replay-005"
+        links_path = pathlib.Path(self.test_dir) / "server_links.txt"
+        message = {
+            "type": "aot_batch_action",
+            "protocol": "fleet-batch-v1",
+            "action_id": action_id,
+            "action": "MOVE_ACC",
+            "source_m": "m109",
+            "target_m": "m77",
+            "count": 1,
+            "sync_drive": True,
+            "base_dir": self.test_dir,
+            "target_device_ids": ["m72"],
+        }
+        sent_acks = []
+
+        def mock_send_ack(r_url, sec, dev_id, act_id, status, reason=None, executed=False, batch_action="ALLOCATE_SERVER", details=None):
+            sent_acks.append({"status": status, "executed": executed, "details": details})
+            return True
+
+        # First run (executes move and sync)
+        with mock.patch("agent.agent.send_ack", side_effect=mock_send_ack):
+            handled = agent.handle_incoming_batch_action(
+                message, "m72", "http://mock", "sec", state, self.state_file, links_path
+            )
+
+        self.assertTrue(handled)
+        self.assertEqual(len(sent_acks), 1)
+        details = json.loads(sent_acks[0]["details"])
+        self.assertTrue(details["sync_result"]["acc_sync"])
+        self.assertTrue(details["sync_result"]["rule34_verified"])
+        self.assertEqual(details["sync_result"]["file_ids"]["acc.txt"], RULE34_ACC_FILE_ID)
+
+        # Count rclone invocations on first run
+        rclone_calls_1 = len([c for c in mock_subproc.call_args_list if "copyto" in c[0][0]])
+        self.assertEqual(rclone_calls_1, 1, "rclone copyto must be called exactly once on initial run")
+
+        # Now send duplicate replay
+        sent_acks.clear()
+        mock_subproc.reset_mock()
+        mock_verify.reset_mock()
+
+        with mock.patch("agent.agent.send_ack", side_effect=mock_send_ack):
+            handled_replay = agent.handle_incoming_batch_action(
+                message, "m72", "http://mock", "sec", state, self.state_file, links_path
+            )
+
+        self.assertTrue(handled_replay)
+        self.assertEqual(len(sent_acks), 1)
+        # Verify ZERO rclone calls on replay!
+        mock_subproc.assert_not_called()
+        mock_verify.assert_not_called()
+        replay_details = json.loads(sent_acks[0]["details"])
+        self.assertEqual(replay_details["sync_result"], details["sync_result"])
+
+    def test_2pc_target_section_auto_creation_when_not_in_acc_txt(self):
+        """Stress Test 2.6: When target section (e.g. M999) does not exist,
+        agent MOVE_ACC automatically creates 'M999___(gag2)' and moves account into it."""
+        state = {"moveacc_action_results": {}}
+        action_id = "moveacc-autocreate-006"
+        links_path = pathlib.Path(self.test_dir) / "server_links.txt"
+        message = {
+            "type": "aot_batch_action",
+            "protocol": "fleet-batch-v1",
+            "action_id": action_id,
+            "action": "MOVE_ACC",
+            "source_m": "M109",
+            "target_m": "M999",
+            "count": 1,
+            "sync_drive": False,
+            "base_dir": self.test_dir,
+            "target_device_ids": ["m72"],
+        }
+        sent_acks = []
+
+        def mock_send_ack(r_url, sec, dev_id, act_id, status, reason=None, executed=False, batch_action="ALLOCATE_SERVER", details=None):
+            sent_acks.append({"status": status, "executed": executed, "details": details})
+            return True
+
+        with mock.patch("agent.agent.send_ack", side_effect=mock_send_ack):
+            agent.handle_incoming_batch_action(
+                message, "m72", "http://mock", "sec", state, self.state_file, links_path
+            )
+
+        self.assertEqual(sent_acks[0]["status"], "OPENED")
+        self.assertTrue(sent_acks[0]["executed"])
+        details = json.loads(sent_acks[0]["details"])
+        self.assertEqual(details["target_m"], "M999")
+        self.assertEqual(details["target_current_count"], 1)
+
+        # Verify acc.txt has M999___(gag2) header
+        with open(self.acc_file, "r", encoding="utf-8") as f:
+            updated_content = f.read()
+
+        sections = parse_acc_sections(updated_content)
+        self.assertIn("m999", sections, "M999 section must be created")
+        self.assertEqual(len(sections["m999"]["accounts"]), 1)
+        self.assertEqual(sections["m999"]["accounts"][0]["username"], details["moved_accounts"][0])
 
 
 if __name__ == "__main__":
