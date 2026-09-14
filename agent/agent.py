@@ -347,17 +347,44 @@ TAB_PACKAGE_MAP = {
 def run_adb_shell(command: str | list[str], timeout: int = 15) -> str:
     """Execute an ADB shell command and return stdout."""
     raw_cmd = command if isinstance(command, str) else " ".join(command)
+    env = os.environ.copy()
+    std_paths = ["/system/bin", "/system/xbin", "/vendor/bin", "/sbin", "/data/data/com.termux/files/usr/bin"]
+    curr_path = env.get("PATH", "")
+    for p in std_paths:
+        if p not in curr_path:
+            curr_path = f"{p}:{curr_path}" if curr_path else p
+    env["PATH"] = curr_path
+
     # 1. Try adb shell
     try:
-        res = subprocess.run(["adb", "shell", raw_cmd], capture_output=True, text=True, timeout=timeout)
+        res = subprocess.run(["adb", "shell", raw_cmd], capture_output=True, text=True, timeout=timeout, env=env)
         if res.returncode == 0 and res.stdout:
             return res.stdout
     except Exception:
         pass
     # 2. Direct shell / su fallback for rooted Android/local environment without adb daemon
-    for shell_cmd in [["sh", "-c", raw_cmd], ["su", "-c", raw_cmd]]:
+    prefix_match = re.match(r"^(?:(?:/system/bin/|/system/xbin/)?su\s+-c\s+)(.*)$", raw_cmd)
+    if prefix_match:
+        inner_cmd = prefix_match.group(1).strip()
+        if (inner_cmd.startswith("'") and inner_cmd.endswith("'") and "'" not in inner_cmd[1:-1]) or \
+           (inner_cmd.startswith('"') and inner_cmd.endswith('"') and '"' not in inner_cmd[1:-1]):
+            inner_cmd = inner_cmd[1:-1]
+        fallback_shells = [
+            ["sh", "-c", raw_cmd],
+            ["/system/bin/su", "-c", inner_cmd],
+            ["/system/xbin/su", "-c", inner_cmd],
+            ["su", "-c", inner_cmd],
+        ]
+    else:
+        fallback_shells = [
+            ["sh", "-c", raw_cmd],
+            ["su", "-c", raw_cmd],
+            ["/system/bin/su", "-c", raw_cmd],
+            ["/system/xbin/su", "-c", raw_cmd],
+        ]
+    for shell_cmd in fallback_shells:
         try:
-            res = subprocess.run(shell_cmd, capture_output=True, text=True, timeout=timeout)
+            res = subprocess.run(shell_cmd, capture_output=True, text=True, timeout=timeout, env=env)
             if res.returncode == 0 and res.stdout:
                 return res.stdout
         except Exception:
@@ -365,54 +392,481 @@ def run_adb_shell(command: str | list[str], timeout: int = 15) -> str:
     return ""
 
 
-def extract_username_from_text(text: str) -> Optional[str]:
+def extract_username_from_text(text: Optional[str]) -> Optional[str]:
     """Extract Roblox username from XML shared preferences, JSON, or key-value activity state."""
     if not text:
         return None
+
+    import html
     invalid_usernames = ("null", "none", "unknown", "false", "true", "undefined", "default", "guest", "❓")
-    # 1. Check XML string tags: <string name="...Username...">username</string> or with attributes
+    historical_keywords = ("previous", "signout", "signedout", "history", "last_logged", "old_user", "prior_")
+
+    # Clean non-printable control characters and null bytes (excluding \t, \n, \r)
+    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text)
+
+    def _validate_username(val: Any) -> Optional[str]:
+        if not val:
+            return None
+        if isinstance(val, (int, float, dict, list)):
+            return None
+        s = str(val).strip()
+        # Unescape HTML entities
+        s = html.unescape(s)
+        # Unwrap quotes if stringified JSON
+        if (s.startswith('"') and s.endswith('"')) or (s.startswith("'") and s.endswith("'")):
+            try:
+                unquoted = json.loads(s, strict=False)
+                if isinstance(unquoted, str):
+                    s = unquoted.strip()
+                else:
+                    s = s.strip('"\' ')
+            except Exception:
+                s = s.strip('"\' ')
+        # Remove any residual escaped quotes or leading/trailing punctuation
+        s = s.replace('\\"', '').replace('\\', '').strip('"\'; \t\r\n')
+        if s and s.lower() not in invalid_usernames and not s.startswith("❓"):
+            if re.match(r"^[a-zA-Z0-9_]{3,30}$", s):
+                return s
+        return None
+
+    def _extract_from_dict(d: dict, depth: int = 0) -> Optional[str]:
+        if depth > 3:
+            return None
+        # Preferred keys for active user
+        preferred_keys = [
+            "Username", "RobloxUsername", "CurrentUsername",
+            "username", "roblox_username", "current_username",
+            "DisplayName", "display_name",
+            "AccountName", "account_name",
+            "CurrentUser", "current_user",
+            "User", "user",
+            "screen_name", "user_name"
+        ]
+        keys_to_check = list(preferred_keys)
+        if depth > 0:
+            keys_to_check.extend(["name", "Name"])
+        for k in keys_to_check:
+            if k in d:
+                v = d[k]
+                u = _validate_username(v)
+                if u:
+                    return u
+                if isinstance(v, dict):
+                    sub = _extract_from_dict(v, depth + 1)
+                    if sub:
+                        return sub
+                elif isinstance(v, str) and v.strip().startswith("{") and v.strip().endswith("}"):
+                    try:
+                        sub_d = json.loads(v.strip(), strict=False)
+                        if isinstance(sub_d, dict):
+                            sub = _extract_from_dict(sub_d, depth + 1)
+                            if sub:
+                                return sub
+                    except Exception:
+                        pass
+
+        # Check dotted or namespaced keys (e.g. Roblox.CurrentUser.Username)
+        for k, v in d.items():
+            k_lower = k.lower()
+            if any(hk in k_lower for hk in historical_keywords):
+                continue
+            if k_lower.endswith((".username", "_username", ".displayname", "_displayname")) or k_lower in ("username", "robloxusername", "currentusername"):
+                u = _validate_username(v)
+                if u:
+                    return u
+                if isinstance(v, dict):
+                    sub = _extract_from_dict(v, depth + 1)
+                    if sub:
+                        return sub
+                elif isinstance(v, str) and v.strip().startswith("{") and v.strip().endswith("}"):
+                    try:
+                        sub_d = json.loads(v.strip(), strict=False)
+                        if isinstance(sub_d, dict):
+                            sub = _extract_from_dict(sub_d, depth + 1)
+                            if sub:
+                                return sub
+                    except Exception:
+                        pass
+        return None
+
+    # 1. Iterate through all JSON objects in stream (handles concatenated files/multi-user outputs)
+    trimmed = text.strip()
+    decoder = json.JSONDecoder(strict=False)
+    idx = 0
+    has_previous = False
+    found_any_dict = False
+
+    while idx < len(trimmed):
+        next_brace = trimmed.find("{", idx)
+        if next_brace == -1:
+            break
+        try:
+            data, end_idx = decoder.raw_decode(trimmed, next_brace)
+            idx = max(end_idx, next_brace + 1)
+            if isinstance(data, dict):
+                found_any_dict = True
+                u = _extract_from_dict(data)
+                if u:
+                    return u
+                if any(any(hk in str(k).lower() for hk in historical_keywords) for k in data.keys()):
+                    has_previous = True
+        except Exception:
+            idx = next_brace + 1
+
+    # Strip PreviousAccountsList and historical accounts before regex fallbacks (balanced bracket matching)
+    cleaned_text = text
+    for kw in ("previousaccountslist", "previousaccounts", "savedaccounts", "accountshistory"):
+        pos = 0
+        while pos < len(cleaned_text):
+            m = re.search(r'(?i)["\']?' + re.escape(kw) + r'["\']?\s*:\s*', cleaned_text[pos:])
+            if not m:
+                break
+            start = pos + m.start()
+            val_start = pos + m.end()
+            if val_start < len(cleaned_text):
+                ch = cleaned_text[val_start]
+                if ch in ('"', "'"):
+                    str_m = re.match(r'^(?:"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\')', cleaned_text[val_start:])
+                    if str_m:
+                        end = val_start + str_m.end()
+                        cleaned_text = cleaned_text[:start] + cleaned_text[end:]
+                        pos = start
+                        continue
+                elif ch in ('{', '['):
+                    stack = [ch]
+                    curr = val_start + 1
+                    in_str = None
+                    while curr < len(cleaned_text) and stack:
+                        c = cleaned_text[curr]
+                        if in_str:
+                            if c == '\\':
+                                curr += 1
+                            elif c == in_str:
+                                in_str = None
+                        else:
+                            if c in ('"', "'"):
+                                in_str = c
+                            elif c in ('{', '['):
+                                stack.append(c)
+                            elif c == '}' and stack[-1] == '{':
+                                stack.pop()
+                            elif c == ']' and stack[-1] == '[':
+                                stack.pop()
+                        curr += 1
+                    cleaned_text = cleaned_text[:start] + cleaned_text[curr:]
+                    pos = start
+                    continue
+            pos = val_start
+
+    # Also apply regex cleanup for any flat or malformed historical entries
+    cleaned_text = re.sub(r'(?i)["\']?previousaccounts(?:list)?["\']?\s*:\s*(?:\[[^\]]*\]|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|\{[^\}]*\})', '', cleaned_text)
+
+    # 2. Check XML string tags: <string name="...Username...">username</string> or with attributes
+    unescaped_text = html.unescape(cleaned_text)
     xml_patterns = [
-        r'<(?:string|entry)\s+[^>]*?(?:name|key)=["\'][^"\']*(?i:username|roblox_?user|account_?name|current_?user|display_?name|screen_?name)[^"\']*["\'][^>]*>\s*([a-zA-Z0-9_]{3,30})\s*</(?:string|entry)>',
-        r'<(?:string|entry)\s+[^>]*?(?:name|key)=["\'][^"\']*(?i:username|roblox_?user|account_?name|current_?user|display_?name|screen_?name)[^"\']*["\'][^>]*?value=["\']\s*([a-zA-Z0-9_]{3,30})\s*["\']',
-        r'<(?:string|entry)\s+[^>]*?value=["\']\s*([a-zA-Z0-9_]{3,30})\s*["\'][^>]*?(?:name|key)=["\'][^"\']*(?i:username|roblox_?user|account_?name|current_?user|display_?name|screen_?name)[^"\']*["\']',
-        r'<(?:string|entry)\s+[^>]*?(?:name|key)=["\'](?:Roblox)?(?:User|Account|Current)?(?:Name)?["\'][^>]*>\s*([a-zA-Z0-9_]{3,30})\s*</(?:string|entry)>',
+        r'<(?:string|entry)\s+[^>]*?(?:name|key)=["\'](?P<key>[^"\']*(?i:username|roblox_?user|account_?name|current_?user|display_?name|screen_?name)[^"\']*)["\'][^>]*>\s*(?:["\']|&quot;)?\s*(?P<val>[a-zA-Z0-9_]{3,30})\s*(?:["\']|&quot;)?\s*</(?:string|entry)>',
+        r'<(?:string|entry)\s+[^>]*?(?:name|key)=["\'](?P<key>[^"\']*(?i:username|roblox_?user|account_?name|current_?user|display_?name|screen_?name)[^"\']*)["\'][^>]*?value=["\']\s*(?:["\']|&quot;)?\s*(?P<val>[a-zA-Z0-9_]{3,30})\s*(?:["\']|&quot;)?\s*["\']',
+        r'<(?:string|entry)\s+[^>]*?value=["\']\s*(?:["\']|&quot;)?\s*(?P<val>[a-zA-Z0-9_]{3,30})\s*(?:["\']|&quot;)?\s*["\'][^>]*?(?:name|key)=["\'](?P<key>[^"\']*(?i:username|roblox_?user|account_?name|current_?user|display_?name|screen_?name)[^"\']*)["\']',
+        r'<(?:string|entry)\s+[^>]*?(?:name|key)=["\'](?P<key>(?:Roblox)?(?:User|Account|Current)?(?:Name)?)["\'][^>]*>\s*(?:["\']|&quot;)?\s*(?P<val>[a-zA-Z0-9_]{3,30})\s*(?:["\']|&quot;)?\s*</(?:string|entry)>',
     ]
     for pat in xml_patterns:
-        m = re.search(pat, text, re.IGNORECASE)
-        if m:
-            val = m.group(1).strip()
-            if val and val.lower() not in invalid_usernames:
+        for m in re.finditer(pat, unescaped_text, re.IGNORECASE):
+            key_attr = m.group("key").lower()
+            if any(hk in key_attr for hk in historical_keywords):
+                continue
+            val = _validate_username(m.group("val"))
+            if val:
                 return val
 
-    # 2. Check JSON keys: "username": "...", "RobloxUsername": "..."
+    # If structured JSON was found and had historical/signed-out accounts with NO active user in JSON or XML,
+    # cleanly return None (logged-out state).
+    if found_any_dict and has_previous:
+        return None
+
+    # 3. Check JSON keys (regex pattern including dotted names and escaped quotes)
     json_patterns = [
-        r'["\'](?:username|roblox_?username|account_?name|user_name|current_?user|account|display_?name|screen_?name)["\']\s*:\s*["\']\s*([a-zA-Z0-9_]{3,30})\s*["\']',
+        r'(?:\\?["\'])(?:[a-zA-Z0-9_\.]*\.)?(?:username|roblox_?username|account_?name|user_name|current_?username|display_?name|screen_?name)(?:\\?["\'])\s*:\s*(?:\\?["\'])+(?:[a-zA-Z0-9_\.]*\.)?([a-zA-Z0-9_]{3,30})(?:\\?["\'])+',
+        r'(?:\\?["\'])(?:[a-zA-Z0-9_\.]*\.)?(?:username|roblox_?username|account_?name|user_name|current_?username|display_?name|screen_?name)(?:\\?["\'])\s*:\s*(?:\\?["\'])?\s*([a-zA-Z0-9_]{3,30})\s*(?:\\?["\'])?',
     ]
     for pat in json_patterns:
-        m = re.search(pat, text, re.IGNORECASE)
+        m = re.search(pat, cleaned_text, re.IGNORECASE)
         if m:
-            val = m.group(1).strip()
-            if val and val.lower() not in invalid_usernames:
+            val = _validate_username(m.group(1))
+            if val:
                 return val
 
-    # 3. Check key-value or activity state
+    # 4. Check key-value or activity state
     kv_patterns = [
-        r'(?i:\busername|\broblox_?username|\baccount_?name|\bdisplay_?name|\bscreen_?name)\s*[:=]\s*["\']?\s*([a-zA-Z0-9_]{3,30})\b',
+        r'(?i:\busername|\broblox_?username|\broblox_?user|\baccount_?name|\buser_name|\bcurrent_?username|\bdisplay_?name|\bscreen_?name)\s*[:=]\s*["\']?\s*([a-zA-Z0-9_]{3,30})\b',
     ]
     for pat in kv_patterns:
-        m = re.search(pat, text, re.IGNORECASE)
+        m = re.search(pat, cleaned_text, re.IGNORECASE)
         if m:
-            val = m.group(1).strip()
-            if val and val.lower() not in invalid_usernames:
+            val = _validate_username(m.group(1))
+            if val:
                 return val
 
     return None
 
 
-def query_tab_list() -> list[dict[str, Any]]:
+def get_acc_fallback_username(
+    tab_num: int,
+    device_id: Optional[str] = None,
+    acc_path: Optional[pathlib.Path | str] = None,
+) -> Optional[str]:
     """
-    Query running Roblox app instances using ADB, map them to Tab numbers,
-    and determine the logged-in Roblox username per instance.
+    Fallback to acc.txt when app data is blocked by Android sandbox/permissions.
+    Maps Tab N to the N-th account in the current device's section in acc.txt.
+    Returns: 'username (acc.txt)' or None.
+    """
+    try:
+        t_num = int(tab_num)
+        if t_num < 1:
+            return None
+    except (TypeError, ValueError):
+        return None
+
+    # Resolve device id
+    dev_id = device_id or config.load_device_id() or os.environ.get("DEVICE_ID")
+    if not dev_id:
+        cfg = config.load_agent_config()
+        dev_id = cfg.get("device_id") or cfg.get("device_name")
+        if not dev_id:
+            try:
+                shouko_cfg = pathlib.Path("/storage/emulated/0/Download/Shouko/config.json")
+                if shouko_cfg.is_file():
+                    cfg_data = json.loads(shouko_cfg.read_text(encoding="utf-8"))
+                    dev_id = cfg_data.get("device_name") or cfg_data.get("device_id")
+            except Exception:
+                pass
+
+    if not dev_id:
+        return None
+
+    norm_dev = (config.normalize_device_id(dev_id) or str(dev_id).strip().strip("'\"")).lower()
+
+    # Determine acc.txt path (priority: explicit acc_path -> config.DEFAULT_ACC_TXT_PATH -> Shouko dir)
+    candidate_paths = []
+    if acc_path:
+        try:
+            if isinstance(acc_path, (str, pathlib.Path)):
+                candidate_paths.append(pathlib.Path(acc_path))
+        except Exception:
+            pass
+    if hasattr(config, "DEFAULT_ACC_TXT_PATH"):
+        candidate_paths.append(config.DEFAULT_ACC_TXT_PATH)
+    candidate_paths.append(pathlib.Path("/storage/emulated/0/Download/Shouko/acc.txt"))
+    try:
+        def_paths = account_manager.get_default_paths()
+        if def_paths.get("acc_file"):
+            candidate_paths.append(pathlib.Path(def_paths["acc_file"]))
+    except Exception:
+        pass
+
+    target_file = None
+    for cp in candidate_paths:
+        try:
+            if cp.is_file():
+                target_file = cp
+                break
+        except Exception:
+            pass
+
+    if not target_file:
+        return None
+
+    try:
+        acc_content = target_file.read_text(encoding="utf-8-sig", errors="ignore")
+    except Exception:
+        return None
+
+    if not acc_content.strip():
+        return None
+
+    try:
+        sections = account_manager.parse_acc_sections(acc_content)
+    except Exception:
+        sections = {}
+
+    dev_num = None
+    m_num = re.search(r"\d+", norm_dev)
+    if m_num:
+        dev_num = int(m_num.group(0))
+
+    sec = sections.get(norm_dev)
+    if not sec and dev_num is not None:
+        sec = sections.get(f"m{m_num.group(0)}") or sections.get(f"m{dev_num}") or sections.get(f"m{dev_num:02d}")
+        if not sec:
+            for k, v in sections.items():
+                km = re.search(r"\d+", k)
+                if km and int(km.group(0)) == dev_num:
+                    sec = v
+                    break
+
+    valid_accounts = []
+    if sec:
+        accounts = sec.get("accounts", [])
+        for acc in accounts:
+            u = str(acc.get("username") or "").strip()
+            if u and not u.startswith(("#", "//", ";")) and re.match(r"^[a-zA-Z0-9_]{3,30}$", u):
+                valid_accounts.append(acc)
+
+    # Fallback: scan lines under matched section in raw acc_content if accounts were plain usernames without colons
+    if not valid_accounts:
+        pats = [re.escape(norm_dev)]
+        if dev_num is not None:
+            pats.extend([f"m{dev_num}", f"m0{dev_num}", f"m{dev_num:02d}"])
+        header_pattern = re.compile(r"^\s*(?:\[|#|//)?\s*(?:" + "|".join(pats) + r")(?=[_(\s\].:]|$)", re.IGNORECASE)
+        in_target_section = False
+        for line in acc_content.splitlines():
+            line_s = line.strip()
+            if not line_s:
+                continue
+            if re.match(r"^\s*(?:\[|#|//)?\s*[Mm]\d+(?=[_(\s\].:]|$)", line_s, re.IGNORECASE) and ":" not in line_s:
+                if header_pattern.match(line_s):
+                    in_target_section = True
+                    continue
+                elif in_target_section:
+                    break
+            if in_target_section:
+                if line_s.startswith(("#", "//", ";")):
+                    continue
+                cand_u = line_s.split(":")[0].strip()
+                if cand_u and re.match(r"^[a-zA-Z0-9_]{3,30}$", cand_u):
+                    valid_accounts.append({"username": cand_u})
+
+    idx = t_num - 1
+    if 0 <= idx < len(valid_accounts):
+        acc = valid_accounts[idx]
+        u = str(acc.get("username") or "").strip()
+        if u:
+            return u if u.endswith("(acc.txt)") else f"{u} (acc.txt)"
+
+    return None
+
+
+def get_server_links_fallback_username(
+    tab_num: int,
+    pkg: str,
+    links_path: Optional[pathlib.Path | str] = None,
+) -> Optional[str]:
+    """Check if server_links.txt has username mapping for this package/tab."""
+    try:
+        t_num = int(tab_num)
+        if t_num < 1:
+            return None
+    except (TypeError, ValueError):
+        return None
+
+    lp = None
+    if links_path:
+        try:
+            if isinstance(links_path, (str, pathlib.Path)):
+                lp = pathlib.Path(links_path)
+        except Exception:
+            pass
+    if not lp:
+        lp = getattr(config, "DEFAULT_SERVER_LINKS_PATH", pathlib.Path("/storage/emulated/0/Download/Shouko/server_links.txt"))
+
+    try:
+        if not lp.is_file():
+            return None
+        lines = lp.read_text(encoding="utf-8-sig", errors="ignore").splitlines()
+        for line in lines:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) >= 3 and (parts[0] == pkg or parts[0] == str(t_num) or parts[0].lower() in (f"tab {t_num}", f"tab{t_num}")):
+                candidate = parts[2] if not parts[2].startswith("http") else parts[1]
+                candidate_clean = candidate.strip()
+                if (
+                    candidate_clean
+                    and re.match(r"^[a-zA-Z0-9_]{3,30}$", candidate_clean)
+                    and candidate_clean.lower() not in ("null", "none", "unknown", "false", "true", "undefined", "default", "guest", "❓")
+                    and not candidate_clean.startswith("❓")
+                ):
+                    return candidate_clean
+                u = extract_username_from_text(candidate)
+                if u:
+                    return u
+    except Exception:
+        pass
+    return None
+
+
+def format_tab_list_html(device_id: str, tabs: list[dict[str, Any]]) -> str:
+    """
+    Format tab list into Telegram-compatible HTML string.
+    Ensures special characters in usernames and device IDs are safely escaped.
+    Format:
+      📱 <b>Tab List — M77</b>
+      Tab 1: username_real
+      Tab 2: username_acc (acc.txt)
+      Tab 3: ❓ (unknown)
+    """
+    import html
+    dev_name = html.escape(str(device_id or "M77").upper(), quote=False)
+    header = f"📱 <b>Tab List — {dev_name}</b>"
+    if not tabs:
+        return f"{header}\n(Không có tab Roblox nào đang chạy)"
+
+    valid_tabs = [t for t in tabs if isinstance(t, dict)]
+    if not valid_tabs:
+        return f"{header}\n(Không có tab Roblox nào đang chạy)"
+
+    def _sort_key(t: dict[str, Any]) -> int:
+        raw_val = t.get("tab") if t.get("tab") is not None else t.get("tab_index")
+        try:
+            return int(raw_val)
+        except (TypeError, ValueError):
+            return 0
+
+    sorted_tabs = sorted(valid_tabs, key=_sort_key)
+    lines = []
+    current_length = len(header) + 1
+    for i, t in enumerate(sorted_tabs):
+        raw_tab_val = t.get("tab") if t.get("tab") is not None else t.get("tab_index")
+        tab_num = html.escape(str(raw_tab_val if raw_tab_val is not None else "?"), quote=False)
+        raw_u = t.get("username")
+        if isinstance(raw_u, (dict, list)):
+            raw_u_str = ""
+        elif raw_u is not None:
+            raw_u_str = str(raw_u).strip()
+        else:
+            raw_u_str = ""
+        is_unknown = (
+            not raw_u_str
+            or raw_u_str == "❓"
+            or raw_u_str.startswith("❓")
+            or raw_u_str.lower() in ("unknown", "none", "null", "undefined", "guest", "default")
+            or raw_u_str.startswith(("{", "["))
+        )
+        uname = "❓ (unknown)" if is_unknown else html.escape(raw_u_str[:50], quote=False)
+        line = f"Tab {tab_num}: {uname}"
+        if current_length + len(line) + 1 > 3900:
+            remaining = len(sorted_tabs) - i
+            lines.append(f"... và còn {remaining} tab khác")
+            break
+        lines.append(line)
+        current_length += len(line) + 1
+
+    return f"{header}\n" + "\n".join(lines)
+
+
+def query_tab_list(
+    device_id: Optional[str] = None,
+    acc_path: Optional[pathlib.Path | str] = None,
+    links_path: Optional[pathlib.Path | str] = None,
+) -> list[dict[str, Any]]:
+    """
+    Query running Roblox app instances using ADB / local environment, map them to Tab numbers,
+    and determine the logged-in Roblox username per instance via multi-tier fallback:
+    1. Direct Python Path.read_text() check if accessible
+    2. appStorage.json exact read (cat, su -c, /system/bin/su -c, /system/xbin/su -c, run-as)
+    3. Shared preferences XML (shared_prefs/*.xml) and app files
+    4. dumpsys activity analysis
+    5. Config fallback (acc.txt correlation, server_links.txt)
     Returns a list of dicts: [{'tab': 1, 'package': '...', 'username': '...'}, ...]
     """
     # 1. Discover running Roblox instances via ADB dumpsys activity
@@ -448,7 +902,46 @@ def query_tab_list() -> list[dict[str, Any]]:
             seen_pkgs.add(pkg)
             running_pkgs.append(pkg)
 
-    # 2. Assign tab numbers with collision prevention:
+    # Fallback to local /proc discovery if running on Linux/Android host without ADB output
+    if not running_pkgs:
+        try:
+            proc_root = pathlib.Path("/proc")
+            if proc_root.is_dir():
+                for pid_entry in proc_root.iterdir():
+                    if pid_entry.name.isdigit():
+                        cmdline_f = pid_entry / "cmdline"
+                        if cmdline_f.is_file():
+                            raw_cmdline = cmdline_f.read_text(errors="ignore")
+                            for m in re.finditer(r"\b(com\.tinh\.vv\.[a-z0-9_\.]+|com\.roblox\.client)\b", raw_cmdline):
+                                p = m.group(1)
+                                if p not in seen_pkgs:
+                                    seen_pkgs.add(p)
+                                    running_pkgs.append(p)
+        except Exception:
+            pass
+
+    # 2. Map running package to Android user ID (e.g. 0, 10) if detectable from dumpsys or ps
+    pkg_user_map: dict[str, int] = {}
+    if dumpsys_out:
+        for pkg in running_pkgs:
+            m_u = re.search(r"(?:u(\d+)\s+" + re.escape(pkg) + r"/|U=(\d+).*?\b" + re.escape(pkg) + r"\b|\b" + re.escape(pkg) + r"/u(\d+)a\d+)", dumpsys_out)
+            if m_u:
+                try:
+                    uid_str = next(g for g in m_u.groups() if g is not None)
+                    pkg_user_map[pkg] = int(uid_str)
+                except Exception:
+                    pass
+    if ps_out:
+        for pkg in running_pkgs:
+            if pkg not in pkg_user_map:
+                m_ps = re.search(r"^\s*u(\d+)_a\d+\s+.*\b" + re.escape(pkg) + r"\b", ps_out, re.MULTILINE)
+                if m_ps:
+                    try:
+                        pkg_user_map[pkg] = int(m_ps.group(1))
+                    except Exception:
+                        pass
+
+    # 3. Assign tab numbers with collision prevention:
     # Pass 1: Canonical assignments for mapped clone packages (1..10)
     used_tabs = set()
     assigned = []
@@ -469,25 +962,153 @@ def query_tab_list() -> list[dict[str, Any]]:
         used_tabs.add(t)
         assigned.append((t, pkg))
 
-    # 3. Determine logged-in username for each running instance
+    # 4. Determine logged-in username for each running instance via Multi-Tier Fallback
     tab_list = []
     for tab_num, pkg in assigned:
-        # Check shared preferences first (including multi-user profile paths /data/user/*/)
-        cmd_prefs = f"cat /data/data/{pkg}/shared_prefs/{pkg}_preferences.xml /data/data/{pkg}/shared_prefs/com.roblox.client_preferences.xml /data/data/{pkg}/shared_prefs/*.xml /data/user/*/{pkg}/shared_prefs/*.xml 2>/dev/null"
-        prefs_content = run_adb_shell(cmd_prefs)
-        username = extract_username_from_text(prefs_content)
+        username = None
+        user_id = pkg_user_map.get(pkg)
+        user_ids_to_try = [0, 10]
+        if user_id is not None and user_id not in user_ids_to_try:
+            user_ids_to_try.insert(0, user_id)
+        elif user_id == 10:
+            user_ids_to_try = [10, 0]
 
-        # Check app data files if not found
+        # --- Tier 0: Direct filesystem read via Python Path.read_text() ---
+        candidate_direct_files = [
+            pathlib.Path(f"/data/data/{pkg}/files/appData/LocalStorage/appStorage.json"),
+            pathlib.Path(f"/data/data/{pkg}/files/appStorage.json"),
+        ]
+        for uid in user_ids_to_try:
+            candidate_direct_files.append(pathlib.Path(f"/data/user/{uid}/{pkg}/files/appData/LocalStorage/appStorage.json"))
+            candidate_direct_files.append(pathlib.Path(f"/data/user/{uid}/{pkg}/files/appStorage.json"))
+        candidate_direct_files.extend([
+            pathlib.Path(f"/data/data/{pkg}/shared_prefs/{pkg}_preferences.xml"),
+            pathlib.Path(f"/data/data/{pkg}/shared_prefs/com.roblox.client_preferences.xml"),
+        ])
+        for uid in user_ids_to_try:
+            candidate_direct_files.append(pathlib.Path(f"/data/user/{uid}/{pkg}/shared_prefs/{pkg}_preferences.xml"))
+            candidate_direct_files.append(pathlib.Path(f"/data/user/{uid}/{pkg}/shared_prefs/com.roblox.client_preferences.xml"))
+
+        try:
+            data_user_dir = pathlib.Path("/data/user")
+            if data_user_dir.is_dir():
+                for u_dir in data_user_dir.iterdir():
+                    candidate_direct_files.append(u_dir / pkg / "files/appData/LocalStorage/appStorage.json")
+                    candidate_direct_files.append(u_dir / pkg / "files/appStorage.json")
+                    candidate_direct_files.append(u_dir / pkg / f"shared_prefs/{pkg}_preferences.xml")
+        except Exception:
+            pass
+
+        for p in candidate_direct_files:
+            try:
+                if p.is_file():
+                    content = p.read_text(encoding="utf-8", errors="ignore")
+                    username = extract_username_from_text(content)
+                    if username:
+                        break
+            except Exception:
+                pass
+
+        # --- Tier 1: Exact read of appStorage.json via multiple shell/ADB commands ---
         if not username:
-            cmd_files = f"cat /data/data/{pkg}/files/*.json /data/data/{pkg}/files/user* /data/data/{pkg}/files/*.txt /data/data/{pkg}/files/*.dat /data/user/*/{pkg}/files/*.json /data/user/*/{pkg}/files/user* /data/user/*/{pkg}/files/*.txt /data/user/*/{pkg}/files/*.dat 2>/dev/null"
-            files_content = run_adb_shell(cmd_files)
-            username = extract_username_from_text(files_content)
+            appstorage_paths = [
+                f"/data/data/{pkg}/files/appData/LocalStorage/appStorage.json",
+                f"/data/data/{pkg}/files/appStorage.json",
+            ]
+            for uid in user_ids_to_try:
+                appstorage_paths.append(f"/data/user/{uid}/{pkg}/files/appData/LocalStorage/appStorage.json")
+                appstorage_paths.append(f"/data/user/{uid}/{pkg}/files/appStorage.json")
+            appstorage_paths.append(f"/data/user/*/{pkg}/files/appData/LocalStorage/appStorage.json")
+            appstorage_paths.append(f"/data/user/*/{pkg}/files/appStorage.json")
+            paths_arg = " ".join(appstorage_paths)
 
-        # Check activity state in dumpsys output if not found
+            appstorage_cmds = [
+                f"cat {paths_arg} 2>/dev/null",
+                f"su -c 'cat {paths_arg} 2>/dev/null'",
+                f"/system/bin/su -c 'cat {paths_arg} 2>/dev/null'",
+                f"/system/xbin/su -c 'cat {paths_arg} 2>/dev/null'",
+                f"run-as {pkg} cat files/appData/LocalStorage/appStorage.json 2>/dev/null",
+                f"run-as {pkg} cat files/appStorage.json 2>/dev/null",
+                f"run-as {pkg} cat /data/data/{pkg}/files/appData/LocalStorage/appStorage.json 2>/dev/null",
+                f"run-as {pkg} cat /data/data/{pkg}/files/appStorage.json 2>/dev/null",
+            ]
+            if user_id is not None:
+                appstorage_cmds.append(f"run-as --user {user_id} {pkg} cat files/appData/LocalStorage/appStorage.json 2>/dev/null")
+                appstorage_cmds.append(f"run-as --user {user_id} {pkg} cat files/appStorage.json 2>/dev/null")
+            for uid in user_ids_to_try:
+                if uid != 0 and uid != user_id:
+                    appstorage_cmds.append(f"run-as --user {uid} {pkg} cat files/appData/LocalStorage/appStorage.json 2>/dev/null")
+                    appstorage_cmds.append(f"run-as --user {uid} {pkg} cat files/appStorage.json 2>/dev/null")
+
+            for cmd in appstorage_cmds:
+                out = run_adb_shell(cmd)
+                if out:
+                    username = extract_username_from_text(out)
+                    if username:
+                        break
+
+        # --- Tier 2: Search in shared preferences XML & app data files ---
+        if not username:
+            shared_prefs_paths = [
+                f"/data/data/{pkg}/shared_prefs/{pkg}_preferences.xml",
+                f"/data/data/{pkg}/shared_prefs/com.roblox.client_preferences.xml",
+                f"/data/data/{pkg}/shared_prefs/*.xml",
+            ]
+            for uid in user_ids_to_try:
+                shared_prefs_paths.append(f"/data/user/{uid}/{pkg}/shared_prefs/{pkg}_preferences.xml")
+                shared_prefs_paths.append(f"/data/user/{uid}/{pkg}/shared_prefs/com.roblox.client_preferences.xml")
+                shared_prefs_paths.append(f"/data/user/{uid}/{pkg}/shared_prefs/*.xml")
+            shared_prefs_paths.append(f"/data/user/*/{pkg}/shared_prefs/*.xml")
+            sp_arg = " ".join(shared_prefs_paths)
+
+            shared_prefs_cmds = [
+                f"cat {sp_arg} 2>/dev/null",
+                f"su -c 'cat {sp_arg} 2>/dev/null'",
+                f"/system/bin/su -c 'cat {sp_arg} 2>/dev/null'",
+                f"/system/xbin/su -c 'cat {sp_arg} 2>/dev/null'",
+                f"run-as {pkg} cat shared_prefs/{pkg}_preferences.xml 2>/dev/null",
+                f"run-as {pkg} cat shared_prefs/com.roblox.client_preferences.xml 2>/dev/null",
+                f"cat /data/data/{pkg}/files/*.json /data/data/{pkg}/files/user* /data/data/{pkg}/files/*.txt /data/data/{pkg}/files/*.dat /data/user/*/{pkg}/files/*.json /data/user/*/{pkg}/files/user* /data/user/*/{pkg}/files/*.txt /data/user/*/{pkg}/files/*.dat 2>/dev/null",
+            ]
+            for cmd in shared_prefs_cmds:
+                out = run_adb_shell(cmd)
+                if out:
+                    username = extract_username_from_text(out)
+                    if username:
+                        break
+
+        # --- Tier 3: Dumpsys activity analysis ---
         if not username and dumpsys_out:
-            pkg_lines = [line for line in dumpsys_out.splitlines() if pkg in line]
+            lines = dumpsys_out.splitlines()
+            pkg_lines = []
+            capturing = False
+            cur_block_lines = 0
+            for line in lines:
+                if not line.strip():
+                    continue
+                if pkg in line:
+                    capturing = True
+                    cur_block_lines = 0
+                    pkg_lines.append(line)
+                elif capturing:
+                    if line.startswith((" ", "\t")):
+                        cur_block_lines += 1
+                        if cur_block_lines <= 35:
+                            pkg_lines.append(line)
+                    else:
+                        capturing = False
             if pkg_lines:
                 username = extract_username_from_text("\n".join(pkg_lines))
+
+        # --- Tier 4: Config Fallback (acc.txt correlation, server_links.txt) ---
+        if not username:
+            fallback_u = get_acc_fallback_username(tab_num=tab_num, device_id=device_id, acc_path=acc_path)
+            if fallback_u:
+                username = fallback_u
+            else:
+                links_u = get_server_links_fallback_username(tab_num=tab_num, pkg=pkg, links_path=links_path)
+                if links_u:
+                    username = links_u
 
         tab_list.append({
             "tab": tab_num,
@@ -498,6 +1119,7 @@ def query_tab_list() -> list[dict[str, Any]]:
     # Sort by tab number ascending
     tab_list.sort(key=lambda x: x["tab"])
     return tab_list
+
 
 
 def handle_incoming_batch_action(
@@ -1130,7 +1752,8 @@ def handle_incoming_batch_action(
             )
             return True
         try:
-            tabs = query_tab_list()
+            acc_path_param = message.get("acc_path")
+            tabs = query_tab_list(device_id=device_id, acc_path=acc_path_param, links_path=links_path)
             status = "OPENED"
             executed = True
             err_msg = None

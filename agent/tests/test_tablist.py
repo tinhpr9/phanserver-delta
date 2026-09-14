@@ -273,6 +273,664 @@ class TestTabList(unittest.TestCase):
         tabs = agent.query_tab_list()
         self.assertEqual(tabs, [])
 
+    def test_extract_username_appstorage_json_structure(self):
+        """Test extract_username_from_text on real appStorage.json payload with active and signed-out users."""
+        sample_json = json.dumps({
+            "PreviousAccountsList": json.dumps({
+                "1111111": {"username": "OldUser123", "signOutTimestamp": 1000}
+            }),
+            "Username": "ActiveRobloxUser99",
+            "DisplayName": "ActiveRobloxUser99",
+            "UserId": "2222222"
+        })
+        self.assertEqual(agent.extract_username_from_text(sample_json), "ActiveRobloxUser99")
+
+        # Key variations
+        self.assertEqual(agent.extract_username_from_text('{"RobloxUsername": "Hero_01"}'), "Hero_01")
+        self.assertEqual(agent.extract_username_from_text('{"username": "Hero_02"}'), "Hero_02")
+        self.assertEqual(agent.extract_username_from_text('{"CurrentUsername": "Hero_03"}'), "Hero_03")
+
+    @mock.patch("agent.agent.run_adb_shell")
+    def test_query_tab_list_tier1_appstorage_su_and_run_as(self, mock_adb):
+        """Test Tier 1: Reading appStorage.json via su and run-as commands."""
+        dumpsys_output = """
+        Stack #1:
+          TaskRecord{101 #101 A=com.tinh.vv.hi U=0}
+            Hist #0: ActivityRecord{1 u0 com.tinh.vv.hi/com.roblox.client.Activity t101}
+          TaskRecord{102 #102 A=com.tinh.vv.hj U=0}
+            Hist #0: ActivityRecord{2 u0 com.tinh.vv.hj/com.roblox.client.Activity t102}
+        """
+        def side_effect(cmd, **kwargs):
+            cmd_str = str(cmd)
+            if "dumpsys" in cmd_str:
+                return dumpsys_output
+            # Tab 1: cat fails, but su -c succeeds
+            if "com.tinh.vv.hi" in cmd_str and "su -c" in cmd_str:
+                return '{"Username": "SuUser99"}'
+            # Tab 2: cat and su fail, but run-as succeeds
+            if "com.tinh.vv.hj" in cmd_str and "run-as" in cmd_str:
+                return '{"Username": "RunAsUser88"}'
+            return ""
+
+        mock_adb.side_effect = side_effect
+        tabs = agent.query_tab_list()
+        self.assertEqual(len(tabs), 2)
+        self.assertEqual(tabs[0]["tab"], 1)
+        self.assertEqual(tabs[0]["username"], "SuUser99")
+        self.assertEqual(tabs[1]["tab"], 2)
+        self.assertEqual(tabs[1]["username"], "RunAsUser88")
+
+    @mock.patch("agent.agent.run_adb_shell")
+    def test_query_tab_list_tier4_acc_txt_fallback_correlation(self, mock_adb):
+        """Test Tier 4: Config fallback to acc.txt when app data is blocked by sandbox permissions."""
+        dumpsys_output = """
+        Stack #1:
+          TaskRecord{101 #101 A=com.tinh.vv.hi U=0}
+            Hist #0: ActivityRecord{1 u0 com.tinh.vv.hi/com.roblox.client.Activity t101}
+          TaskRecord{102 #102 A=com.tinh.vv.hj U=0}
+            Hist #0: ActivityRecord{2 u0 com.tinh.vv.hj/com.roblox.client.Activity t102}
+          TaskRecord{103 #103 A=com.tinh.vv.hk U=0}
+            Hist #0: ActivityRecord{3 u0 com.tinh.vv.hk/com.roblox.client.Activity t103}
+        """
+        # ADB shell returns nothing for file reads (simulating sandbox permission denied)
+        def side_effect(cmd, **kwargs):
+            cmd_str = str(cmd)
+            if "dumpsys" in cmd_str:
+                return dumpsys_output
+            return ""
+
+        mock_adb.side_effect = side_effect
+
+        mock_acc_content = """
+M77___(gag2)
+AccountOne:pass1:
+AccountTwo:pass2:
+AccountThree:pass3:
+"""
+        import tempfile
+        with tempfile.NamedTemporaryFile("w+", encoding="utf-8", suffix="_acc.txt", delete=False) as tf:
+            tf.write(mock_acc_content)
+            tf.flush()
+            temp_acc_path = tf.name
+
+        try:
+            tabs = agent.query_tab_list(device_id="m77", acc_path=temp_acc_path)
+            self.assertEqual(len(tabs), 3)
+            self.assertEqual(tabs[0]["tab"], 1)
+            self.assertEqual(tabs[0]["username"], "AccountOne (acc.txt)")
+            self.assertEqual(tabs[1]["tab"], 2)
+            self.assertEqual(tabs[1]["username"], "AccountTwo (acc.txt)")
+            self.assertEqual(tabs[2]["tab"], 3)
+            self.assertEqual(tabs[2]["username"], "AccountThree (acc.txt)")
+        finally:
+            pathlib.Path(temp_acc_path).unlink(missing_ok=True)
+
+    @mock.patch("agent.agent.run_adb_shell")
+    def test_query_tab_list_precedence_real_username_over_acc_txt(self, mock_adb):
+        """Test that real username from appStorage.json has precedence over acc.txt fallback."""
+        dumpsys_output = """
+        Stack #1:
+          TaskRecord{101 #101 A=com.tinh.vv.hi U=0}
+            Hist #0: ActivityRecord{1 u0 com.tinh.vv.hi/com.roblox.client.Activity t101}
+          TaskRecord{102 #102 A=com.tinh.vv.hj U=0}
+            Hist #0: ActivityRecord{2 u0 com.tinh.vv.hj/com.roblox.client.Activity t102}
+        """
+        def side_effect(cmd, **kwargs):
+            cmd_str = str(cmd)
+            if "dumpsys" in cmd_str:
+                return dumpsys_output
+            # Tab 1 has readable appStorage.json
+            if "com.tinh.vv.hi" in cmd_str and "appStorage.json" in cmd_str:
+                return '{"Username": "RealPlayerOne"}'
+            # Tab 2 is blocked
+            return ""
+
+        mock_adb.side_effect = side_effect
+
+        mock_acc_content = """
+M77___(gag2)
+FallbackAcc1:pass1:
+FallbackAcc2:pass2:
+"""
+        import tempfile
+        with tempfile.NamedTemporaryFile("w+", encoding="utf-8", suffix="_acc.txt", delete=False) as tf:
+            tf.write(mock_acc_content)
+            tf.flush()
+            temp_acc_path = tf.name
+
+        try:
+            tabs = agent.query_tab_list(device_id="m77", acc_path=temp_acc_path)
+            self.assertEqual(len(tabs), 2)
+            # Tab 1 should use real username without suffix
+            self.assertEqual(tabs[0]["username"], "RealPlayerOne")
+            # Tab 2 should fallback to acc.txt with suffix
+            self.assertEqual(tabs[1]["username"], "FallbackAcc2 (acc.txt)")
+        finally:
+            pathlib.Path(temp_acc_path).unlink(missing_ok=True)
+
+    @mock.patch("agent.agent.run_adb_shell")
+    def test_query_tab_list_acc_txt_boundary_and_server_links_fallback(self, mock_adb):
+        """Test Tab index beyond acc.txt accounts and server_links.txt fallback."""
+        dumpsys_output = """
+        Stack #1:
+          TaskRecord{101 #101 A=com.tinh.vv.hi U=0}
+            Hist #0: ActivityRecord{1 u0 com.tinh.vv.hi/com.roblox.client.Activity t101}
+          TaskRecord{102 #102 A=com.tinh.vv.hj U=0}
+            Hist #0: ActivityRecord{2 u0 com.tinh.vv.hj/com.roblox.client.Activity t102}
+        """
+        def side_effect(cmd, **kwargs):
+            if "dumpsys" in str(cmd):
+                return dumpsys_output
+            return ""
+
+        mock_adb.side_effect = side_effect
+
+        # acc.txt only has 1 account for M77
+        mock_acc_content = """
+M77___(gag2)
+OnlyOneAcc:pass1:
+"""
+        import tempfile
+        with tempfile.NamedTemporaryFile("w+", encoding="utf-8", suffix="_acc.txt", delete=False) as tf:
+            tf.write(mock_acc_content)
+            tf.flush()
+            temp_acc_path = tf.name
+
+        try:
+            tabs = agent.query_tab_list(device_id="m77", acc_path=temp_acc_path)
+            self.assertEqual(len(tabs), 2)
+            self.assertEqual(tabs[0]["username"], "OnlyOneAcc (acc.txt)")
+            # Tab 2 has no account in M77 section -> None
+            self.assertIsNone(tabs[1]["username"])
+        finally:
+            pathlib.Path(temp_acc_path).unlink(missing_ok=True)
+
+    def test_format_tab_list_html(self):
+        """Test Telegram HTML report formatting and safety escaping."""
+        tabs = [
+            {"tab": 2, "package": "com.tinh.vv.hj", "username": "username_real"},
+            {"tab": 3, "package": "com.tinh.vv.hk", "username": "username_acc (acc.txt)"},
+            {"tab": 4, "package": "com.tinh.vv.hl", "username": None},
+            {"tab": 5, "package": "com.tinh.vv.hm", "username": "<script>alert('xss')&bad</script>"},
+        ]
+        html_out = agent.format_tab_list_html("m77", tabs)
+        self.assertIn("📱 <b>Tab List — M77</b>", html_out)
+        self.assertIn("Tab 2: username_real", html_out)
+        self.assertIn("Tab 3: username_acc (acc.txt)", html_out)
+        self.assertIn("Tab 4: ❓ (unknown)", html_out)
+        self.assertIn("Tab 5: &lt;script&gt;alert('xss')&amp;bad&lt;/script&gt;", html_out)
+
+        # Empty tabs
+        empty_out = agent.format_tab_list_html("m77", [])
+        self.assertIn("(Không có tab Roblox nào đang chạy)", empty_out)
+
+    @mock.patch("subprocess.run")
+    def test_run_adb_shell_tries_multi_su_fallbacks(self, mock_run):
+        """Test that run_adb_shell tries /system/bin/su and /system/xbin/su when standard su fails."""
+        call_count = 0
+        def fake_run(cmd, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            cmd_list = cmd if isinstance(cmd, list) else [cmd]
+            # Succeed only on /system/xbin/su
+            if cmd_list[0] == "/system/xbin/su":
+                res = mock.MagicMock()
+                res.returncode = 0
+                res.stdout = "root_success\n"
+                return res
+            # All earlier commands fail
+            res = mock.MagicMock()
+            res.returncode = 1
+            res.stdout = ""
+            return res
+
+        mock_run.side_effect = fake_run
+        out = agent.run_adb_shell("id")
+        self.assertEqual(out.strip(), "root_success")
+        self.assertGreaterEqual(call_count, 4)
+
+    def test_get_acc_fallback_username_edge_cases(self):
+        """Test edge cases for get_acc_fallback_username: invalid tabs, missing file, empty content."""
+        self.assertIsNone(agent.get_acc_fallback_username(0, device_id="m77"))
+        self.assertIsNone(agent.get_acc_fallback_username(-1, device_id="m77"))
+        self.assertIsNone(agent.get_acc_fallback_username(1, device_id=None, acc_path="/non/existent/path.txt"))
+
+        # Test case insensitivity (M77 vs m77) and header with spaces
+        mock_acc = "\n\nM77___(gag2)  \nUserM77_1:pass1:\nUserM77_2:pass2:extra\n"
+        import tempfile
+        with tempfile.NamedTemporaryFile("w+", encoding="utf-8", suffix="_acc.txt", delete=False) as tf:
+            tf.write(mock_acc)
+            tf.flush()
+            tpath = tf.name
+        try:
+            # Uppercase device_id
+            self.assertEqual(agent.get_acc_fallback_username(1, device_id="M77", acc_path=tpath), "UserM77_1 (acc.txt)")
+            # Lowercase device_id
+            self.assertEqual(agent.get_acc_fallback_username(2, device_id="m77", acc_path=tpath), "UserM77_2 (acc.txt)")
+            # Out of bounds
+            self.assertIsNone(agent.get_acc_fallback_username(3, device_id="m77", acc_path=tpath))
+        finally:
+            pathlib.Path(tpath).unlink(missing_ok=True)
+
+    def test_get_server_links_fallback_username(self):
+        """Test fallback extracting username from server_links.txt if present in pkg,url,username format."""
+        links_content = "com.tinh.vv.hi,https://roblox.com/games/123?linkCode=abc,LinkUser42\n"
+        import tempfile
+        with tempfile.NamedTemporaryFile("w+", encoding="utf-8", suffix="_links.txt", delete=False) as tf:
+            tf.write(links_content)
+            tf.flush()
+            tpath = tf.name
+        try:
+            u = agent.get_server_links_fallback_username(1, "com.tinh.vv.hi", links_path=tpath)
+            self.assertEqual(u, "LinkUser42")
+            # Unmatched pkg
+            self.assertIsNone(agent.get_server_links_fallback_username(2, "com.tinh.vv.hj", links_path=tpath))
+        finally:
+            pathlib.Path(tpath).unlink(missing_ok=True)
+
+    def test_extract_username_quoted_and_stringified_json(self):
+        """Test extraction from stringified JSON, quoted values, dotted keys, and nested dicts."""
+        self.assertEqual(agent.extract_username_from_text('{"Username": "\\"QuotedUser\\""}'), "QuotedUser")
+        self.assertEqual(agent.extract_username_from_text('{"Username": "\'SingleQuoted\'"}'), "SingleQuoted")
+        self.assertEqual(agent.extract_username_from_text('{"Roblox.CurrentUser.Username": "DottedUser"}'), "DottedUser")
+        self.assertEqual(agent.extract_username_from_text('{"CurrentUser": {"name": "NestedDictUser"}}'), "NestedDictUser")
+        self.assertEqual(agent.extract_username_from_text('{"CurrentUser": "{\\"Username\\": \\"StringDictUser\\"}"}'), "StringDictUser")
+
+    def test_extract_username_previous_accounts_isolation(self):
+        """Test that signed-out accounts in PreviousAccountsList do not override active user or leak when logged out."""
+        # Active user present alongside PreviousAccountsList
+        text_with_active = '{"PreviousAccountsList": "[{\\"Username\\": \\"SignedOut1\\"}]", "Username": "\\"ActiveUser\\""}'
+        self.assertEqual(agent.extract_username_from_text(text_with_active), "ActiveUser")
+
+        # Only signed-out accounts present (user logged out)
+        text_signed_out_only = '{"PreviousAccountsList": "[{\\"Username\\": \\"SignedOutOnly\\"}]"}'
+        self.assertIsNone(agent.extract_username_from_text(text_signed_out_only))
+
+    def test_extract_username_xml_quoted_and_entities(self):
+        """Test extraction from XML shared preferences with quotes and HTML entities."""
+        xml_quoted = '<map><string name="Username">"XmlQuoted"</string></map>'
+        self.assertEqual(agent.extract_username_from_text(xml_quoted), "XmlQuoted")
+
+        xml_entity = '<map><string name="Username">&quot;XmlEntity&quot;</string></map>'
+        self.assertEqual(agent.extract_username_from_text(xml_entity), "XmlEntity")
+
+    @mock.patch("agent.agent.run_adb_shell")
+    def test_query_tab_list_tier3_multiline_dumpsys_intent_extras(self, mock_adb):
+        """Test Tier 3: dumpsys where intent extras are on indented lines following the activity record."""
+        dumpsys_multiline = """
+        Stack #1:
+          TaskRecord{101 #101 A=com.tinh.vv.hi U=0}
+            Hist #0: ActivityRecord{1 u0 com.tinh.vv.hi/com.roblox.client.Activity t101}
+              Intent { act=android.intent.action.MAIN flg=0x10000000 cmp=com.tinh.vv.hi/com.roblox.client.Activity }
+                extras: Bundle[{username=RealIntentPlayer}]
+        """
+        def side_effect(cmd, **kwargs):
+            if "dumpsys" in str(cmd):
+                return dumpsys_multiline
+            return ""
+
+        mock_adb.side_effect = side_effect
+        tabs = agent.query_tab_list()
+        self.assertEqual(len(tabs), 1)
+        self.assertEqual(tabs[0]["tab"], 1)
+        self.assertEqual(tabs[0]["username"], "RealIntentPlayer")
+
+    def test_get_acc_fallback_username_leading_zero_and_comments(self):
+        """Test that device IDs with leading zeros (e.g. m077) match sections and comment lines are skipped."""
+        mock_acc = """
+M77___(gag2)
+# Internal note: do not use this line
+ValidUser1:pass1:
+# Another comment
+ValidUser2:pass2:
+"""
+        import tempfile
+        with tempfile.NamedTemporaryFile("w+", encoding="utf-8", suffix="_acc.txt", delete=False) as tf:
+            tf.write(mock_acc)
+            tf.flush()
+            tpath = tf.name
+        try:
+            # m077 should match M77 section
+            self.assertEqual(agent.get_acc_fallback_username(1, device_id="m077", acc_path=tpath), "ValidUser1 (acc.txt)")
+            # Tab 2 should skip comments and map to ValidUser2
+            self.assertEqual(agent.get_acc_fallback_username(2, device_id="m077", acc_path=tpath), "ValidUser2 (acc.txt)")
+        finally:
+            pathlib.Path(tpath).unlink(missing_ok=True)
+
+    def test_format_tab_list_html_non_int_tabs(self):
+        """Test format_tab_list_html does not crash when tab properties are non-integer strings."""
+        tabs = [
+            {"tab": "?", "username": "MysteryUser"},
+            {"tab": None, "tab_index": "2", "username": "TabTwoUser"},
+        ]
+        out = agent.format_tab_list_html("m77", tabs)
+        self.assertIn("Tab ?: MysteryUser", out)
+        self.assertIn("Tab 2: TabTwoUser", out)
+
+    @mock.patch("subprocess.run")
+    def test_run_adb_shell_su_prefix_handling(self, mock_run):
+        """Test that run_adb_shell does not double-nest su when command starts with su -c."""
+        executed_cmds = []
+        def fake_run(cmd, **kwargs):
+            executed_cmds.append(cmd)
+            res = mock.MagicMock()
+            if cmd[0] == "/system/bin/su":
+                res.returncode = 0
+                res.stdout = "su_success\n"
+                return res
+            res.returncode = 1
+            res.stdout = ""
+            return res
+
+        mock_run.side_effect = fake_run
+        out = agent.run_adb_shell("su -c 'cat test'")
+        self.assertEqual(out.strip(), "su_success")
+        found = any(c == ["/system/bin/su", "-c", "cat test"] for c in executed_cmds)
+        self.assertTrue(found, f"Expected unnested su command, got: {executed_cmds}")
+
+    def test_extract_username_concatenated_json_multi_user(self):
+        """Test extraction from concatenated JSON streams where first object is signed-out and second has active user."""
+        # Multi-user stream: user 0 has only PreviousAccountsList, user 10 has active user
+        concat_stream = '{"PreviousAccountsList": "[{\\"Username\\": \\"OldUser\\"}]"}{"Username": "ActiveUser10"}'
+        self.assertEqual(agent.extract_username_from_text(concat_stream), "ActiveUser10")
+
+        # Concatenated with theme/empty object first
+        concat_empty_first = '{"theme": "dark"}{"Username": "ActiveSecond"}'
+        self.assertEqual(agent.extract_username_from_text(concat_empty_first), "ActiveSecond")
+
+        # Multi-object where all objects are signed out
+        concat_all_signed_out = '{"PreviousAccountsList": "[{\\"Username\\": \\"Old1\\"}]"}{"PreviousAccountsList": "[{\\"Username\\": \\"Old2\\"}]"}'
+        self.assertIsNone(agent.extract_username_from_text(concat_all_signed_out))
+
+    def test_extract_username_null_bytes_and_control_chars(self):
+        """Test that UTF-16LE null bytes and unescaped control characters in JSON are handled cleanly."""
+        utf16_like = "{\x00\"\x00U\x00s\x00e\x00r\x00n\x00a\x00m\x00e\x00\"\x00:\x00 \x00\"\x00U\x00t\x00f\x00U\x00s\x00e\x00r\x00\"\x00}\x00"
+        self.assertEqual(agent.extract_username_from_text(utf16_like), "UtfUser")
+
+        # JSON with control character (strict=False)
+        control_char_json = '{"Username": "Ctrl\x01Player"}'
+        self.assertEqual(agent.extract_username_from_text(control_char_json), "CtrlPlayer")
+
+    def test_extract_username_xml_historical_tags_rejected(self):
+        """Test that XML tags with historical keywords (PreviousUsername, LastLoggedInUsername) are rejected."""
+        xml_only_prev = '<map><string name="PreviousUsername">SignedOutXml</string></map>'
+        self.assertIsNone(agent.extract_username_from_text(xml_only_prev))
+
+        xml_with_active = '<map><string name="PreviousUsername">SignedOutXml</string><string name="Username">ActiveXmlUser</string></map>'
+        self.assertEqual(agent.extract_username_from_text(xml_with_active), "ActiveXmlUser")
+
+    @mock.patch("agent.agent.run_adb_shell")
+    def test_query_tab_list_tier3_dumpsys_non_breaking_blocks(self, mock_adb):
+        """Test Tier 3: dumpsys does not break out of loop when earlier block has >25 lines before Intent extras."""
+        dumpsys_large_earlier_block = """
+        Stack #0:
+          mResumedActivity: ActivityRecord{1 u0 com.tinh.vv.hi/com.roblox.client.Activity}
+            line1
+            line2
+            line3
+            line4
+            line5
+            line6
+            line7
+            line8
+            line9
+            line10
+            line11
+            line12
+            line13
+            line14
+            line15
+            line16
+            line17
+            line18
+            line19
+            line20
+            line21
+            line22
+            line23
+            line24
+            line25
+            line26
+            line27
+            line28
+        Stack #1:
+          TaskRecord{101 #101 A=com.tinh.vv.hi U=0}
+            Hist #0: ActivityRecord{1 u0 com.tinh.vv.hi/com.roblox.client.Activity t101}
+              Intent { act=android.intent.action.MAIN }
+                extras: Bundle[{username=DeepHiddenPlayer}]
+        """
+        def side_effect(cmd, **kwargs):
+            if "dumpsys" in str(cmd):
+                return dumpsys_large_earlier_block
+            return ""
+
+        mock_adb.side_effect = side_effect
+        tabs = agent.query_tab_list(acc_path="/dev/null")
+        self.assertEqual(len(tabs), 1)
+        self.assertEqual(tabs[0]["username"], "DeepHiddenPlayer")
+
+    def test_get_acc_fallback_username_type_robustness(self):
+        """Test get_acc_fallback_username handles string tab_num, non-string acc_path, and plain usernames without colons."""
+        mock_acc = """
+M77___(gag2)
+PlainUser1
+PlainUser2
+"""
+        import tempfile
+        with tempfile.NamedTemporaryFile("w+", encoding="utf-8-sig", suffix="_acc.txt", delete=False) as tf:
+            tf.write(mock_acc)
+            tf.flush()
+            tpath = tf.name
+        try:
+            # String tab_num "1" should work without TypeError
+            self.assertEqual(agent.get_acc_fallback_username("1", device_id="m77", acc_path=tpath), "PlainUser1 (acc.txt)")
+            self.assertEqual(agent.get_acc_fallback_username("2", device_id="m77", acc_path=tpath), "PlainUser2 (acc.txt)")
+            # Invalid dict acc_path should not crash with TypeError
+            self.assertIsNone(agent.get_acc_fallback_username(1, device_id="nonexistent_dev_999", acc_path={"invalid": "type"}))
+        finally:
+            pathlib.Path(tpath).unlink(missing_ok=True)
+
+    def test_format_tab_list_html_robustness_and_limits(self):
+        """Test format_tab_list_html filters None elements, non-dict objects, and respects message limits."""
+        tabs = [
+            None,
+            "not a dict",
+            {"tab": 1, "username": "RealUser1"},
+            {"tab": 2, "username": {"invalid": "object"}},
+        ]
+        out = agent.format_tab_list_html("m77", tabs)
+        self.assertIn("Tab 1: RealUser1", out)
+        self.assertIn("Tab 2: ❓ (unknown)", out)
+
+        # Huge number of tabs to trigger Telegram 3900-char truncation bound
+        many_tabs = [{"tab": i, "username": f"User_{i}_" + "x" * 40} for i in range(1, 100)]
+        out_huge = agent.format_tab_list_html("m77", many_tabs)
+        self.assertIn("... và còn", out_huge)
+        self.assertLessEqual(len(out_huge), 4096)
+
+    @mock.patch("agent.agent.run_adb_shell")
+    def test_query_tab_list_multi_user_paths_resolution(self, mock_adb):
+        """Test that query_tab_list detects user 10 from dumpsys and queries /data/user/10/ and run-as --user 10."""
+        executed_cmds = []
+        dumpsys_u10 = """
+        TaskRecord{101 #101 A=com.tinh.vv.hi U=10}
+        Hist #0: ActivityRecord{1 u10 com.tinh.vv.hi/com.roblox.client.Activity t101}
+        """
+        def fake_adb(cmd, **kwargs):
+            cmd_str = str(cmd)
+            executed_cmds.append(cmd_str)
+            if "dumpsys" in cmd_str:
+                return dumpsys_u10
+            if "run-as --user 10" in cmd_str:
+                return '{"Username": "UserInSpace10"}'
+            return ""
+
+        mock_adb.side_effect = fake_adb
+        tabs = agent.query_tab_list(acc_path="/dev/null")
+        self.assertEqual(len(tabs), 1)
+        self.assertEqual(tabs[0]["username"], "UserInSpace10")
+        # Verify /data/user/10/ was checked in shell commands
+        found_u10_path = any("/data/user/10/" in c for c in executed_cmds)
+        self.assertTrue(found_u10_path, f"Expected /data/user/10/ in commands, got: {executed_cmds}")
+        # Verify run-as --user 10 was checked
+        found_run_as_u10 = any("run-as --user 10" in c for c in executed_cmds)
+        self.assertTrue(found_run_as_u10, f"Expected run-as --user 10 in commands, got: {executed_cmds}")
+
+    @mock.patch("subprocess.run")
+    def test_run_adb_shell_xbin_and_bin_su_commands(self, mock_run):
+        """Test that run_adb_shell handles /system/bin/su and /system/xbin/su prefixes unnested."""
+        executed_cmds = []
+        def fake_run(cmd, **kwargs):
+            executed_cmds.append(cmd)
+            res = mock.MagicMock()
+            if cmd[0] in ("/system/bin/su", "/system/xbin/su"):
+                res.returncode = 0
+                res.stdout = "su_ok\n"
+                return res
+            res.returncode = 1
+            res.stdout = ""
+            return res
+
+        mock_run.side_effect = fake_run
+        out1 = agent.run_adb_shell("/system/bin/su -c 'echo 1'")
+        self.assertEqual(out1.strip(), "su_ok")
+        self.assertTrue(any(c == ["/system/bin/su", "-c", "echo 1"] for c in executed_cmds))
+
+        executed_cmds.clear()
+        out2 = agent.run_adb_shell("/system/xbin/su -c 'echo 2'")
+        self.assertEqual(out2.strip(), "su_ok")
+        self.assertTrue(any(c == ["/system/bin/su", "-c", "echo 2"] or c == ["/system/xbin/su", "-c", "echo 2"] for c in executed_cmds))
+
+    def test_extract_username_nested_historical_blocks_no_leak(self):
+        """Test that unquoted/corrupted nested PreviousAccountsList blocks do not leak signed-out accounts."""
+        # Multi-entry nested historical block without outer { - should return None
+        raw_prev = 'PreviousAccountsList: {"111": {"username": "OldUser1"}, "222": {"username": "OldUser2"}}'
+        self.assertIsNone(agent.extract_username_from_text(raw_prev))
+
+        # Nested historical block followed by real active user - should extract active user
+        with_active = 'PreviousAccountsList: {"111": {"username": "OldUser1"}, "222": {"username": "OldUser2"}} Username: ActiveRealPlayer'
+        self.assertEqual(agent.extract_username_from_text(with_active), "ActiveRealPlayer")
+
+    def test_extract_username_user_dict_and_user_name(self):
+        """Test extracting username from user/User dictionaries and user string values."""
+        self.assertEqual(agent.extract_username_from_text('{"user": {"name": "PlayerFromUserDict"}}'), "PlayerFromUserDict")
+        self.assertEqual(agent.extract_username_from_text('{"User": {"name": "PlayerFromCapUserDict"}}'), "PlayerFromCapUserDict")
+        self.assertEqual(agent.extract_username_from_text('{"user": "PlayerDirectUser"}'), "PlayerDirectUser")
+
+    def test_extract_username_kv_patterns_user_name_and_roblox_user(self):
+        """Test KV activity patterns matching user_name, roblox_user, and current_username."""
+        self.assertEqual(agent.extract_username_from_text("Intent extras: Bundle[{user_name=PlayerKvName}]"), "PlayerKvName")
+        self.assertEqual(agent.extract_username_from_text("Intent extras: Bundle[{roblox_user=PlayerKvRoblox}]"), "PlayerKvRoblox")
+        self.assertEqual(agent.extract_username_from_text("Intent extras: Bundle[{current_username=PlayerKvCur}]"), "PlayerKvCur")
+
+    @mock.patch("agent.agent.run_adb_shell")
+    def test_query_tab_list_tier3_dumpsys_blank_lines_inside_block(self, mock_adb):
+        """Test that dumpsys with blank lines between ActivityRecord and Intent extras does not drop capture."""
+        dumpsys_with_blanks = """
+        Stack #1:
+          TaskRecord{101 #101 A=com.tinh.vv.hi U=0}
+            Hist #0: ActivityRecord{1 u0 com.tinh.vv.hi/com.roblox.client.Activity t101}
+
+              Intent { act=android.intent.action.MAIN }
+
+                extras: Bundle[{username=BlankLinePlayer}]
+        """
+        def fake_adb(cmd, **kwargs):
+            if "dumpsys" in str(cmd):
+                return dumpsys_with_blanks
+            return ""
+
+        mock_adb.side_effect = fake_adb
+        tabs = agent.query_tab_list(acc_path="/dev/null")
+        self.assertEqual(len(tabs), 1)
+        self.assertEqual(tabs[0]["username"], "BlankLinePlayer")
+
+    @mock.patch("subprocess.run")
+    def test_run_adb_shell_safe_unquoting_chained_quotes(self, mock_run):
+        """Test that run_adb_shell does not corrupt chained single quotes like 'echo 1' && 'echo 2'."""
+        executed_cmds = []
+        def fake_run(cmd, **kwargs):
+            executed_cmds.append(cmd)
+            res = mock.MagicMock()
+            if cmd[0] in ("/system/bin/su", "/system/xbin/su", "su"):
+                res.returncode = 0
+                res.stdout = "done\n"
+                return res
+            res.returncode = 1
+            res.stdout = ""
+            return res
+
+        mock_run.side_effect = fake_run
+        agent.run_adb_shell("/system/bin/su -c \"'echo 1' && 'echo 2'\"")
+        # Ensure inner command preserved separate quotes and did not strip outer edges incorrectly
+        matching_su = [c for c in executed_cmds if c[0] in ("/system/bin/su", "/system/xbin/su", "su")]
+        self.assertTrue(any(c[2] == "'echo 1' && 'echo 2'" for c in matching_su), f"Unexpected su cmd: {matching_su}")
+
+    def test_get_acc_fallback_username_device_variations_plain_acc(self):
+        """Test get_acc_fallback_username matches M77___ across device_id variants with plain usernames."""
+        mock_acc = """
+M77___(gag2)
+AlphaUser
+BetaUser
+"""
+        import tempfile
+        with tempfile.NamedTemporaryFile("w+", encoding="utf-8-sig", suffix="_acc.txt", delete=False) as tf:
+            tf.write(mock_acc)
+            tf.flush()
+            tpath = tf.name
+        try:
+            self.assertEqual(agent.get_acc_fallback_username(1, device_id="device-77", acc_path=tpath), "AlphaUser (acc.txt)")
+            self.assertEqual(agent.get_acc_fallback_username(1, device_id="m077", acc_path=tpath), "AlphaUser (acc.txt)")
+            self.assertEqual(agent.get_acc_fallback_username(1, device_id="M77___(gag2)", acc_path=tpath), "AlphaUser (acc.txt)")
+            self.assertEqual(agent.get_acc_fallback_username(1, device_id="77", acc_path=tpath), "AlphaUser (acc.txt)")
+            self.assertEqual(agent.get_acc_fallback_username(2, device_id="device-77", acc_path=tpath), "BetaUser (acc.txt)")
+            # Different device should return None
+            self.assertIsNone(agent.get_acc_fallback_username(1, device_id="m78", acc_path=tpath))
+        finally:
+            pathlib.Path(tpath).unlink(missing_ok=True)
+
+    @mock.patch("agent.agent.run_adb_shell")
+    def test_query_tab_list_direct_files_appstorage_fallback(self, mock_adb):
+        """Test Tier 1 queries legacy files/appStorage.json and extracts username."""
+        executed_cmds = []
+        dumpsys_out = """
+        Hist #0: ActivityRecord{1 u0 com.tinh.vv.hi/com.roblox.client.Activity}
+        """
+        def fake_adb(cmd, **kwargs):
+            cmd_str = str(cmd)
+            executed_cmds.append(cmd_str)
+            if "dumpsys" in cmd_str:
+                return dumpsys_out
+            if "files/appStorage.json" in cmd_str and "files/appData" not in cmd_str:
+                return '{"Username": "LegacyAppStorageUser"}'
+            return ""
+
+        mock_adb.side_effect = fake_adb
+        tabs = agent.query_tab_list(acc_path="/dev/null")
+        self.assertEqual(len(tabs), 1)
+        self.assertEqual(tabs[0]["username"], "LegacyAppStorageUser")
+
+    def test_get_server_links_fallback_tab_index_mapping(self):
+        """Test get_server_links_fallback_username supports tab-index lines (e.g. 1,link,username)."""
+        mock_links = """
+1,https://www.roblox.com/games/123,TabOneUser
+Tab 2,https://www.roblox.com/games/456,TabTwoUser
+com.tinh.vv.hk,https://www.roblox.com/games/789,TabThreeUser
+"""
+        import tempfile
+        with tempfile.NamedTemporaryFile("w+", encoding="utf-8-sig", suffix="_links.txt", delete=False) as tf:
+            tf.write(mock_links)
+            tf.flush()
+            tpath = tf.name
+        try:
+            self.assertEqual(agent.get_server_links_fallback_username(1, pkg="com.tinh.vv.hi", links_path=tpath), "TabOneUser")
+            self.assertEqual(agent.get_server_links_fallback_username(2, pkg="com.tinh.vv.hj", links_path=tpath), "TabTwoUser")
+            self.assertEqual(agent.get_server_links_fallback_username(3, pkg="com.tinh.vv.hk", links_path=tpath), "TabThreeUser")
+            self.assertIsNone(agent.get_server_links_fallback_username(4, pkg="com.tinh.vv.hl", links_path=tpath))
+        finally:
+            pathlib.Path(tpath).unlink(missing_ok=True)
+
 
 if __name__ == "__main__":
     unittest.main()
+

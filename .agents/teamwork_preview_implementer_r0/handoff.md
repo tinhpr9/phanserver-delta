@@ -1,161 +1,47 @@
-# Handoff Report — Round 0 Implementer
+# Handoff Report: Multi-Tier Username Detection & Config Fallback for `/tablist`
 
-> [!WARNING] **Skepticism Disclaimer**
-> Moderate-high confidence: All unit and integration test suites pass completely with strict mocks (7/7 test suites in `run_all_tests.sh`, 100% on `verify_production_runtime.py`, plus new dedicated unit/integration tests), but live ADB interaction with physical UgPhone/M77 hardware was not performed per the safety invariant.
+## Observation
+- On device M77, `/tablist` previously rendered `❓ (unknown)` because:
+  1. The Roblox username is stored in `/data/data/{pkg}/files/appData/LocalStorage/appStorage.json` (and multi-user variants `/data/user/*/{pkg}/files/appData/LocalStorage/appStorage.json`). Previously, `query_tab_list()` only attempted `cat /data/data/{pkg}/files/*.json`, which failed to reach files inside subdirectories like `appData/LocalStorage/`.
+  2. In sandboxed or non-root Android environments, direct file access to `/data/data/{pkg}` is rejected with `Permission denied`. Previously, `run_adb_shell` only tried `adb shell`, `sh -c`, and `su -c` without falling back to `/system/bin/su`, `/system/xbin/su`, or `run-as {pkg}`.
+  3. When all device app data reads failed, `agent/agent.py` had no correlation fallback mechanism to look up the assigned Roblox account from `/storage/emulated/0/Download/Shouko/acc.txt` for the current device section (e.g. `M77___(gag2)`), leaving the username as `None`, which the worker formatted as `❓ (unknown)`.
 
----
+## Logic Chain & Implementation
+1. **`agent/config.py`**:
+   - Defined `DEFAULT_ACC_TXT_PATH = pathlib.Path("/storage/emulated/0/Download/Shouko/acc.txt")` alongside existing configuration paths.
 
-## 1. Changes Made
+2. **`agent/agent.py`**:
+   - Enhanced `run_adb_shell()`: Added multiple trial shell binaries `["sh", "-c"]`, `["su", "-c"]`, `["/system/bin/su", "-c"]`, `["/system/xbin/su", "-c"]`.
+   - Upgraded `extract_username_from_text()`: Added structured JSON parsing first (inspecting `Username`, `RobloxUsername`, `CurrentUsername`, `username`, `roblox_username`, `DisplayName`, etc. while ignoring signed-out historical accounts in `PreviousAccountsList`), followed by XML regex, escaped JSON quote regex, and dumpsys key-value patterns.
+   - Added `get_acc_fallback_username(tab_num, device_id, acc_path)`: Resolves device ID (via argument, `config.load_device_id()`, `DEVICE_ID` env, or agent config), loads `acc.txt` (via explicit path, `config.DEFAULT_ACC_TXT_PATH`, or Shouko folder), parses sections via `account_manager.parse_acc_sections()`, finds the device section (e.g. `m77`), and maps Tab N (`tab_num - 1`) to account N, returning `f"{username} (acc.txt)"`.
+   - Added `get_server_links_fallback_username(tab_num, pkg, links_path)`: Fallback reading of `server_links.txt` if username is present.
+   - Added `format_tab_list_html(device_id, tabs)`: Formats Telegram HTML identically to `worker/fleet_state.js`, escaping `&`, `<`, `>` with `quote=False`.
+   - Upgraded `query_tab_list(device_id=None, acc_path=None)`:
+     - Tier 0: Direct filesystem read via Python `Path.read_text()` for `appStorage.json` and `shared_prefs/*.xml`.
+     - Tier 1: Multi-command read of `appStorage.json` via `cat`, `su -c`, `/system/bin/su -c`, `/system/xbin/su -c`, and `run-as {pkg} cat files/appData/LocalStorage/appStorage.json`.
+     - Tier 2: Multi-command read of `shared_prefs/*.xml` and app files.
+     - Tier 3: `dumpsys activity` analysis.
+     - Tier 4: Config fallback to `acc.txt` (and `server_links.txt`), yielding `username (acc.txt)` if app data is blocked. Real usernames read from app data retain priority over fallback.
+     - Also added `/proc` cmdline discovery fallback when dumpsys and ps return empty.
+   - Updated `handle_incoming_batch_action()`: Passes `device_id=device_id` into `query_tab_list(device_id=device_id)` when handling `TAB_LIST`.
 
-### Files Touched & Substance:
+3. **`agent/tests/test_tablist.py`**:
+   - Added 9 new unit tests covering all tiers (appStorage structure, su/run-as shell commands, acc.txt fallback correlation, priority of real username over fallback, index boundary, Telegram HTML formatting/escaping, multi-su fallback, and server_links fallback). Total tests increased from 10 to 19 (100% pass).
 
-1. **`agent/agent.py`**
-   - Added `"tab_list"` to `CAPABILITIES`.
-   - Added `TAB_PACKAGE_MAP` mapping clone packages (`com.tinh.vv.hi` .. `com.tinh.vv.hr`) to Tab numbers 1..10, with fallback support for `com.roblox.client`.
-   - Added `run_adb_shell(command)` helper to execute ADB shell commands safely (with fallback to direct shell when executing locally on rooted Android without ADB daemon).
-   - Added `extract_username_from_text(text)` to parse logged in username from XML shared preferences, JSON app data, or activity state.
-   - Added `query_tab_list()` to query running Roblox instances from `dumpsys activity`, parse running packages without matching trailing activity class names, query shared preferences / app data / activity state per package, and return sorted tab mappings.
-   - Handled `action == "TAB_LIST"` in `handle_incoming_batch_action` with idempotency caching in `state["tablist_action_results"]`, state file persistence, and `send_ack` response with `status="OPENED"`, `executed=True`, and JSON `details`.
+## Verification Record
+- **Unit Tests (`test_tablist.py`)**:
+  `python3 -m unittest agent/tests/test_tablist.py` -> 19/19 passed in 0.358s.
+- **Agent Test Suite (`agent/tests`)**:
+  `python3 -m unittest discover -s agent/tests` -> 48/48 passed in 4.807s.
+- **Production Runtime Verification (`verify_production_runtime.py`)**:
+  `python3 tests/verify_production_runtime.py` -> 8/8 steps passed (100% OK).
+- **Full Test Suite (`run_all_tests.sh`)**:
+  `bash tests/run_all_tests.sh` -> 7/7 suites passed (test_tong_hop_link, test_telegram_phanserver, test_fleet_state_2pc, delta updater, device agent, account manager & moveacc, E2E flow).
+- **Rule 34 Dual-Storage Invariance**:
+  SHA-256 verified identical before and after:
+  - `acc.txt`: `2db35ee2c4e059515f2a02880dccd3949457f176744490fe675b2bca42114fc9`
+  - `Data_Tong_Cookies.txt`: `20528d6d1b0126ac8752e23b8d52236fd04400c2d4e81ed5e756af0b2670822c`
 
-2. **`worker/fleet_state.js`**
-   - In `handleAotHubControl`: Added support for `body.kind === "tab_list"`, invoking `queueTabList`.
-   - Added `queueTabList(record, requestedTargetIds, options)` to enqueue `TAB_LIST` command in `pending_actions` and store action record in `tablist_actions`.
-   - Added `acknowledgeTabList(record, body, deviceId, actionId)` to process ACK from device, parse tab results, format Telegram HTML report:
-     ```html
-     📱 <b>Tab List — M77</b>
-     Tab 1: username_a
-     Tab 2: username_b
-     Tab 3: ❓ (unknown)
-     ```
-     and send it to the Telegram chat.
-   - In `acknowledgeReport`: Added routing for `action === "TAB_LIST"` to `acknowledgeTabList`.
-
-3. **`worker/phanserver.js`**
-   - Added regex matching `/tablist` (and `/dstab` alias) command.
-   - Auto-resolves target device (defaults to `m77` if unspecified, or first online device).
-   - Dispatches `tab_list` kind to `/aot/hub/control`.
-   - Updated `/help` command output to document `/tablist [m_code]`.
-
-4. **`agent/tests/test_tablist.py`** (New Test Suite)
-   - Verified `"tab_list"` in `CAPABILITIES`.
-   - Verified `query_tab_list()` extracts running Roblox instances from `dumpsys activity` and parses usernames from shared preferences (including handling unknown accounts as `None`).
-   - Verified `handle_incoming_batch_action` processes `TAB_LIST`, calls `send_ack`, and handles duplicate replays idempotently from cache.
-
-5. **`tests/test_telegram_phanserver.mjs`**
-   - Added tests verifying `/tablist` command queuing and FleetState `queueTabList`/`acknowledgeTabList` HTML message formatting.
-
-6. **`tests/test_fleet_state_2pc.mjs`**
-   - Added integration test for `TAB_LIST` queueing, delivery via device heartbeat, ACK processing, and Telegram alert formatting.
-
----
-
-## 2. Git Diff Summary
-
-```
- agent/agent.py                     | 183 +++++++++++++++++++++++++++++++++++++-
- agent/tests/test_tablist.py        |  88 ++++++++++++++++++
- tests/test_fleet_state_2pc.mjs     |  54 +++++++++++
- tests/test_telegram_phanserver.mjs |  50 +++++++++++
- worker/fleet_state.js              | 113 +++++++++++++++++++++++
- worker/phanserver.js               |  58 ++++++++++++
- 6 files changed, 545 insertions(+), 1 deletion(-)
-```
-
----
-
-## 3. Verification Record
-
-### Deep Verification (ran actual tests)
-
-1. **New Tab List Unit Tests (`agent/tests/test_tablist.py`)**
-   - Command: `python3 -m unittest agent/tests/test_tablist.py`
-   - Output:
-     ```
-     [AGENT] [DNS-FALLBACK] Đã cài đặt bộ giải mã DNS dự phòng cho Android VPN
-     ...
-     ----------------------------------------------------------------------
-     Ran 3 tests in 0.038s
-
-     OK
-     ```
-
-2. **Telegram & Worker Handler Suite (`tests/test_telegram_phanserver.mjs`)**
-   - Command: `node tests/test_telegram_phanserver.mjs`
-   - Output: `TEST_TELEGRAM_PHANSERVER_EQUIVALENCE=OK`
-
-3. **Fleet State 2PC Integration Suite (`tests/test_fleet_state_2pc.mjs`)**
-   - Command: `node tests/test_fleet_state_2pc.mjs`
-   - Output: `TEST_FLEET_STATE_2PC_EQUIVALENCE=OK`
-
-4. **Full Test Suite (`bash tests/run_all_tests.sh` - 7/7 Suites)**
-   - Command: `bash tests/run_all_tests.sh`
-   - Output:
-     ```
-     =========================================
-       RUNNING PHANSERVER-DELTA TEST SUITE
-     =========================================
-     [1/7] Running test_tong_hop_link.mjs...
-     TEST_TONG_HOP_LINK_EQUIVALENCE=OK
-     [2/7] Running test_telegram_phanserver.mjs...
-     TEST_TELEGRAM_PHANSERVER_EQUIVALENCE=OK
-     [3/7] Running test_fleet_state_2pc.mjs...
-     TEST_FLEET_STATE_2PC_EQUIVALENCE=OK
-     [4/7] Running delta updater tests...
-     Ran 27 tests in 0.663s - OK
-     [5/7] Running device agent tests...
-     Ran 32 tests in 3.643s - OK (includes agent/tests/test_tablist.py)
-     Ran 20 tests in 0.341s - OK
-     [6/7] Running account manager & moveacc tests...
-     37 passed in 13.65s
-     [7/7] Running E2E flow tests...
-     Ran 2 tests in 0.388s - OK
-     =========================================
-       ALL PHANSERVER-DELTA TESTS PASSED!
-     =========================================
-     ```
-
-5. **Production Runtime Verification (`python3 tests/verify_production_runtime.py`)**
-   - Command: `python3 tests/verify_production_runtime.py`
-   - Output:
-     ```
-     [AGENT] [DNS-FALLBACK] Đã cài đặt bộ giải mã DNS dự phòng cho Android VPN
-     Starting phanserver-delta Production Verification...
-     [+] Preserved original server_links.txt to /storage/emulated/0/Download/Shouko/server_links.txt.pre_verify_backup
-     [STEP] 1. Agent Service Startup & Documented Path
-     [STEP] 2. Prove Device Transitions Offline -> Online/Ready
-     [+] Device m72 transitioned successfully to ONLINE/READY with capabilities ['allocate_server_2pc', 'update_delta', 'check_ban', 'add_acc', 'del_acc', 'control_tailscale', 'move_acc', 'tab_list']
-     [STEP] 3. Real /phanserver 2PC Execution on Canary Device
-     [STEP] 4. Idempotency & Duplicate Replay Test
-     [STEP] 5. Real UPDATE_DELTA Execution
-     [STEP] 6. Rerun Same Production Paths
-     [STEP] 7. Real /moveacc Transfer & Rule 34 Dual-Storage Invariance
-     [STEP] 8. Old Repo Runtime Dependency Audit
-     ALL RUNTIME PRODUCTION VERIFICATIONS PASSED: 100% OK
-     ```
-
-6. **Adversarial & Static Security Audit (`tests/test_adversarial_coverage_challenger2.py`)**
-   - Command: `python3 tests/test_adversarial_coverage_challenger2.py`
-   - Output: `Ran 7 tests in 5.090s - OK` (confirmed no forbidden commands `adb connect`, `adb -s`, `fastboot`, etc.)
-
-7. **Rule 34 File ID Invariant**
-   - File IDs in `agent/account_manager.py`:
-     - `RULE34_ACC_FILE_ID = "12oxXXlSPvHbB0YRUMQcHhLHiE4gemiVg"` (unchanged)
-     - `RULE34_DATA_TONG_FILE_ID = "1k8B2Vkdu-w3-K-O92vMeC1HQbKGaZb0B"` (unchanged)
-
-### Shallow Verification (Manual / Eyeballed)
-- Eyeballed exact HTML report format against user prompt specification:
-  `📱 <b>Tab List — M77</b>\nTab 1: username_a\nTab 2: username_b\nTab 3: ❓ (unknown)`
-
-### Unverified Aspects
-- Live ADB execution on real physical UgPhone / M77 cloud device: Intentionally untested with live hardware per strict safety instruction ("never run ADB against real UgPhone/M77 during dev/tests").
-
----
-
-## 4. Known Issues
-- None detected.
-
----
-
-## 5. Untested Edge Cases & Next Step
-- Edge case: If an OEM Android ROM or future Roblox version changes shared preferences XML format to an encrypted binary database (e.g. EncryptedSharedPreferences with Jetpack Security), parsing plain XML will return `None`, causing the tab report to display `❓ (unknown)` for that tab.
-- Next step: Reviewers may inspect `agent/agent.py`, `worker/fleet_state.js`, and `worker/phanserver.js` or run additional fuzzing.
+## Caveats / Known Issues / Unverified Aspects
+- **Minor Robustness Risk**: On a live device where the physical Roblox user has logged into a completely different account than the one provisioned in `acc.txt`, and `/data/data/` is strictly unreadable (sandbox mode without root/run-as), the fallback will display the provisioned account name with `(acc.txt)` indicator rather than the physical account. This is by design per R2 ("fallback ánh xạ Tab N với tài khoản tương ứng trong phần cấu hình của thiết bị trong acc.txt... hiển thị username (acc.txt)").
+- **Unverified on Real Hardware**: Physical ADB execution on an actual physical M77 device was not performed (tests executed in the containerized verification environment where ADB shell and mock file structures simulate root/non-root environments).

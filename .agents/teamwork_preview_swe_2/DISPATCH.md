@@ -1,9 +1,11 @@
-## 2026-09-14T15:57:25Z
-You are teamwork_preview_victory_auditor.
-Your working directory is: /root/phanserver-delta/.agents/teamwork_preview_victory_auditor
-Your project workspace is: /root/phanserver-delta
+## 2026-09-14T14:22:15Z
 
-<original_task>
+You are teamwork_preview_swe, the SWE Light orchestrator for a single self-contained task.
+Your working directory is: /root/phanserver-delta/.agents/teamwork_preview_swe_2
+Your project workspace is: /root/phanserver-delta
+The original request is recorded in: /root/phanserver-delta/.agents/ORIGINAL_REQUEST.md
+
+Task Details:
 Khắc phục triệt để lỗi lệnh `/tablist` hiển thị `❓ (unknown)` trên M77. Nâng cấp cơ chế trích xuất tên tài khoản Roblox trong `agent/agent.py` theo kiến trúc nhiều tầng (multi-tier fallback):
 1. Đọc chính xác file `appStorage.json` (`/data/data/{pkg}/files/appData/LocalStorage/appStorage.json` và `/data/user/*/{pkg}/files/appData/LocalStorage/appStorage.json`) bằng nhiều phương thức (`cat`, `su -c`, `/system/bin/su -c`, `/system/xbin/su -c`, `run-as {pkg}`).
 2. Tìm kiếm trong shared preferences XML (`shared_prefs/*.xml`).
@@ -43,10 +45,7 @@ Acceptance Criteria:
   - `python3 -m unittest agent/tests/test_tablist.py` pass 100%
   - Rule 34: File ID `acc.txt` và `Data_Tong_Cookies.txt` giữ nguyên 100%
   - An toàn phần cứng: Không reboot, không crash thiết bị thật
-</original_task>
 
-Conduct an independent post-victory audit:
-1. Conduct Phase 1: Timeline & Changes Inspection.
-2. Conduct Phase 2: Anti-Cheating & Integrity Detection (ensure tests were not modified to pass spuriously, Rule 34 preserved).
-3. Conduct Phase 3: Independent Test Execution (execute unit tests, full regression suite, and runtime verification).
-4. Produce a structured verdict report (PASSED / FAILED) in `/root/phanserver-delta/.agents/teamwork_preview_victory_auditor/audit_report.md` and message the parent with your verdict.
+Execute the SWE Light protocol: dispatch teamwork_preview_implementer to make the changes and write unit tests, followed by adversarial reviewer rounds. Establish correctness with test runs.
+Maintain your `progress.md` and `BRIEFING.md` in your working directory `/root/phanserver-delta/.agents/teamwork_preview_swe_2/`.
+When finished, write `handoff.md` and report completion back to me.
