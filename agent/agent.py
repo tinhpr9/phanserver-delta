@@ -68,12 +68,44 @@ PROTOCOL_VERSION = "fleet-batch-v1"
 CAPABILITIES = ["allocate_server_2pc", "update_delta", "check_ban", "add_acc", "del_acc", "control_tailscale"]
 
 
+def validate_tailscale_cgnat_ip(ip: Optional[str]) -> bool:
+    """Validate if an IP string is a valid Tailscale CGNAT IP (100.x.y.z where octets are 0-255)."""
+    if not ip or not isinstance(ip, str):
+        return False
+    m = re.match(r"^100\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$", ip.strip())
+    if not m:
+        return False
+    octets = [int(g) for g in m.groups()]
+    return all(0 <= o <= 255 for o in octets)
+
+
+def detect_tailscale_ip() -> Optional[str]:
+    """Inspect system network interfaces to detect active Tailscale CGNAT IP (100.x.y.z)."""
+    cmd_candidates = [
+        ["/system/bin/ip", "-4", "addr", "show"],
+        ["ip", "-4", "addr", "show"],
+    ]
+    for cmd in cmd_candidates:
+        try:
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=3)
+            if res.returncode == 0 and res.stdout:
+                matches = re.findall(r"(?<![0-9a-zA-Z.])\b100\.\d{1,3}\.\d{1,3}\.\d{1,3}\b(?![0-9a-zA-Z.])", res.stdout)
+                for candidate in matches:
+                    if validate_tailscale_cgnat_ip(candidate):
+                        return candidate
+        except Exception:
+            pass
+    return None
+
+
 def collect_metrics() -> dict[str, Any]:
     metrics = {
         "uptime": 0,
         "load_1m": 0.0,
         "mem_available_mb": 0,
         "battery_pct": 100,
+        "tailscale_ip": None,
+        "tailscale_connected": False,
     }
     try:
         with open("/proc/uptime", "r") as f:
@@ -91,6 +123,13 @@ def collect_metrics() -> dict[str, Any]:
                 if line.startswith("MemAvailable:"):
                     metrics["mem_available_mb"] = int(line.split()[1]) // 1024
                     break
+    except Exception:
+        pass
+    try:
+        ts_ip = detect_tailscale_ip()
+        if ts_ip:
+            metrics["tailscale_ip"] = ts_ip
+            metrics["tailscale_connected"] = True
     except Exception:
         pass
     return metrics
@@ -151,17 +190,6 @@ def send_ack(
     return send_report(ack_url, secret, payload)
 
 
-def validate_tailscale_cgnat_ip(ip: Optional[str]) -> bool:
-    """Validate if an IP string is a valid Tailscale CGNAT IP (100.x.y.z where octets are 0-255)."""
-    if not ip or not isinstance(ip, str):
-        return False
-    m = re.match(r"^100\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$", ip.strip())
-    if not m:
-        return False
-    octets = [int(g) for g in m.groups()]
-    return all(0 <= o <= 255 for o in octets)
-
-
 def compute_screen_coordinates(width: int, height: int, rotation: int = 0) -> dict[str, Any]:
     """
     Computes adaptive touch coordinates for Tailscale based on screen resolution and rotation.
@@ -199,8 +227,10 @@ def build_tailscale_command(mode: str = "on") -> str:
     mode = str(mode or "on").lower()
     if mode == "off":
         return """
+export PATH="/system/bin:/system/xbin:/data/data/com.termux/files/usr/bin:$PATH"
 am broadcast --user 0 -a com.tailscale.ipn.DISCONNECT_VPN -n com.tailscale.ipn/.IPNReceiver >/dev/null 2>&1 || true
 am broadcast --user 0 -a com.tailscale.ipn.DISCONNECT_VPN -p com.tailscale.ipn >/dev/null 2>&1 || true
+am broadcast -a com.tailscale.ipn.DISCONNECT_VPN -p com.tailscale.ipn >/dev/null 2>&1 || true
 cmd statusbar click-tile com.tailscale.ipn/.QuickToggleService >/dev/null 2>&1 || true
 settings delete secure always_on_vpn_app >/dev/null 2>&1 || true
 am force-stop --user 0 com.tailscale.ipn >/dev/null 2>&1 || true
@@ -209,9 +239,11 @@ echo "DISCONNECTED"
 """
     elif mode == "status":
         return """
-IP=$(ip -4 addr show dev tun0 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d'/' -f1 | head -n 1)
+export PATH="/system/bin:/system/xbin:/data/data/com.termux/files/usr/bin:$PATH"
+IP_BIN=$(which ip 2>/dev/null || echo "/system/bin/ip")
+IP=$($IP_BIN -4 addr show dev tun0 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d'/' -f1 | head -n 1)
 if [ -z "$IP" ]; then
-    IP=$(ip -4 addr show 2>/dev/null | grep -oE '100\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}' | head -n 1)
+    IP=$($IP_BIN -4 addr show 2>/dev/null | grep -oE '100\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}' | head -n 1)
 fi
 
 if [ -n "$IP" ]; then
@@ -223,17 +255,20 @@ fi
     else:
         # mode == "on"
         return """
+export PATH="/system/bin:/system/xbin:/data/data/com.termux/files/usr/bin:$PATH"
+IP_BIN=$(which ip 2>/dev/null || echo "/system/bin/ip")
 settings put secure always_on_vpn_app com.tailscale.ipn >/dev/null 2>&1 || true
 settings put secure always_on_vpn_lockdown 0 >/dev/null 2>&1 || true
 am broadcast --user 0 -a com.tailscale.ipn.CONNECT_VPN -n com.tailscale.ipn/.IPNReceiver >/dev/null 2>&1 || true
 am broadcast --user 0 -a com.tailscale.ipn.CONNECT_VPN -p com.tailscale.ipn >/dev/null 2>&1 || true
+am broadcast -a com.tailscale.ipn.CONNECT_VPN -p com.tailscale.ipn >/dev/null 2>&1 || true
 cmd statusbar click-tile com.tailscale.ipn/.QuickToggleService >/dev/null 2>&1 || true
-am start --user 0 -n com.tailscale.ipn/.MainActivity >/dev/null 2>&1 || true
+am start --user 0 -n com.tailscale.ipn/.MainActivity >/dev/null 2>&1 || am start -n com.tailscale.ipn/.MainActivity >/dev/null 2>&1 || true
 sleep 1
 
-IP=$(ip -4 addr show dev tun0 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d'/' -f1 | head -n 1)
+IP=$($IP_BIN -4 addr show dev tun0 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d'/' -f1 | head -n 1)
 if [ -z "$IP" ]; then
-    IP=$(ip -4 addr show 2>/dev/null | grep -oE '100\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}' | head -n 1)
+    IP=$($IP_BIN -4 addr show 2>/dev/null | grep -oE '100\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}' | head -n 1)
 fi
 
 if [ -z "$IP" ]; then
@@ -260,15 +295,15 @@ if [ -z "$IP" ]; then
     input keyevent KEYCODE_DPAD_CENTER >/dev/null 2>&1 || true
 fi
 
-for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
-    IP=$(ip -4 addr show dev tun0 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d'/' -f1 | head -n 1)
+for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+    IP=$($IP_BIN -4 addr show dev tun0 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d'/' -f1 | head -n 1)
     if [ -z "$IP" ]; then
-        IP=$(ip -4 addr show 2>/dev/null | grep -oE '100\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}' | head -n 1)
+        IP=$($IP_BIN -4 addr show 2>/dev/null | grep -oE '100\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}' | head -n 1)
     fi
     if [ -n "$IP" ]; then
         break
     fi
-    if [ "$i" -eq 4 ] || [ "$i" -eq 8 ]; then
+    if [ "$i" -eq 4 ] || [ "$i" -eq 8 ] || [ "$i" -eq 12 ]; then
         if [ -n "$TOGGLE_X" ] && [ -n "$CENTER_X" ]; then
             input tap "$TOGGLE_X" "$TOGGLE_Y" >/dev/null 2>&1 || true
             input tap "$CENTER_X" "$CENTER_Y" >/dev/null 2>&1 || true
@@ -285,7 +320,7 @@ if [ -n "$IP" ]; then
     echo "CONNECTED: $IP"
     exit 0
 else
-    echo "vpn_timeout_no_ip: Timeout 12s không nhận được IP Tailscale (100.x.y.z)" >&2
+    echo "vpn_timeout_no_ip: Timeout 15s không nhận được IP Tailscale (100.x.y.z)" >&2
     exit 1
 fi
 """
@@ -660,12 +695,12 @@ def handle_incoming_batch_action(
                 cmd = build_tailscale_command(mode)
 
                 if _run_as_root:
-                    res = _run_as_root(cmd, timeout=20)
+                    res = _run_as_root(cmd, timeout=25)
                     success = res.returncode == 0
                     stdout_text = res.stdout.strip()
                     reason = None if success else (res.stderr.strip() or "vpn_timeout_no_ip")
                 else:
-                    proc = subprocess.run(["sh", "-c", cmd], capture_output=True, text=True, timeout=20)
+                    proc = subprocess.run(["sh", "-c", cmd], capture_output=True, text=True, timeout=25)
                     success = proc.returncode == 0
                     stdout_text = proc.stdout.strip()
                     reason = None if success else (proc.stderr.strip() or "vpn_timeout_no_ip")
@@ -687,7 +722,7 @@ def handle_incoming_batch_action(
                         status = "FAILED"
                         executed = False
                         details = None
-                        reason = reason or "vpn_timeout_no_ip: Timeout 12s không nhận được IP Tailscale (100.x.y.z)"
+                        reason = reason or "vpn_timeout_no_ip: Timeout 15s không nhận được IP Tailscale (100.x.y.z)"
                 elif mode == "status":
                     status = "OPENED"
                     executed = True

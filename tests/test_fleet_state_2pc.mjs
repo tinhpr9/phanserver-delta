@@ -320,6 +320,21 @@ async function runTests() {
   }))).json();
   if (afterTailscaleAck.command !== null) throw new Error("acknowledged CONTROL_TAILSCALE was delivered again");
 
+  const stateAfterTs = await (await fleet.fetch(new Request("https://localhost/aot/hub/state"))).json();
+  if (stateAfterTs.state?.devices?.find(d => d.device_id === "m1")?.tailscale_ip !== "100.80.175.55") {
+    throw new Error("Fleet state missing tailscale_ip after ack: " + JSON.stringify(stateAfterTs));
+  }
+
+  // 7a-2. Heartbeat metrics tailscale_ip telemetry auto-recording
+  await fleet.handleHeartbeat(new Request("https://localhost/report", {
+    method: "POST",
+    body: JSON.stringify({ device_id: "m1", device_group: "NOVA", metrics: { tailscale_ip: "100.90.200.1" } })
+  }));
+  const stateAfterHb = await (await fleet.fetch(new Request("https://localhost/aot/hub/state"))).json();
+  if (stateAfterHb.state?.devices?.find(d => d.device_id === "m1")?.tailscale_ip !== "100.90.200.1") {
+    throw new Error("Fleet state missing tailscale_ip from heartbeat metrics: " + JSON.stringify(stateAfterHb));
+  }
+
   // 7b. CONTROL_TAILSCALE failure / timeout reporting
   const tsFailRes = await (await fleet.controlFleetHub(new Request("https://localhost/aot/hub/control", {
     method: "POST",

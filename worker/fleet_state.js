@@ -197,6 +197,12 @@ export class FleetState {
     existing.last_seen = Date.now();
     existing.metrics = body?.metrics || null;
     existing.capabilities = Array.isArray(body?.capabilities) ? body.capabilities : [AOT_ALLOCATE_SERVER_CAPABILITY, "update_delta"];
+    const reportedTsIp = extractValidTailscaleIp(body?.metrics?.tailscale_ip);
+    if (reportedTsIp) {
+      existing.tailscale_ip = reportedTsIp;
+    } else if (body?.metrics && body.metrics.tailscale_connected === false) {
+      existing.tailscale_ip = null;
+    }
     record.devices[deviceId] = existing;
 
     const now = Date.now();
@@ -251,7 +257,9 @@ export class FleetState {
         device_group: d.device_group,
         online: isOnline,
         last_seen: d.last_seen,
-        capabilities: d.capabilities || []
+        capabilities: d.capabilities || [],
+        tailscale_ip: d.tailscale_ip || null,
+        metrics: d.metrics || null
       };
     });
     return json({
@@ -1020,6 +1028,13 @@ export class FleetState {
       }
       device.details = body.details ? String(body.details).slice(0, 200) : null;
       device.updated_at = Date.now();
+    }
+    if (record.devices?.[deviceId]) {
+      if (isSuccess && tailscaleIp) {
+        record.devices[deviceId].tailscale_ip = tailscaleIp;
+      } else if (mode === "off" && isSuccess) {
+        record.devices[deviceId].tailscale_ip = null;
+      }
     }
     for (const command of record.pending_actions?.[deviceId] || []) {
       if (command.action_id === actionId) command.acknowledged_at = Date.now();

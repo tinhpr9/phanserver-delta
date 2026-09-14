@@ -47,8 +47,13 @@ start_agent() {
     fi
     echo "[*] Đang khởi động phanserver-delta Agent..."
     if [ ! -f "$AGENT_PY" ]; then
-        echo "[!] Không tìm thấy file $AGENT_PY"
-        exit 1
+        if [ -f "/root/phanserver-delta/agent/agent.py" ]; then
+            REPO_DIR="/root/phanserver-delta"
+            AGENT_PY="$REPO_DIR/agent/agent.py"
+        else
+            echo "[!] Không tìm thấy file $AGENT_PY"
+            exit 1
+        fi
     fi
     # Giữ CPU hoạt động chống ngủ đông / Doze mode
     termux-wake-lock 2>/dev/null || true
@@ -129,6 +134,9 @@ esac
 INNER_EOF
 
 chmod +x "$BIN_PATH" 2>/dev/null || true
+cp "$BIN_PATH" /usr/local/bin/phan 2>/dev/null || true
+cp "$BIN_PATH" /root/bin/phan 2>/dev/null || true
+chmod +x /usr/local/bin/phan /root/bin/phan 2>/dev/null || true
 echo "[+] Đã tạo script lệnh: 'phan' -> $BIN_PATH"
 
 # 2. Cài đặt Termux:Boot tự khởi động khi mở máy

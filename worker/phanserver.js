@@ -186,10 +186,15 @@ export async function handleUpdate(update, env, fleetState) {
         const hours = Math.floor(diffSec / 3600);
         return ` (${hours}h trước)`;
       };
+      const formatDeviceStatus = (d) => {
+        if (!d.online) return `OFFLINE${formatAgo(d.last_seen)}`;
+        const tsIp = d.metrics?.tailscale_ip || d.tailscale_ip;
+        return tsIp ? `ONLINE 🌐 ${tsIp}` : "ONLINE";
+      };
       const text = devices.length
         ? `FLEET_STATUS=ONLINE\nDEVICES=${devices.length}\nONLINE=${online}\n` + devices
           .sort((a, b) => String(a.device_id).localeCompare(String(b.device_id), undefined, { numeric: true }))
-          .map(d => `${d.device_id}: ${d.online ? "ONLINE" : `OFFLINE${formatAgo(d.last_seen)}`}`).join("\n")
+          .map(d => `${d.device_id}: ${formatDeviceStatus(d)}`).join("\n")
         : "FLEET_STATUS=EMPTY\nDEVICES=0\nONLINE=0";
       await telegram(env, "sendMessage", { chat_id: chatId, text });
     } catch (error) {
@@ -202,9 +207,14 @@ export async function handleUpdate(update, env, fleetState) {
     try {
       const stateResult = await fleetStateCall(env, fleetState, "/aot/hub/state");
       const devices = stateResult.data?.state?.devices || [];
+      const formatDeviceItem = (d) => {
+        if (!d.online) return "OFFLINE";
+        const tsIp = d.metrics?.tailscale_ip || d.tailscale_ip;
+        return tsIp ? `ONLINE (Tailscale: ${tsIp})` : "ONLINE";
+      };
       const text = devices.length
         ? devices.sort((a, b) => String(a.device_id).localeCompare(String(b.device_id), undefined, { numeric: true }))
-          .map(d => `${d.device_id}: ${d.online ? "ONLINE" : "OFFLINE"}`).join("\n")
+          .map(d => `${d.device_id}: ${formatDeviceItem(d)}`).join("\n")
         : "Chưa có thiết bị nào đăng ký.";
       await telegram(env, "sendMessage", { chat_id: chatId, text });
     } catch (error) {

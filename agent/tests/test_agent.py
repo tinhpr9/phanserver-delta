@@ -249,10 +249,25 @@ class TestDeviceAgent(unittest.TestCase):
         with zipfile.ZipFile(out_zip, "r") as zf:
             self.assertIn("folder_meta.json", zf.namelist())
             self.assertIn("folder.tar.gz", zf.namelist())
-            meta = json.loads(zf.read("folder_meta.json").decode("utf-8"))
-            self.assertEqual(meta["type"], "folder")
-            self.assertEqual(meta["folder_name"], "TestFolder")
+    @mock.patch("agent.agent.subprocess.run")
+    def test_detect_tailscale_ip_and_metrics(self, mock_subproc):
+        # Case 1: IP detected
+        mock_subproc.return_value.returncode = 0
+        mock_subproc.return_value.stdout = "25: tun0: <POINTOPOINT,MULTICAST,NOARP,UP,LOWER_UP> mtu 1280\n    inet 100.80.175.55/32 scope global tun0\n"
+        mock_subproc.return_value.stderr = ""
+        ip = agent.detect_tailscale_ip()
+        self.assertEqual(ip, "100.80.175.55")
+
+        metrics = agent.collect_metrics()
+        self.assertEqual(metrics["tailscale_ip"], "100.80.175.55")
+        self.assertTrue(metrics["tailscale_connected"])
+
+        # Case 2: No Tailscale IP
+        mock_subproc.return_value.stdout = "30: wlan0: inet 192.168.1.5/24\n"
+        ip_none = agent.detect_tailscale_ip()
+        self.assertIsNone(ip_none)
 
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -86,7 +86,7 @@ com.tinh.vv.hr,https://www.roblox.com/games/975?privateServerLinkCode=0000000000
     if (path === "/aot/hub/state") {
       getFleetHubStateCalls++;
       const status = getFleetHubStateCalls > 1 ? "OPENED" : "SENT";
-      return { response: { ok: true }, data: { state: { devices: [{ device_id: "m1", online: isM1Online }], last_batch: { action_id: "act-123", devices: [{ device_id: "m1", status, history: ["SENT", status] }] } } } };
+      return { response: { ok: true }, data: { state: { devices: [{ device_id: "m1", online: isM1Online, metrics: { tailscale_ip: isM1Online ? "100.80.175.55" : null } }], last_batch: { action_id: "act-123", devices: [{ device_id: "m1", status, history: ["SENT", status] }] } } } };
     }
   }
 };
@@ -199,8 +199,13 @@ async function runTests() {
 
   // 7. Fleet device list and typed UPDATE_DELTA dispatch
   await triggerMessage("/devices");
-  if (!sentMessages[0]?.text.includes("m1: ONLINE")) {
-    throw new Error("devices test failed: " + (sentMessages[0]?.text || ""));
+  if (!sentMessages[0]?.text.includes("m1: ONLINE (Tailscale: 100.80.175.55)")) {
+    throw new Error("devices tailscale test failed: " + (sentMessages[0]?.text || ""));
+  }
+
+  await triggerMessage("STATUS");
+  if (!sentMessages[0]?.text.includes("m1: ONLINE 🌐 100.80.175.55")) {
+    throw new Error("status tailscale test failed: " + (sentMessages[0]?.text || ""));
   }
 
   await triggerMessage("UPDATE");
