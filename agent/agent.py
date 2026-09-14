@@ -110,10 +110,12 @@ def send_report_response(report_url: str, secret: str, payload: dict[str, Any]) 
         )
         with urllib.request.urlopen(req, timeout=10) as resp:
             if resp.status not in (200, 201):
+                print(f"[AGENT] Heartbeat HTTP lỗi status={resp.status}", flush=True)
                 return None
             data = json.loads(resp.read().decode("utf-8"))
             return data if isinstance(data, dict) else None
-    except (OSError, urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError):
+    except (OSError, urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError) as e:
+        print(f"[AGENT] Heartbeat lỗi kết nối: {e}", flush=True)
         return None
 
 
@@ -940,6 +942,8 @@ def run_agent_loop(
                 "metrics": metrics,
             }
             response = send_report_response(report_url, secret, heartbeat_payload)
+            if response and response.get("ok"):
+                print(f"[AGENT] Heartbeat thành công (tick {tick_count})", flush=True)
             command = response.get("command") if isinstance(response, dict) else None
             if isinstance(command, dict):
                 handle_incoming_batch_action(
