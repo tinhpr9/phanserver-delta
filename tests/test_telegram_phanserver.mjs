@@ -910,6 +910,24 @@ async function runTests() {
     if (!sentMessages.some(m => m.text?.includes("ĐÃ XẾP LỆNH LẤY DANH SÁCH TAB") && m.text?.includes("M1"))) {
       throw new Error("/TABLIST M1 case insensitivity failed. Got: " + JSON.stringify(sentMessages));
     }
+
+    // Test: /login with multiple targets should reject with clear single-device message
+    sentMessages = [];
+    await triggerMessage("/login m1,m2");
+    if (!sentMessages.some(m => m.text?.includes("Lệnh /login chỉ hỗ trợ từng thiết bị một"))) {
+      throw new Error("/login multi-device rejection failed. Got: " + JSON.stringify(sentMessages));
+    }
+
+    // Test: /login m1 queuing
+    fleetControlCalls = [];
+    sentMessages = [];
+    await triggerMessage("/login m1");
+    if (fleetControlCalls.length === 0 || fleetControlCalls[fleetControlCalls.length - 1].kind !== "auto_login") {
+      throw new Error("/login did not queue auto_login action: " + JSON.stringify(fleetControlCalls));
+    }
+    if (!sentMessages.some(m => m.text?.includes("ĐÃ XẾP LỆNH TỰ ĐỘNG LOGIN") && m.text?.includes("M1"))) {
+      throw new Error("/login response missing queuing message: " + JSON.stringify(sentMessages));
+    }
   } finally {
     globalThis.fetch = origFetchFs;
   }

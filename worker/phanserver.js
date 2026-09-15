@@ -554,7 +554,8 @@ export async function handleUpdate(update, env, fleetState) {
 📱 <b>Quản trị Thiết bị & Trạng thái</b>:
 • <code>/status</code>: Báo cáo trạng thái tổng thể cả dàn
 • <code>/devices</code>: Danh sách thiết bị và trạng thái online/offline
-• <code>/tablist [m_code]</code>: Lấy danh sách các tab Roblox đang chạy và tài khoản đăng nhập
+• <code>/tablist [m_code]</code>: Lấy danh sách các tab Roblox đang chạy và tài khoản đăng nhập (phát hiện acc bị ban)
+• <code>/login [m_code]</code>: Tự động đăng nhập các tab Roblox clone chưa có tài khoản từ acc.txt
 • <code>/upgrade &lt;devices|all&gt;</code>: Tự động kéo code mới nhất từ GitHub và restart Agent
 
 🔗 <b>Phân chia Server & Kịch bản</b>:
@@ -962,6 +963,60 @@ export async function handleUpdate(update, env, fleetState) {
       });
     } catch (error) {
       await telegram(env, "sendMessage", { chat_id: chatId, text: "Lỗi TAB_LIST: " + String(error.message || error) });
+    }
+    return;
+  }
+
+  if (input.match(/^\/(?:login|loginacc|autologin)(?:\s|$)/i)) {
+    const raw = input.replace(/^\/(?:login|loginacc|autologin)\s*/i, "").trim();
+    try {
+      let execDeviceId = null;
+      if (raw) {
+        const single = await resolveAndValidateTelegramTargets(raw, env, fleetState);
+        if (!single || single.length === 0) {
+          throw new Error(`Thiết bị ${raw.toUpperCase()} không khả dụng.`);
+        }
+        if (single.length > 1) {
+          throw new Error("Lệnh /login chỉ hỗ trợ từng thiết bị một (ví dụ: /login m77).");
+        }
+        execDeviceId = single[0];
+      } else {
+        const onlineIds = await resolveAndValidateTelegramTargets("all", env, fleetState);
+        if (!onlineIds || onlineIds.length === 0) {
+          throw new Error("Không có thiết bị nào đang ONLINE để thực hiện.");
+        }
+        const normalizedOnline = onlineIds.map(id => normalizeDeviceId(id) || String(id).toLowerCase());
+        if (normalizedOnline.includes("m77")) {
+          execDeviceId = "m77";
+        } else {
+          execDeviceId = normalizedOnline[0];
+        }
+      }
+
+      const result = await fleetStateCall(env, fleetState, "/aot/hub/control", {
+        method: "POST",
+        body: {
+          protocol: "fleet-batch-v1",
+          kind: "auto_login",
+          target_device_ids: [execDeviceId],
+          telegram_chat_id: chatId
+        }
+      });
+      if (!result?.response?.ok) {
+        const errCode = result?.data?.error;
+        if (errCode === "offline_device") {
+          throw new Error(`Thiết bị ${execDeviceId.toUpperCase()} đang OFFLINE.`);
+        }
+        throw new Error(errCode || "login_queue_failed");
+      }
+
+      await telegram(env, "sendMessage", {
+        chat_id: chatId,
+        text: `🔐 <b>ĐÃ XẾP LỆNH TỰ ĐỘNG LOGIN</b>\nThiết bị: <code>${escapeHtml(execDeviceId.toUpperCase())}</code>\n⚡ Agent đang quét các tab chưa đăng nhập và nạp tài khoản từ acc.txt...`,
+        parse_mode: "HTML"
+      });
+    } catch (error) {
+      await telegram(env, "sendMessage", { chat_id: chatId, text: "Lỗi AUTO_LOGIN: " + String(error.message || error) });
     }
     return;
   }

@@ -69,7 +69,7 @@ except ImportError:
 
 AGENT_VERSION = "phanserver-delta-agent-1.0.0"
 PROTOCOL_VERSION = "fleet-batch-v1"
-CAPABILITIES = ["allocate_server_2pc", "update_delta", "check_ban", "add_acc", "del_acc", "control_tailscale", "move_acc", "tab_list"]
+CAPABILITIES = ["allocate_server_2pc", "update_delta", "check_ban", "add_acc", "del_acc", "control_tailscale", "move_acc", "tab_list", "auto_login"]
 
 
 def validate_tailscale_cgnat_ip(ip: Optional[str]) -> bool:
@@ -1154,7 +1154,19 @@ def format_tab_list_html(device_id: str, tabs: list[dict[str, Any]]) -> str:
             or raw_u_str.lower() in ("unknown", "none", "null", "undefined", "guest", "default")
             or raw_u_str.startswith(("{", "["))
         )
-        uname = "❓ (unknown)" if is_unknown else html.escape(raw_u_str[:50], quote=False)
+        is_banned = (
+            t.get("is_banned") is True
+            or str(t.get("status") or "").upper() in ("BANNED", "BAN", "BANED")
+            or raw_u_str.endswith("(baned)")
+            or raw_u_str.endswith("(banned)")
+        )
+        if is_banned:
+            clean_u = raw_u_str
+            for sfx in ("(baned)", "(banned)", "(tab_map)", "(acc.txt)", "(server_links)"):
+                clean_u = clean_u.replace(sfx, "").strip()
+            uname = f"{html.escape(clean_u[:50], quote=False)} (baned)" if (clean_u and not is_unknown) else "baned"
+        else:
+            uname = "❓ (unknown)" if is_unknown else html.escape(raw_u_str[:50], quote=False)
         line = f"Tab {tab_num}: {uname}"
         if current_length + len(line) + 1 > 3900:
             remaining = len(sorted_tabs) - i
@@ -1164,6 +1176,122 @@ def format_tab_list_html(device_id: str, tabs: list[dict[str, Any]]) -> str:
         current_length += len(line) + 1
 
     return f"{header}\n" + "\n".join(lines)
+
+
+def check_tabs_ban_status(tabs: list[dict[str, Any]], base_dir: Optional[pathlib.Path | str] = None) -> None:
+    """
+    Check if any of the active tab accounts are banned and annotate tab dicts:
+    - tab['is_banned'] = True / False
+    - tab['status'] = 'BANNED' (if banned)
+    Sources:
+    1. Local ban files: acc_bi_ban.txt, nhat_ky_ban.txt
+    2. Quota-Guard ban cache in account_manager
+    3. ZeroPoint Cookie Checker API via account_manager.check_zeropoint_cookie_status
+    """
+    if not tabs:
+        return
+
+    if str(base_dir) == "/dev/null":
+        for t in tabs:
+            if t.get("is_banned") is None:
+                t["is_banned"] = False
+        return
+
+    b_path = pathlib.Path(base_dir) if base_dir else pathlib.Path("/storage/emulated/0/Download/Shouko")
+    banned_usernames = set()
+
+    # 1. Local ban files
+    for fname in ("acc_bi_ban.txt", "nhat_ky_ban.txt"):
+        fpath = b_path / fname
+        if fpath.is_file():
+            try:
+                for line in fpath.read_text(encoding="utf-8", errors="ignore").splitlines():
+                    stripped = line.strip()
+                    if stripped:
+                        u = stripped.split(":")[0].strip().lower()
+                        if u:
+                            banned_usernames.add(u)
+            except Exception:
+                pass
+
+    # 2. Check Quota-Guard cache in account_manager
+    if account_manager:
+        with getattr(account_manager, "_CACHE_LOCK", threading.Lock()):
+            cache = getattr(account_manager, "_QUOTA_GUARD_CACHE", {})
+            for t in tabs:
+                u = t.get("username")
+                if u:
+                    clean_u = re.sub(r"\s*\(.*?\)$", "", str(u)).strip().lower()
+                    if clean_u:
+                        cached = cache.get(clean_u)
+                        if cached and isinstance(cached, dict):
+                            st = str(cached.get("status") or "").upper()
+                            if st in ("BANNED", "BAN_WARN"):
+                                banned_usernames.add(clean_u)
+
+    # 3. Check ZeroPoint Cookie Checker API for unverified accounts
+    usernames_need_api = []
+    for t in tabs:
+        u = t.get("username")
+        if u:
+            clean_u = re.sub(r"\s*\(.*?\)$", "", str(u)).strip()
+            if clean_u and clean_u.lower() not in banned_usernames:
+                usernames_need_api.append(clean_u)
+
+    if usernames_need_api and account_manager:
+        cookie_map: dict[str, str] = {}
+        for cookie_fname in ("Data_Tong_Cookies.txt", "Cookies.txt", "cookie.txt"):
+            cf = b_path / cookie_fname
+            if cf.is_file():
+                try:
+                    for line in cf.read_text(encoding="utf-8", errors="ignore").splitlines():
+                        l_str = line.strip()
+                        if not l_str or ":" not in l_str:
+                            continue
+                        parts = l_str.split(":")
+                        u_norm = parts[0].strip().lower()
+                        c = ""
+                        if "_|WARNING:" in l_str:
+                            c = l_str[l_str.index("_|WARNING:"):].strip()
+                        elif len(parts) > 2:
+                            c = ":".join(parts[2:]).strip()
+                        if c and u_norm not in cookie_map:
+                            cookie_map[u_norm] = c
+                except Exception:
+                    pass
+
+        api_payload = {}
+        for uname in usernames_need_api:
+            c = cookie_map.get(uname.lower())
+            if c:
+                api_payload[uname] = c
+
+        if api_payload:
+            try:
+                zp_res = account_manager.check_zeropoint_cookie_status(api_payload, timeout=5)
+                if isinstance(zp_res, dict):
+                    for uname, info in zp_res.items():
+                        if isinstance(info, dict):
+                            st = str(info.get("status") or "").upper()
+                            if st in ("BANNED", "BAN_WARN"):
+                                banned_usernames.add(uname.strip().lower())
+            except Exception:
+                pass
+
+    # 4. Annotate each tab
+    for t in tabs:
+        u = t.get("username")
+        is_ban = False
+        if str(t.get("status") or "").upper() in ("BANNED", "BAN", "BANED") or t.get("is_banned") is True:
+            is_ban = True
+        elif u:
+            clean_u = re.sub(r"\s*\(.*?\)$", "", str(u)).strip().lower()
+            if clean_u in banned_usernames or "(baned)" in str(u).lower() or "(banned)" in str(u).lower():
+                is_ban = True
+
+        t["is_banned"] = is_ban
+        if is_ban:
+            t["status"] = "BANNED"
 
 
 def query_tab_list(
@@ -1613,6 +1741,8 @@ def query_tab_list(
 
     # Sort by tab number ascending
     tab_list.sort(key=lambda x: x["tab"])
+    base_check_dir = resolved_tab_map_path.parent if resolved_tab_map_path else (pathlib.Path(acc_path).parent if acc_path and str(acc_path) != "/dev/null" else None)
+    check_tabs_ban_status(tab_list, base_dir=base_check_dir)
     return tab_list
 
 
@@ -2276,6 +2406,49 @@ def handle_incoming_batch_action(
             report_url, secret, device_id, action_id,
             status=status, reason=err_msg,
             executed=executed, batch_action="TAB_LIST",
+            details=details_str,
+        )
+        return True
+
+    if action in ("AUTO_LOGIN", "LOGIN_UNLOGGED"):
+        completed = state.setdefault("autologin_action_results", {})
+        cached = completed.get(action_id)
+        if isinstance(cached, dict):
+            send_ack(
+                report_url, secret, device_id, action_id,
+                status=str(cached.get("status", "OPENED")),
+                reason=cached.get("reason"),
+                executed=cached.get("executed") is True,
+                batch_action="AUTO_LOGIN",
+                details=cached.get("details"),
+            )
+            return True
+        try:
+            if not account_manager:
+                raise RuntimeError("account_manager module not found")
+            base_dir_param = message.get("base_dir")
+            res_data = account_manager.auto_login_unlogged_tabs(device_id=device_id, base_dir=base_dir_param)
+            status = "OPENED"
+            executed = True
+            err_msg = None
+            details_str = json.dumps(res_data, ensure_ascii=False)
+        except Exception as e:
+            status = "FAILED"
+            executed = False
+            err_msg = str(e)[:160]
+            details_str = None
+
+        completed[action_id] = {"status": status, "executed": executed, "reason": err_msg, "details": details_str}
+        try:
+            state_path.parent.mkdir(parents=True, exist_ok=True)
+            save_state = {k: list(v) if isinstance(v, set) else v for k, v in state.items()}
+            state_path.write_text(json.dumps(save_state), encoding="utf-8")
+        except Exception:
+            pass
+        send_ack(
+            report_url, secret, device_id, action_id,
+            status=status, reason=err_msg,
+            executed=executed, batch_action="AUTO_LOGIN",
             details=details_str,
         )
         return True

@@ -903,14 +903,16 @@ async function runTests() {
         tabs: [
           { tab: 1, package: "com.tinh.vv.hi", username: "username_a" },
           { tab: 2, package: "com.tinh.vv.hj", username: "username_b" },
-          { tab: 3, package: "com.tinh.vv.hk", username: null }
+          { tab: 3, package: "com.tinh.vv.hk", username: null },
+          { tab: 4, package: "com.tinh.vv.hl", username: "banned_user", is_banned: true },
+          { tab: 5, package: "com.tinh.vv.hm", username: null, is_banned: true }
         ]
       })
     })
   }))).json();
   if (!tabAck.ok || tabAck.status !== "OPENED") throw new Error("TAB_LIST ack failed: " + JSON.stringify(tabAck));
 
-  const expectedTabHtml = `📱 <b>Tab List — M1</b>\nTab 1: username_a\nTab 2: username_b\nTab 3: ❓ (unknown)`;
+  const expectedTabHtml = `📱 <b>Tab List — M1</b>\nTab 1: username_a\nTab 2: username_b\nTab 3: ❓ (unknown)\nTab 4: banned_user (baned)\nTab 5: baned`;
   if (!notifiedTelegram?.text?.includes(expectedTabHtml)) {
     throw new Error("TAB_LIST Telegram message format mismatch. Got:\n" + notifiedTelegram?.text);
   }
@@ -941,7 +943,7 @@ async function runTests() {
 
   // Simulate 65 seconds elapsed without ack
   const recWithPending = await fleet.readFleet();
-  const pendingCmd = recWithPending.pending_actions["m1"].find(c => c.action_id === tabActId2);
+  const pendingCmd = (recWithPending.pending_actions?.["m1"] || []).find(c => c.action_id === tabActId2);
   if (pendingCmd) {
     pendingCmd.delivered_at = Date.now() - 65000;
     await fleet.writeFleet(recWithPending);
@@ -956,6 +958,60 @@ async function runTests() {
   if (!notifiedTelegram?.text?.includes("LẤY TAB LIST THẤT BẠI (TIMEOUT)") || !notifiedTelegram?.text?.includes("M1")) {
     throw new Error("TAB_LIST timeout Telegram alert failed. Got:\n" + notifiedTelegram?.text);
   }
+
+  // 14. AUTO_LOGIN queued per device, delivered via heartbeat, acknowledged and reported to Telegram
+  const autoLoginQueueRes = await (await fleet.controlFleetHub(new Request("https://localhost/aot/hub/control", {
+    method: "POST",
+    body: JSON.stringify({
+      protocol: "fleet-batch-v1",
+      kind: "auto_login",
+      target_device_ids: ["m1"],
+      telegram_chat_id: 12345
+    })
+  }))).json();
+  if (!autoLoginQueueRes.ok || !autoLoginQueueRes.auto_login?.action_id) {
+    throw new Error("AUTO_LOGIN queue failed: " + JSON.stringify(autoLoginQueueRes));
+  }
+  const loginActId = autoLoginQueueRes.auto_login.action_id;
+
+  const loginCmdRes = await (await fleet.handleHeartbeat(new Request("https://localhost/report", {
+    method: "POST",
+    body: JSON.stringify({ device_id: "m1", device_group: "NOVA" })
+  }))).json();
+  if (loginCmdRes.command?.action !== "AUTO_LOGIN" || loginCmdRes.command?.action_id !== loginActId) {
+    throw new Error("AUTO_LOGIN was not delivered by heartbeat: " + JSON.stringify(loginCmdRes));
+  }
+
+  notifiedTelegram = null;
+  const loginAck = await (await fleet.dispatchFleetAck(new Request("https://localhost/aot/ack", {
+    method: "POST",
+    body: JSON.stringify({
+      protocol: "fleet-batch-v1",
+      batch_action: "AUTO_LOGIN",
+      device_id: "m1",
+      action_id: loginActId,
+      status: "OPENED",
+      executed: true,
+      details: JSON.stringify({
+        ok: true,
+        logged_in: [
+          { tab: 2, package: "com.tinh.vv.hj", username: "Zephyra_Pro731" },
+          { tab: 3, package: "com.tinh.vv.hk", username: "M00nlUWarden" }
+        ]
+      })
+    })
+  }))).json();
+  if (!loginAck.ok || loginAck.status !== "OPENED") throw new Error("AUTO_LOGIN ack failed: " + JSON.stringify(loginAck));
+
+  if (!notifiedTelegram?.text?.includes("Auto-Login — M1") || !notifiedTelegram?.text?.includes("Zephyra_Pro731") || !notifiedTelegram?.text?.includes("M00nlUWarden")) {
+    throw new Error("AUTO_LOGIN Telegram message format mismatch. Got:\n" + notifiedTelegram?.text);
+  }
+
+  const afterLoginAck = await (await fleet.handleHeartbeat(new Request("https://localhost/report", {
+    method: "POST",
+    body: JSON.stringify({ device_id: "m1", device_group: "NOVA" })
+  }))).json();
+  if (afterLoginAck.command !== null) throw new Error("acknowledged AUTO_LOGIN was delivered again");
 
   console.log("TEST_FLEET_STATE_2PC_EQUIVALENCE=OK");
 }

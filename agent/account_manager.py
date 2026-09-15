@@ -24,7 +24,8 @@ import threading
 import urllib.request
 import urllib.error
 import subprocess
-from datetime import datetime
+import sqlite3
+from datetime import datetime, timezone, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 DEFAULT_BASE_DIR = "/storage/emulated/0/Download/Shouko"
@@ -1636,6 +1637,252 @@ def run_full_checkban_pipeline(target, base_dir=None, auto_replace=True, use_cac
         "sync_result": sync_result,
         "category_entries": category_entries,
         "checker_engine": engine_name if cookie_results else "RobloxAPI",
+    }
+
+
+def write_cookie_to_package(package: str, cookie_value: str, base_data_dir: str = "/data/data") -> tuple[bool, str]:
+    """
+    Write .ROBLOSECURITY cookie into Chromium WebView Cookies SQLite database:
+    {base_data_dir}/{package}/app_webview/Default/Cookies
+    """
+    if not package or not cookie_value:
+        return False, "invalid_params"
+
+    clean_cookie = cookie_value.strip()
+    if "_|WARNING:" in clean_cookie:
+        clean_cookie = clean_cookie[clean_cookie.index("_|WARNING:"):].strip()
+
+    db_path = os.path.join(base_data_dir, package, "app_webview", "Default", "Cookies")
+    try:
+        os.makedirs(os.path.dirname(db_path), exist_ok=True)
+    except Exception:
+        pass
+
+    # Try direct sqlite3 first
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS cookies (
+                creation_utc INTEGER NOT NULL,
+                host_key TEXT NOT NULL,
+                top_frame_site_key TEXT NOT NULL,
+                name TEXT NOT NULL,
+                value TEXT NOT NULL,
+                encrypted_value BLOB NOT NULL,
+                path TEXT NOT NULL,
+                expires_utc INTEGER NOT NULL,
+                is_secure INTEGER NOT NULL,
+                is_httponly INTEGER NOT NULL,
+                last_access_utc INTEGER NOT NULL,
+                has_expires INTEGER NOT NULL,
+                is_persistent INTEGER NOT NULL,
+                priority INTEGER NOT NULL,
+                samesite INTEGER NOT NULL,
+                source_scheme INTEGER NOT NULL,
+                source_port INTEGER NOT NULL,
+                last_update_utc INTEGER NOT NULL,
+                source_type INTEGER NOT NULL,
+                has_cross_site_ancestor INTEGER NOT NULL
+            )
+        """)
+        chrome_epoch = datetime(1601, 1, 1, tzinfo=timezone.utc)
+        now_utc = datetime.now(timezone.utc)
+        now_chrome = int((now_utc - chrome_epoch).total_seconds() * 1_000_000)
+        expires_chrome = int(((now_utc + timedelta(days=730)) - chrome_epoch).total_seconds() * 1_000_000)
+
+        cursor.execute("SELECT COUNT(*) FROM cookies WHERE name = '.ROBLOSECURITY'")
+        exists = cursor.fetchone()[0] > 0
+        if exists:
+            cursor.execute(
+                "UPDATE cookies SET value = ?, last_access_utc = ?, last_update_utc = ? WHERE name = '.ROBLOSECURITY'",
+                (clean_cookie, now_chrome, now_chrome)
+            )
+        else:
+            cursor.execute("""
+                INSERT INTO cookies (
+                    creation_utc, host_key, top_frame_site_key, name, value, encrypted_value,
+                    path, expires_utc, is_secure, is_httponly, last_access_utc, has_expires,
+                    is_persistent, priority, samesite, source_scheme, source_port, last_update_utc,
+                    source_type, has_cross_site_ancestor
+                ) VALUES (?, '.roblox.com', '', '.ROBLOSECURITY', ?, X'', '/', ?, 1, 1, ?, 1, 1, 1, -1, 2, 443, ?, 0, 0)
+            """, (now_chrome, clean_cookie, expires_chrome, now_chrome, now_chrome))
+        conn.commit()
+        conn.close()
+        return True, "sqlite_success"
+    except Exception as e:
+        # Fallback to root command if running with non-root UID
+        try:
+            py_code = (
+                f"import sqlite3, os; os.makedirs(os.path.dirname('{db_path}'), exist_ok=True); "
+                f"c=sqlite3.connect('{db_path}'); "
+                f"c.execute(\\\"CREATE TABLE IF NOT EXISTS cookies (creation_utc INTEGER, host_key TEXT, top_frame_site_key TEXT, name TEXT, value TEXT, encrypted_value BLOB, path TEXT, expires_utc INTEGER, is_secure INTEGER, is_httponly INTEGER, last_access_utc INTEGER, has_expires INTEGER, is_persistent INTEGER, priority INTEGER, samesite INTEGER, source_scheme INTEGER, source_port INTEGER, last_update_utc INTEGER, source_type INTEGER, has_cross_site_ancestor INTEGER)\\\"); "
+                f"c.execute(\\\"DELETE FROM cookies WHERE name='.ROBLOSECURITY'\\\"); "
+                f"c.execute(\\\"INSERT INTO cookies (creation_utc, host_key, top_frame_site_key, name, value, encrypted_value, path, expires_utc, is_secure, is_httponly, last_access_utc, has_expires, is_persistent, priority, samesite, source_scheme, source_port, last_update_utc, source_type, has_cross_site_ancestor) VALUES (0, '.roblox.com', '', '.ROBLOSECURITY', '{clean_cookie}', X'', '/', 9999999999999, 1, 1, 0, 1, 1, 1, -1, 2, 443, 0, 0, 0)\\\"); "
+                f"c.commit(); c.close()"
+            )
+            shell_cmd = f"su -c \"python3 -c \\\"{py_code}\\\"\""
+            res = subprocess.run(shell_cmd, shell=True, capture_output=True, text=True, timeout=10)
+            if res.returncode == 0:
+                return True, "su_success"
+        except Exception:
+            pass
+        return False, str(e)
+
+
+def auto_login_unlogged_tabs(device_id: str, base_dir: str = None, base_data_dir: str = "/data/data") -> dict:
+    """
+    Tự động quét các tab Roblox clone chưa có tài khoản đăng nhập trên thiết bị (device_id),
+    lấy tài khoản tương ứng từ mục phân bổ trong acc.txt (# <device_id>),
+    khớp cookie từ Data_Tong_Cookies.txt (hoặc Cookies.txt),
+    và nạp trực tiếp cookie vào WebView Cookies của package.
+    """
+    paths = get_default_paths(base_dir)
+    acc_file = paths["acc_file"]
+    data_tong_file = paths["data_tong_file"]
+    bdir = paths["base_dir"]
+    tab_map_file = os.path.join(bdir, "tab_accounts.json")
+
+    dev_key = device_id.strip().lower()
+    if not os.path.exists(acc_file):
+        return {
+            "ok": False,
+            "device_id": device_id.upper(),
+            "error": f"Không tìm thấy file {acc_file}",
+            "logged_in": []
+        }
+
+    with open(acc_file, "r", encoding="utf-8", errors="ignore") as f:
+        content = f.read()
+    sections = parse_acc_sections(content)
+    dev_section = sections.get(dev_key)
+    if not dev_section or not dev_section["accounts"]:
+        return {
+            "ok": False,
+            "device_id": device_id.upper(),
+            "error": f"Không tìm thấy tài khoản nào được phân bổ cho {device_id.upper()} trong acc.txt",
+            "logged_in": []
+        }
+
+    # Load tab_accounts.json mapping
+    tab_accounts = {}
+    if os.path.exists(tab_map_file):
+        try:
+            with open(tab_map_file, "r", encoding="utf-8", errors="ignore") as f:
+                tab_accounts = json.load(f)
+        except Exception:
+            tab_accounts = {}
+
+    TAB_PKG_MAP = {
+        1: "com.tinh.vv.hi",
+        2: "com.tinh.vv.hj",
+        3: "com.tinh.vv.hk",
+        4: "com.tinh.vv.hl",
+        5: "com.tinh.vv.hm",
+        6: "com.tinh.vv.hn",
+        7: "com.tinh.vv.ho",
+        8: "com.tinh.vv.hp",
+        9: "com.tinh.vv.hq",
+        10: "com.tinh.vv.hr",
+    }
+
+    # Determine unlogged tabs: tabs where tab_accounts does not have a valid username
+    unlogged_tabs = []
+    for tab_num, pkg in sorted(TAB_PKG_MAP.items()):
+        current_u = tab_accounts.get(pkg)
+        if not current_u or str(current_u).strip().lower() in ("null", "none", "unknown", ""):
+            unlogged_tabs.append((tab_num, pkg))
+
+    if not unlogged_tabs:
+        return {
+            "ok": True,
+            "device_id": device_id.upper(),
+            "total_unlogged": 0,
+            "total_logged": 0,
+            "logged_in": [],
+            "message": f"Tất cả các tab trên {device_id.upper()} đều đã có tài khoản gán."
+        }
+
+    # Candidate accounts from dev_section that are not yet assigned to any tab on this device
+    assigned_usernames = {str(u).strip().lower() for u in tab_accounts.values() if u}
+    candidate_accounts = [
+        acc for acc in dev_section["accounts"]
+        if acc["username"].strip().lower() not in assigned_usernames
+    ]
+
+    if not candidate_accounts:
+        return {
+            "ok": True,
+            "device_id": device_id.upper(),
+            "total_unlogged": len(unlogged_tabs),
+            "total_logged": 0,
+            "logged_in": [],
+            "message": f"Không còn tài khoản khả dụng trong mục {device_id.upper()} của acc.txt để nạp vào các tab trống."
+        }
+
+    # Load cookie map
+    cookie_map = {}
+    for cf_name in ("Data_Tong_Cookies.txt", "Cookies.txt", "cookie.txt"):
+        cf_path = os.path.join(bdir, cf_name)
+        if os.path.exists(cf_path):
+            try:
+                with open(cf_path, "r", encoding="utf-8", errors="ignore") as f:
+                    for line in f:
+                        line_str = line.strip()
+                        if not line_str or ":" not in line_str:
+                            continue
+                        parts = line_str.split(":")
+                        u_norm = parts[0].strip().lower()
+                        c = ""
+                        if "_|WARNING:" in line_str:
+                            c = line_str[line_str.index("_|WARNING:"):].strip()
+                        elif len(parts) > 2:
+                            c = ":".join(parts[2:]).strip()
+                        if c and u_norm not in cookie_map:
+                            cookie_map[u_norm] = c
+            except Exception:
+                pass
+
+    newly_logged = []
+    for tab_num, pkg in unlogged_tabs:
+        if not candidate_accounts:
+            break
+        acc = candidate_accounts.pop(0)
+        uname = acc["username"]
+        cookie_val = cookie_map.get(uname.lower())
+
+        # If no cookie in file, check if acc line itself contains cookie
+        if not cookie_val and "_|WARNING:" in str(acc.get("raw_line", "")):
+            raw_l = acc["raw_line"]
+            cookie_val = raw_l[raw_l.index("_|WARNING:"):].strip()
+
+        # Write cookie to package
+        if cookie_val:
+            ok, _ = write_cookie_to_package(pkg, cookie_val, base_data_dir=base_data_dir)
+
+        # Record into tab_accounts mapping
+        tab_accounts[pkg] = uname
+        newly_logged.append({
+            "tab": tab_num,
+            "package": pkg,
+            "username": uname,
+            "has_cookie": bool(cookie_val)
+        })
+
+    # Save updated tab_accounts.json
+    try:
+        with open(tab_map_file, "w", encoding="utf-8") as f:
+            json.dump(tab_accounts, f, indent=2, ensure_ascii=False)
+    except Exception:
+        pass
+
+    return {
+        "ok": True,
+        "device_id": device_id.upper(),
+        "total_unlogged": len(unlogged_tabs),
+        "total_logged": len(newly_logged),
+        "logged_in": newly_logged,
+        "message": f"Đã đăng nhập thành công {len(newly_logged)} tài khoản vào các tab trống trên {device_id.upper()}."
     }
 
 

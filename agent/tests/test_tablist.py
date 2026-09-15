@@ -466,6 +466,63 @@ OnlyOneAcc:pass1:
         empty_out = agent.format_tab_list_html("m77", [])
         self.assertIn("(Không có tab Roblox nào đang chạy)", empty_out)
 
+    def test_format_tab_list_html_banned_tabs(self):
+        """Test formatting of banned tabs: username (baned) or baned if unknown."""
+        tabs = [
+            {"tab": 1, "package": "com.tinh.vv.hi", "username": "AlivePlayer99", "is_banned": False},
+            {"tab": 2, "package": "com.tinh.vv.hj", "username": "BannedPlayer100", "is_banned": True},
+            {"tab": 3, "package": "com.tinh.vv.hk", "username": "Zephyra_Pro731 (baned)"},
+            {"tab": 4, "package": "com.tinh.vv.hl", "username": None, "is_banned": True},
+            {"tab": 5, "package": "com.tinh.vv.hm", "username": "❓", "status": "BANNED"},
+        ]
+        html_out = agent.format_tab_list_html("m77", tabs)
+        self.assertIn("Tab 1: AlivePlayer99", html_out)
+        self.assertIn("Tab 2: BannedPlayer100 (baned)", html_out)
+        self.assertIn("Tab 3: Zephyra_Pro731 (baned)", html_out)
+        self.assertIn("Tab 4: baned", html_out)
+        self.assertIn("Tab 5: baned", html_out)
+
+    @mock.patch("agent.agent.run_adb_shell")
+    def test_query_tab_list_detects_banned_from_acc_bi_ban(self, mock_adb):
+        """Test that query_tab_list automatically flags accounts present in acc_bi_ban.txt."""
+        dumpsys_output = """
+        Stack #1:
+          TaskRecord{101 #101 A=com.tinh.vv.hi U=0}
+            Hist #0: ActivityRecord{101 u0 com.tinh.vv.hi/com.roblox.client.ActivityProtocolLaunch t101}
+          TaskRecord{102 #102 A=com.tinh.vv.hj U=0}
+            Hist #0: ActivityRecord{102 u0 com.tinh.vv.hj/com.roblox.client.ActivityProtocolLaunch t102}
+        """
+        def side_effect(cmd, **kwargs):
+            cmd_str = " ".join(cmd) if isinstance(cmd, list) else str(cmd)
+            if "dumpsys activity" in cmd_str:
+                return dumpsys_output
+            if "com.tinh.vv.hi" in cmd_str:
+                return '<map><string name="Username">CleanUser1</string></map>'
+            if "com.tinh.vv.hj" in cmd_str:
+                return '<map><string name="Username">Zephyra_Pro731</string></map>'
+            return ""
+
+        mock_adb.side_effect = side_effect
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = pathlib.Path(tmpdir)
+            ban_file = tmppath / "acc_bi_ban.txt"
+            ban_file.write_text("Zephyra_Pro731:::banned on M77\n", encoding="utf-8")
+            acc_file = tmppath / "acc.txt"
+            acc_file.write_text("# m77\nCleanUser1:pass\nZephyra_Pro731:pass\n", encoding="utf-8")
+
+            tabs = agent.query_tab_list(device_id="m77", acc_path=acc_file, tab_map_path=tmppath / "tab_accounts.json")
+            self.assertEqual(len(tabs), 2)
+            self.assertFalse(tabs[0]["is_banned"])
+            self.assertEqual(tabs[0]["username"], "CleanUser1")
+
+            self.assertTrue(tabs[1]["is_banned"])
+            self.assertEqual(tabs[1]["status"], "BANNED")
+
+            html_out = agent.format_tab_list_html("m77", tabs)
+            self.assertIn("Tab 1: CleanUser1", html_out)
+            self.assertIn("Tab 2: Zephyra_Pro731 (baned)", html_out)
+
     @mock.patch("subprocess.run")
     def test_run_adb_shell_tries_multi_su_fallbacks(self, mock_run):
         """Test that run_adb_shell tries /system/bin/su and /system/xbin/su when standard su fails."""

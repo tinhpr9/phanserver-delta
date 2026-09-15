@@ -503,6 +503,14 @@ export class FleetState {
       );
     }
 
+    if (body.kind === "auto_login") {
+      return this.queueAutoLogin(
+        record,
+        Array.isArray(body.target_device_ids) ? body.target_device_ids : [],
+        { telegram_chat_id: body.telegram_chat_id }
+      );
+    }
+
     return json({ ok: false, error: "unsupported_fleet_control" }, 400);
   }
 
@@ -1753,6 +1761,51 @@ export class FleetState {
     return json({ ok: true, tablist: { action_id: actionId, devices: Object.values(devices) } });
   }
 
+  async queueAutoLogin(record, requestedTargetIds, options = {}) {
+    const fresh = await this.readFleet();
+    const targets = [];
+    const seen = new Set();
+    for (const raw of requestedTargetIds) {
+      const id = normalizeDeviceId(raw);
+      const device = id && fresh.devices[id];
+      if (!id || seen.has(id) || !device) return json({ ok: false, error: "invalid_batch_target" }, 400);
+      if (!this.isDeviceOnline(id, device)) return json({ ok: false, error: "offline_device", device_id: id }, 409);
+      seen.add(id);
+      targets.push(id);
+    }
+    if (!targets.length) return json({ ok: false, error: "invalid_batch_targets" }, 400);
+
+    const actionId = `autologin-${Date.now()}-${crypto.randomUUID().replace(/-/g, "").slice(0, 8)}`;
+    const command = {
+      type: "aot_batch_action",
+      protocol: AOT_HUB_PROTOCOL_VERSION,
+      action_id: actionId,
+      action: "AUTO_LOGIN",
+      target_device_ids: targets,
+      created_at: Date.now()
+    };
+    const devices = {};
+    for (const id of targets) {
+      fresh.pending_actions[id] = fresh.pending_actions[id] || [];
+      fresh.pending_actions[id] = fresh.pending_actions[id].filter(
+        cmd => !(cmd.action === "AUTO_LOGIN" && !cmd.delivered_at && !cmd.acknowledged_at)
+      );
+      fresh.pending_actions[id].push({ ...command, target_device_ids: [id] });
+      devices[id] = { device_id: id, status: "QUEUED", updated_at: Date.now() };
+    }
+    fresh.autologin_actions = fresh.autologin_actions || {};
+    fresh.autologin_actions[actionId] = {
+      action_id: actionId,
+      action: "AUTO_LOGIN",
+      created_at: Date.now(),
+      devices,
+      device_id: targets[0],
+      telegram_chat_id: options.telegram_chat_id
+    };
+    await this.writeFleet(fresh);
+    return json({ ok: true, auto_login: { action_id: actionId, devices: Object.values(devices) } });
+  }
+
   async acknowledgeTabList(record, body, deviceId, actionId) {
     const act = record.tablist_actions?.[actionId];
     const device = act?.devices?.[deviceId];
@@ -1826,7 +1879,16 @@ export class FleetState {
               rawU.toLowerCase() === "undefined" ||
               rawU.toLowerCase() === "guest" ||
               rawU.toLowerCase() === "default";
-            const uname = isUnknown ? "❓ (unknown)" : escapeHtml(rawU.slice(0, 50));
+            const isBanned = t?.is_banned === true || 
+                             ["BANNED", "BAN", "BANED"].includes(String(t?.status || "").toUpperCase()) ||
+                             rawU.endsWith("(baned)") || rawU.endsWith("(banned)");
+            let uname = "";
+            if (isBanned) {
+              let cleanU = rawU.replace(/\s*\((baned|banned|tab_map|acc\.txt|server_links)\)/gi, "").trim();
+              uname = cleanU && !isUnknown ? `${escapeHtml(cleanU.slice(0, 40))} (baned)` : "baned";
+            } else {
+              uname = isUnknown ? "❓ (unknown)" : escapeHtml(rawU.slice(0, 50));
+            }
             const line = `Tab ${tabNum}: ${uname}`;
             // Telegram 4096-char bound: truncate cleanly if approaching limit
             if (msg.length + lines.join("\n").length + line.length > 3900) {
@@ -1842,6 +1904,63 @@ export class FleetState {
         msg = `📱 <b>Tab List — ${escapeHtml(devName)}</b>\n(Không có tab Roblox nào đang chạy)`;
       } else {
         msg = `❌ <b>LẤY TAB LIST THẤT BẠI</b>\n📱 Thiết bị: <code>${escapeHtml(devName)}</code>\n⚠️ Lý do: ${escapeHtml(body.reason || "Lỗi truy vấn thiết bị")}`;
+      }
+
+      try {
+        await fetch(`https://api.telegram.org/bot${this.env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ chat_id: chatId, text: msg, parse_mode: "HTML" })
+        });
+      } catch (e) {}
+    }
+
+    return json({ ok: true, action_id: actionId, device_id: deviceId, status: status || "SUCCESS" });
+  }
+
+  async acknowledgeAutoLogin(record, body, deviceId, actionId) {
+    const act = record.autologin_actions?.[actionId];
+    const device = act?.devices?.[deviceId];
+    const status = String(body.status || "");
+    const isSuccess = status === "OPENED" || status === "SUCCESS";
+
+    if (device && device.status === "QUEUED") {
+      device.status = isSuccess ? status : "FAILED";
+      device.executed = isSuccess && body.executed === true;
+      device.reason = status === "FAILED" ? String(body.reason || "autologin_failed").slice(0, 160) : null;
+      device.details = body.details ? String(body.details) : null;
+      device.updated_at = Date.now();
+    }
+    for (const command of record.pending_actions?.[deviceId] || []) {
+      if (command.action_id === actionId) command.acknowledged_at = Date.now();
+    }
+    await this.writeFleet(record);
+
+    const chatId = act?.telegram_chat_id || this.env?.TELEGRAM_ADMIN_USER_ID;
+    if (chatId && this.env?.TELEGRAM_BOT_TOKEN) {
+      let detailsObj = null;
+      if (body.details) {
+        try {
+          detailsObj = typeof body.details === "string" ? JSON.parse(body.details) : body.details;
+        } catch (e) {}
+      }
+
+      const devName = (act?.device_id || deviceId || "M77").toUpperCase();
+      let msg = "";
+      if (isSuccess && detailsObj) {
+        const loggedIn = Array.isArray(detailsObj.logged_in) ? detailsObj.logged_in : [];
+        if (loggedIn.length === 0) {
+          msg = `🔐 <b>Auto-Login — ${escapeHtml(devName)}</b>\n${escapeHtml(detailsObj.message || "Tất cả các tab đều đã có tài khoản gán.")}`;
+        } else {
+          msg = `🔐 <b>Auto-Login — ${escapeHtml(devName)}</b>\n✅ Đã đăng nhập thành công ${loggedIn.length} tài khoản vào các tab trống:\n`;
+          for (const item of loggedIn) {
+            msg += `• Tab ${escapeHtml(String(item.tab))}: <code>${escapeHtml(String(item.username))}</code>\n`;
+          }
+        }
+      } else if (isSuccess) {
+        msg = `🔐 <b>Auto-Login — ${escapeHtml(devName)}</b>\n✅ Đã hoàn tất tự động đăng nhập.`;
+      } else {
+        msg = `❌ <b>TỰ ĐỘNG LOGIN THẤT BẠI</b>\n📱 Thiết bị: <code>${escapeHtml(devName)}</code>\n⚠️ Lý do: ${escapeHtml(body.reason || "Lỗi nạp tài khoản")}`;
       }
 
       try {
@@ -2002,6 +2121,7 @@ export class FleetState {
     if (action === "DEL_ACC") return this.acknowledgeDelAcc(record, body, id, actionId);
     if (action === "MOVE_ACC") return this.acknowledgeMoveAcc(record, body, id, actionId);
     if (action === "TAB_LIST") return this.acknowledgeTabList(record, body, id, actionId);
+    if (action === "AUTO_LOGIN") return this.acknowledgeAutoLogin(record, body, id, actionId);
     if (action !== AOT_ALLOCATE_SERVER_ACTION) return json({ ok: false, error: "invalid_aot_ack" }, 400);
     const batch = record.last_batch;
     const device = batch?.devices?.[id];

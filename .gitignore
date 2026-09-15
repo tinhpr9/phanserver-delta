@@ -17,3 +17,4 @@ htmlcov/
 tools/tgbridge/token
 tools/tgbridge/chat_id
 tools/tgbridge/runtime/
+.agents/
