@@ -1230,10 +1230,43 @@ def query_tab_list(
         used_tabs.add(t)
         assigned.append((t, pkg))
 
+    # 3.5 Ultra-fast Root Batch Grep (scans all Roblox packages across /data/data and /data/user in ~50ms in 1 command)
+    batch_live_users: dict[str, str] = {}
+    batch_is_exact: dict[str, bool] = {}
+    batch_targets = (
+        "/data/data/com.tinh.vv.*/files/appData/LocalStorage/appStorage.json "
+        "/data/data/com.tinh.vv.*/files/appStorage.json "
+        "/data/data/com.roblox.client*/files/appData/LocalStorage/appStorage.json "
+        "/data/data/com.roblox.client*/files/appStorage.json "
+        "/data/user/*/*/files/appData/LocalStorage/appStorage.json "
+        "/data/user/*/*/files/appStorage.json "
+        "/data/data/com.tinh.vv.*/shared_prefs/*.xml "
+        "/data/data/com.roblox.client*/shared_prefs/*.xml "
+        "/data/user/*/*/shared_prefs/*.xml"
+    )
+    batch_regex = r'(\"(Username|DisplayName)\":\"[a-zA-Z0-9_]+\"|name=\"(Username|DisplayName|RobloxUsername)\">[a-zA-Z0-9_]+<)'
+    batch_cmd = f"su -c \"grep -H -aoEi '{batch_regex}' {batch_targets} 2>/dev/null\""
+    batch_out = run_adb_shell(batch_cmd)
+    if batch_out:
+        re_pkg = re.compile(r"\b(com\.tinh\.vv\.[a-z0-9_\.]+|com\.roblox\.client[a-z0-9_\.]*)\b")
+        re_user = re.compile(r'(?:"(?:Username|DisplayName)":\s*"|name="(?:Username|DisplayName|RobloxUsername)">)([a-zA-Z0-9_]{3,30})["<]', re.IGNORECASE)
+        for line in batch_out.splitlines():
+            m_pkg = re_pkg.search(line)
+            m_u = re_user.search(line)
+            if m_pkg and m_u:
+                p_name = m_pkg.group(1)
+                u_name = m_u.group(1)
+                if u_name.lower() in ("null", "none", "unknown", "guest"):
+                    continue
+                is_exact = bool(re.search(r"Username", line, re.IGNORECASE))
+                if p_name not in batch_live_users or (is_exact and not batch_is_exact.get(p_name)):
+                    batch_live_users[p_name] = u_name
+                    batch_is_exact[p_name] = is_exact
+
     # 4. Determine logged-in username for each running instance via Multi-Tier Fallback
     tab_list = []
     for tab_num, pkg in assigned:
-        username = None
+        username = batch_live_users.get(pkg)
         user_id = pkg_user_map.get(pkg)
         user_ids_to_try = [0, 10]
         if user_id is not None and user_id not in user_ids_to_try:
@@ -1242,40 +1275,41 @@ def query_tab_list(
             user_ids_to_try = [10, 0]
 
         # --- Tier 0: Direct filesystem read via Python Path.read_text() ---
-        candidate_direct_files = [
-            pathlib.Path(f"/data/data/{pkg}/files/appData/LocalStorage/appStorage.json"),
-            pathlib.Path(f"/data/data/{pkg}/files/appStorage.json"),
-        ]
-        for uid in user_ids_to_try:
-            candidate_direct_files.append(pathlib.Path(f"/data/user/{uid}/{pkg}/files/appData/LocalStorage/appStorage.json"))
-            candidate_direct_files.append(pathlib.Path(f"/data/user/{uid}/{pkg}/files/appStorage.json"))
-        candidate_direct_files.extend([
-            pathlib.Path(f"/data/data/{pkg}/shared_prefs/{pkg}_preferences.xml"),
-            pathlib.Path(f"/data/data/{pkg}/shared_prefs/com.roblox.client_preferences.xml"),
-        ])
-        for uid in user_ids_to_try:
-            candidate_direct_files.append(pathlib.Path(f"/data/user/{uid}/{pkg}/shared_prefs/{pkg}_preferences.xml"))
-            candidate_direct_files.append(pathlib.Path(f"/data/user/{uid}/{pkg}/shared_prefs/com.roblox.client_preferences.xml"))
+        if not username:
+            candidate_direct_files = [
+                pathlib.Path(f"/data/data/{pkg}/files/appData/LocalStorage/appStorage.json"),
+                pathlib.Path(f"/data/data/{pkg}/files/appStorage.json"),
+            ]
+            for uid in user_ids_to_try:
+                candidate_direct_files.append(pathlib.Path(f"/data/user/{uid}/{pkg}/files/appData/LocalStorage/appStorage.json"))
+                candidate_direct_files.append(pathlib.Path(f"/data/user/{uid}/{pkg}/files/appStorage.json"))
+            candidate_direct_files.extend([
+                pathlib.Path(f"/data/data/{pkg}/shared_prefs/{pkg}_preferences.xml"),
+                pathlib.Path(f"/data/data/{pkg}/shared_prefs/com.roblox.client_preferences.xml"),
+            ])
+            for uid in user_ids_to_try:
+                candidate_direct_files.append(pathlib.Path(f"/data/user/{uid}/{pkg}/shared_prefs/{pkg}_preferences.xml"))
+                candidate_direct_files.append(pathlib.Path(f"/data/user/{uid}/{pkg}/shared_prefs/com.roblox.client_preferences.xml"))
 
-        try:
-            data_user_dir = pathlib.Path("/data/user")
-            if data_user_dir.is_dir():
-                for u_dir in data_user_dir.iterdir():
-                    candidate_direct_files.append(u_dir / pkg / "files/appData/LocalStorage/appStorage.json")
-                    candidate_direct_files.append(u_dir / pkg / "files/appStorage.json")
-                    candidate_direct_files.append(u_dir / pkg / f"shared_prefs/{pkg}_preferences.xml")
-        except Exception:
-            pass
-
-        for p in candidate_direct_files:
             try:
-                if p.is_file():
-                    content = p.read_text(encoding="utf-8", errors="ignore")
-                    username = extract_username_from_text(content)
-                    if username:
-                        break
+                data_user_dir = pathlib.Path("/data/user")
+                if data_user_dir.is_dir():
+                    for u_dir in data_user_dir.iterdir():
+                        candidate_direct_files.append(u_dir / pkg / "files/appData/LocalStorage/appStorage.json")
+                        candidate_direct_files.append(u_dir / pkg / "files/appStorage.json")
+                        candidate_direct_files.append(u_dir / pkg / f"shared_prefs/{pkg}_preferences.xml")
             except Exception:
                 pass
+
+            for p in candidate_direct_files:
+                try:
+                    if p.is_file():
+                        content = p.read_text(encoding="utf-8", errors="ignore")
+                        username = extract_username_from_text(content)
+                        if username:
+                            break
+                except Exception:
+                    pass
 
         # --- Tier 1: Exact read of appStorage.json via multiple shell/ADB commands ---
         if not username:

@@ -1428,7 +1428,148 @@ MegaRegan426:pass5:
             self.assertTrue(found5)
             self.assertEqual(u5, "JeremiahWilkerson46 (tab_map)")
 
+    @mock.patch("agent.agent.run_adb_shell")
+    def test_batch_root_grep_extracts_usernames_multi_package(self, mock_adb):
+        """Verify batch root grep extracts usernames for multiple packages in one pass without (tab_map) suffix."""
+        dumpsys_output = """
+        Stack #1:
+          TaskRecord{101 #101 A=com.roblox.client U=0}
+            Hist #0: ActivityRecord{1 u0 com.roblox.client/.MainActivity t101}
+          TaskRecord{102 #102 A=com.tinh.vv.hi U=0}
+            Hist #0: ActivityRecord{2 u0 com.tinh.vv.hi/com.roblox.client.ActivityProtocolLaunch t102}
+          TaskRecord{103 #103 A=com.tinh.vv.hj U=0}
+            Hist #0: ActivityRecord{3 u0 com.tinh.vv.hj/com.roblox.client.ActivityProtocolLaunch t103}
+        """
+
+        grep_batch_output = (
+            "/data/data/com.roblox.client/files/appData/LocalStorage/appStorage.json:\"DisplayName\":\"Zephyra_Pro731\"\n"
+            "/data/data/com.tinh.vv.hi/files/appData/LocalStorage/appStorage.json:\"Username\":\"BreckenLife330\"\n"
+            "/data/data/com.tinh.vv.hj/shared_prefs/com.tinh.vv.hj_preferences.xml:<string name=\"Username\">ShadowWoodrow820</string>\n"
+        )
+
+        def side_effect(cmd, **kwargs):
+            cmd_str = str(cmd)
+            if "dumpsys activity" in cmd_str:
+                return dumpsys_output
+            if "grep" in cmd_str:
+                return grep_batch_output
+            return ""
+
+        mock_adb.side_effect = side_effect
+
+        tabs = agent.query_tab_list(tab_map_path="/dev/null", acc_path="/dev/null")
+        self.assertEqual(len(tabs), 3)
+
+        tab1 = next(t for t in tabs if t["package"] == "com.tinh.vv.hi")
+        self.assertEqual(tab1["tab"], 1)
+        self.assertEqual(tab1["username"], "BreckenLife330")
+        self.assertFalse(tab1["username"].endswith("(tab_map)"))
+
+        tab2 = next(t for t in tabs if t["package"] == "com.tinh.vv.hj")
+        self.assertEqual(tab2["tab"], 2)
+        self.assertEqual(tab2["username"], "ShadowWoodrow820")
+        self.assertFalse(tab2["username"].endswith("(tab_map)"))
+
+        tab_roblox = next(t for t in tabs if t["package"] == "com.roblox.client")
+        self.assertEqual(tab_roblox["username"], "Zephyra_Pro731")
+        self.assertFalse(tab_roblox["username"].endswith("(tab_map)"))
+
+        html_out = agent.format_tab_list_html("m77", tabs)
+        self.assertIn("BreckenLife330", html_out)
+        self.assertIn("ShadowWoodrow820", html_out)
+        self.assertIn("Zephyra_Pro731", html_out)
+        self.assertNotIn("(tab_map)", html_out)
+
+    @mock.patch("agent.agent.run_adb_shell")
+    def test_batch_root_grep_case_insensitive_and_multi_user(self, mock_adb):
+        """Verify batch root grep handles case-insensitive keys and multi-user paths."""
+        dumpsys_output = """
+        Stack #1:
+          TaskRecord{101 #101 A=com.tinh.vv.hk U=0}
+            Hist #0: ActivityRecord{1 u0 com.tinh.vv.hk/com.roblox.client.ActivityProtocolLaunch t101}
+        """
+        grep_batch_output = (
+            "/data/user/10/com.tinh.vv.hk/files/appData/LocalStorage/appStorage.json:\"username\":\"MysticjUBuildery1999\"\n"
+        )
+
+        def side_effect(cmd, **kwargs):
+            cmd_str = str(cmd)
+            if "dumpsys activity" in cmd_str:
+                return dumpsys_output
+            if "grep" in cmd_str:
+                return grep_batch_output
+            return ""
+
+        mock_adb.side_effect = side_effect
+
+        tabs = agent.query_tab_list(tab_map_path="/dev/null", acc_path="/dev/null")
+        self.assertEqual(len(tabs), 1)
+        self.assertEqual(tabs[0]["username"], "MysticjUBuildery1999")
+        self.assertFalse(tabs[0]["username"].endswith("(tab_map)"))
+
+    @mock.patch("agent.agent.run_adb_shell")
+    def test_batch_root_grep_ignores_invalid_usernames_and_falls_back(self, mock_adb):
+        """Verify batch root grep skips invalid placeholders (null, guest, unknown) and falls back to tab_accounts.json."""
+        dumpsys_output = """
+        Stack #1:
+          TaskRecord{101 #101 A=com.tinh.vv.hk U=0}
+            Hist #0: ActivityRecord{1 u0 com.tinh.vv.hk/com.roblox.client.ActivityProtocolLaunch t101}
+        """
+        # Grep returns placeholder string
+        grep_batch_output = (
+            "/data/data/com.tinh.vv.hk/files/appData/LocalStorage/appStorage.json:\"Username\":\"null\"\n"
+        )
+
+        def side_effect(cmd, **kwargs):
+            cmd_str = str(cmd)
+            if "dumpsys activity" in cmd_str:
+                return dumpsys_output
+            if "grep" in cmd_str:
+                return grep_batch_output
+            return ""
+
+        mock_adb.side_effect = side_effect
+
+        import tempfile
+        tab_map_content = {"com.tinh.vv.hk": "MysticjUBuildery1999"}
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fpath = pathlib.Path(tmpdir) / "tab_accounts.json"
+            fpath.write_text(json.dumps(tab_map_content), encoding="utf-8")
+            tabs = agent.query_tab_list(tab_map_path=fpath, acc_path="/dev/null")
+            self.assertEqual(len(tabs), 1)
+            # Should have fallen back to tab_map with (tab_map) suffix
+            self.assertEqual(tabs[0]["username"], "MysticjUBuildery1999 (tab_map)")
+
+    @mock.patch("agent.agent.run_adb_shell")
+    def test_batch_root_grep_prioritizes_username_over_displayname(self, mock_adb):
+        """Verify that when both DisplayName and Username appear, exact Username is preferred."""
+        dumpsys_output = """
+        Stack #1:
+          TaskRecord{101 #101 A=com.roblox.client U=0}
+            Hist #0: ActivityRecord{1 u0 com.roblox.client/.MainActivity t101}
+        """
+        grep_batch_output = (
+            "/data/data/com.roblox.client/files/appData/LocalStorage/appStorage.json:\"DisplayName\":\"Zephyra_\"\n"
+            "/data/data/com.roblox.client/files/appData/LocalStorage/appStorage.json:\"Username\":\"Zephyra_Pro731\"\n"
+        )
+
+        def side_effect(cmd, **kwargs):
+            cmd_str = str(cmd)
+            if "dumpsys activity" in cmd_str:
+                return dumpsys_output
+            if "grep" in cmd_str:
+                return grep_batch_output
+            return ""
+
+        mock_adb.side_effect = side_effect
+
+        tabs = agent.query_tab_list(tab_map_path="/dev/null", acc_path="/dev/null")
+        self.assertEqual(len(tabs), 1)
+        self.assertEqual(tabs[0]["username"], "Zephyra_Pro731")
+
 
 if __name__ == "__main__":
     unittest.main()
+
+
 
