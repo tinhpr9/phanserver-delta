@@ -1786,41 +1786,86 @@ def auto_login_unlogged_tabs(device_id: str, base_dir: str = None, base_data_dir
         10: "com.tinh.vv.hr",
     }
 
-    # Determine unlogged tabs: tabs where tab_accounts does not have a valid username
-    unlogged_tabs = []
+    # 1. Gather banned usernames from all local and cache sources
+    banned_usernames = set()
+    for fname in ("acc_bi_ban.txt", "nhat_ky_ban.txt"):
+        fpath = os.path.join(bdir, fname)
+        if os.path.exists(fpath):
+            try:
+                with open(fpath, "r", encoding="utf-8", errors="ignore") as f:
+                    for line in f:
+                        stripped = line.strip()
+                        if stripped:
+                            u = stripped.split(":")[0].strip().lower()
+                            if u:
+                                banned_usernames.add(u)
+            except Exception:
+                pass
+
+    # Quota-Guard ban cache
+    with _CACHE_LOCK:
+        for u_cached, cdata in _QUOTA_GUARD_CACHE.items():
+            if isinstance(cdata, dict) and str(cdata.get("status") or "").upper() in ("BANNED", "BAN_WARN"):
+                banned_usernames.add(u_cached.strip().lower())
+
+    # 2. Identify tabs needing login or replacement
+    # Reasons:
+    # - "unassigned": tab has no username (empty/null/unknown)
+    # - "banned": tab's current username is known to be banned
+    # - "duplicate": tab's current username was already assigned to an earlier tab
+    assigned_valid_usernames = set()
+    tabs_to_login = []
+
     for tab_num, pkg in sorted(TAB_PKG_MAP.items()):
         current_u = tab_accounts.get(pkg)
-        if not current_u or str(current_u).strip().lower() in ("null", "none", "unknown", ""):
-            unlogged_tabs.append((tab_num, pkg))
+        u_str = str(current_u or "").strip()
+        u_clean = re.sub(r"\s*\(.*?\)$", "", u_str).strip()
+        u_lower = u_clean.lower()
 
-    if not unlogged_tabs:
+        if not u_clean or u_lower in ("null", "none", "unknown", "❓", ""):
+            tabs_to_login.append((tab_num, pkg, "unassigned"))
+        elif u_lower in banned_usernames or "(baned)" in u_str.lower() or "(banned)" in u_str.lower():
+            tabs_to_login.append((tab_num, pkg, f"banned: {u_clean}"))
+        elif u_lower in assigned_valid_usernames:
+            tabs_to_login.append((tab_num, pkg, f"duplicate: {u_clean}"))
+        else:
+            assigned_valid_usernames.add(u_lower)
+
+    if not tabs_to_login:
         return {
             "ok": True,
             "device_id": device_id.upper(),
             "total_unlogged": 0,
             "total_logged": 0,
             "logged_in": [],
-            "message": f"Tất cả các tab trên {device_id.upper()} đều đã có tài khoản gán."
+            "message": f"Tất cả 10 tab trên {device_id.upper()} đều đã có tài khoản sạch hợp lệ, không có tab nào bị ban."
         }
 
-    # Candidate accounts from dev_section that are not yet assigned to any tab on this device
-    assigned_usernames = {str(u).strip().lower() for u in tab_accounts.values() if u}
+    # 3. Candidate accounts from dev_section that are clean (not banned) and not yet assigned to any valid tab
     candidate_accounts = [
         acc for acc in dev_section["accounts"]
-        if acc["username"].strip().lower() not in assigned_usernames
+        if acc["username"].strip().lower() not in assigned_valid_usernames
+        and acc["username"].strip().lower() not in banned_usernames
     ]
 
     if not candidate_accounts:
+        banned_tabs_count = sum(1 for _, _, r in tabs_to_login if "banned" in r)
+        dup_tabs_count = sum(1 for _, _, r in tabs_to_login if "duplicate" in r)
+        empty_tabs_count = sum(1 for _, _, r in tabs_to_login if r == "unassigned")
         return {
             "ok": True,
             "device_id": device_id.upper(),
-            "total_unlogged": len(unlogged_tabs),
+            "total_unlogged": len(tabs_to_login),
             "total_logged": 0,
             "logged_in": [],
-            "message": f"Không còn tài khoản khả dụng trong mục {device_id.upper()} của acc.txt để nạp vào các tab trống."
+            "message": (
+                f"Phát hiện {len(tabs_to_login)} tab cần nạp trên {device_id.upper()} "
+                f"({banned_tabs_count} tab ban, {dup_tabs_count} tab trùng, {empty_tabs_count} tab trống), "
+                f"nhưng không còn tài khoản sạch khả dụng trong mục {device_id.upper()} của acc.txt."
+            )
         }
 
-    # Load cookie map
+    # 4. Load cookie map
     cookie_map = {}
     for cf_name in ("Data_Tong_Cookies.txt", "Cookies.txt", "cookie.txt"):
         cf_path = os.path.join(bdir, cf_name)
@@ -1844,9 +1889,11 @@ def auto_login_unlogged_tabs(device_id: str, base_dir: str = None, base_data_dir
                 pass
 
     newly_logged = []
-    for tab_num, pkg in unlogged_tabs:
+    unresolved_tabs = []
+    for tab_num, pkg, reason in tabs_to_login:
         if not candidate_accounts:
-            break
+            unresolved_tabs.append((tab_num, pkg, reason))
+            continue
         acc = candidate_accounts.pop(0)
         uname = acc["username"]
         cookie_val = cookie_map.get(uname.lower())
@@ -1857,32 +1904,55 @@ def auto_login_unlogged_tabs(device_id: str, base_dir: str = None, base_data_dir
             cookie_val = raw_l[raw_l.index("_|WARNING:"):].strip()
 
         # Write cookie to package
+        cookie_written = False
         if cookie_val:
-            ok, _ = write_cookie_to_package(pkg, cookie_val, base_data_dir=base_data_dir)
+            cookie_written, _ = write_cookie_to_package(pkg, cookie_val, base_data_dir=base_data_dir)
 
         # Record into tab_accounts mapping
         tab_accounts[pkg] = uname
+        assigned_valid_usernames.add(uname.lower())
         newly_logged.append({
             "tab": tab_num,
             "package": pkg,
             "username": uname,
-            "has_cookie": bool(cookie_val)
+            "replaced_reason": reason,
+            "has_cookie": bool(cookie_val),
+            "cookie_written": cookie_written
         })
 
     # Save updated tab_accounts.json
-    try:
-        with open(tab_map_file, "w", encoding="utf-8") as f:
-            json.dump(tab_accounts, f, indent=2, ensure_ascii=False)
-    except Exception:
-        pass
+    if newly_logged:
+        try:
+            with open(tab_map_file, "w", encoding="utf-8") as f:
+                json.dump(tab_accounts, f, indent=2, ensure_ascii=False)
+        except Exception:
+            pass
+
+    banned_replaced = sum(1 for item in newly_logged if "banned" in item.get("replaced_reason", ""))
+    dup_replaced = sum(1 for item in newly_logged if "duplicate" in item.get("replaced_reason", ""))
+    empty_replaced = sum(1 for item in newly_logged if item.get("replaced_reason") == "unassigned")
+
+    summary_parts = []
+    if banned_replaced > 0:
+        summary_parts.append(f"thay {banned_replaced} acc ban")
+    if dup_replaced > 0:
+        summary_parts.append(f"thay {dup_replaced} acc trùng")
+    if empty_replaced > 0:
+        summary_parts.append(f"nạp {empty_replaced} tab trống")
+    details_clause = f" ({', '.join(summary_parts)})" if summary_parts else ""
+
+    msg = f"Đã đăng nhập thành công {len(newly_logged)} tài khoản{details_clause} vào các tab trên {device_id.upper()}."
+    if unresolved_tabs:
+        msg += f" Còn {len(unresolved_tabs)} tab chưa có tài khoản do thiếu acc sạch trong acc.txt."
 
     return {
         "ok": True,
         "device_id": device_id.upper(),
-        "total_unlogged": len(unlogged_tabs),
+        "total_unlogged": len(tabs_to_login),
         "total_logged": len(newly_logged),
         "logged_in": newly_logged,
-        "message": f"Đã đăng nhập thành công {len(newly_logged)} tài khoản vào các tab trống trên {device_id.upper()}."
+        "unresolved_tabs": [{"tab": t, "package": p, "reason": r} for t, p, r in unresolved_tabs],
+        "message": msg
     }
 
 

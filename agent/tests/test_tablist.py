@@ -2106,9 +2106,50 @@ MegaRegan426:pass5:
         self.assertIn("com.tinh.vv.clone-1", pkgs)
         self.assertIn("com.roblox.client-beta", pkgs)
 
+    @mock.patch("agent.agent.run_adb_shell")
+    def test_query_tab_list_all_tabs_returns_all_10_canonical_tabs(self, mock_adb):
+        """Verify that when all_tabs=True, all 10 canonical tabs (1..10) are returned even if only 2 are running."""
+        dumpsys_output = """
+        Stack #1:
+          TaskRecord{101 #101 A=com.tinh.vv.hi U=0}
+            Hist #0: ActivityRecord{1 u0 com.tinh.vv.hi/com.roblox.client.Activity t101}
+          TaskRecord{102 #102 A=com.tinh.vv.hj U=0}
+            Hist #0: ActivityRecord{2 u0 com.tinh.vv.hj/com.roblox.client.Activity t102}
+        """
+        mock_adb.side_effect = lambda cmd, **kwargs: dumpsys_output if "dumpsys activity" in str(cmd) else ""
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = pathlib.Path(tmpdir)
+            ban_file = tmppath / "acc_bi_ban.txt"
+            ban_file.write_text("BannedUser5:pass\n", encoding="utf-8")
+
+            tab_map_file = tmppath / "tab_accounts.json"
+            tab_map_file.write_text(json.dumps({
+                "com.tinh.vv.hi": "LiveUser1",
+                "com.tinh.vv.hj": "LiveUser2",
+                "com.tinh.vv.hm": "BannedUser5",
+            }), encoding="utf-8")
+
+            tabs = agent.query_tab_list(
+                device_id="m77",
+                tab_map_path=tab_map_file,
+                all_tabs=True,
+            )
+            # Must return all 10 canonical tabs
+            self.assertEqual(len(tabs), 10)
+            tab_nums = [t["tab"] for t in tabs]
+            self.assertEqual(tab_nums, list(range(1, 11)))
+
+            # Tab 5 (com.tinh.vv.hm) must be flagged as banned
+            tab5 = next(t for t in tabs if t["tab"] == 5)
+            self.assertTrue(tab5["is_banned"])
+            self.assertEqual(tab5["status"], "BANNED")
+
+            html = agent.format_tab_list_html("m77", tabs)
+            for i in range(1, 11):
+                self.assertIn(f"Tab {i}:", html)
+            self.assertIn("BannedUser5 (baned)", html)
+
 
 if __name__ == "__main__":
     unittest.main()
-
-
-

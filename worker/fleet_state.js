@@ -1736,6 +1736,7 @@ export class FleetState {
       action_id: actionId,
       action: "TAB_LIST",
       target_device_ids: targets,
+      all_tabs: true,
       created_at: Date.now()
     };
     const devices = {};

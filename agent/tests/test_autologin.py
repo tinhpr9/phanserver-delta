@@ -151,6 +151,59 @@ class TestAutoLogin(unittest.TestCase):
             mock_ack.assert_called_once()
             self.assertEqual(mock_ack.call_args.kwargs["status"], "OPENED")
 
+    def test_auto_login_replaces_banned_and_duplicate_accounts(self):
+        # 1. Setup ban list
+        ban_file = self.base_dir / "acc_bi_ban.txt"
+        ban_file.write_text("BannedUser1:p1\nBannedUser2:p2\n", encoding="utf-8")
+
+        # 2. Setup tab_accounts.json with a banned account and a duplicate account
+        tab_map_file = self.base_dir / "tab_accounts.json"
+        tab_map_file.write_text(json.dumps({
+            "com.tinh.vv.hi": "CleanAssigned1",
+            "com.tinh.vv.hj": "BannedUser1",      # Banned
+            "com.tinh.vv.hk": "CleanAssigned1",  # Duplicate of tab 1
+            "com.tinh.vv.hl": "",                # Unassigned
+        }), encoding="utf-8")
+
+        # 3. Setup acc.txt (# M77) with mix of assigned, banned, and good candidates
+        acc_file = self.base_dir / "acc.txt"
+        acc_file.write_text(
+            "M77___(gag2)\n"
+            "CleanAssigned1:p1\n"
+            "BannedUser2:p2\n"       # Banned candidate, must NOT be picked!
+            "CandidateGood1:p3\n"
+            "CandidateGood2:p4\n"
+            "CandidateGood3:p5\n",
+            encoding="utf-8"
+        )
+
+        # 4. Setup cookie store
+        cookie_file = self.base_dir / "Data_Tong_Cookies.txt"
+        cookie_file.write_text(
+            "CandidateGood1:p3:_|WARNING:cookie_good1\n"
+            "CandidateGood2:p4:_|WARNING:cookie_good2\n"
+            "CandidateGood3:p5:_|WARNING:cookie_good3\n",
+            encoding="utf-8"
+        )
+
+        res = account_manager.auto_login_unlogged_tabs(
+            "m77", base_dir=str(self.base_dir), base_data_dir=str(self.data_dir)
+        )
+        self.assertTrue(res["ok"])
+        # Should replace Tab 2 (banned), Tab 3 (duplicate), and Tab 4 (unassigned)
+        self.assertGreaterEqual(res["total_logged"], 3)
+
+        updated_tabs = json.loads(tab_map_file.read_text(encoding="utf-8"))
+        # Tab 1 should remain CleanAssigned1
+        self.assertEqual(updated_tabs.get("com.tinh.vv.hi"), "CleanAssigned1")
+        # Tab 2, 3, 4 should now have good candidates, NOT BannedUser1 or BannedUser2
+        self.assertEqual(updated_tabs.get("com.tinh.vv.hj"), "CandidateGood1")
+        self.assertEqual(updated_tabs.get("com.tinh.vv.hk"), "CandidateGood2")
+        self.assertEqual(updated_tabs.get("com.tinh.vv.hl"), "CandidateGood3")
+
+        # Verify summary message mentions replaced accounts
+        self.assertIn("thay", res["message"])
+
 
 if __name__ == "__main__":
     unittest.main()

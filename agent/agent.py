@@ -1299,6 +1299,7 @@ def query_tab_list(
     acc_path: Optional[pathlib.Path | str] = None,
     links_path: Optional[pathlib.Path | str] = None,
     tab_map_path: Optional[pathlib.Path | str] = None,
+    all_tabs: bool = False,
 ) -> list[dict[str, Any]]:
     """
     Query running Roblox app instances using ADB / local environment, map them to Tab numbers,
@@ -1418,17 +1419,24 @@ def query_tab_list(
                     pkg_pid_map[pkg] = m_ps_pid.group(1)
 
     # 3. Assign tab numbers with collision prevention:
-    # Pass 1: Canonical assignments for mapped clone packages (1..10)
     used_tabs = set()
     assigned = []
     unmapped = []
-    for pkg in running_pkgs:
-        canonical_tab = TAB_PACKAGE_MAP.get(pkg)
-        if canonical_tab is not None:
-            used_tabs.add(canonical_tab)
-            assigned.append((canonical_tab, pkg))
-        else:
-            unmapped.append(pkg)
+
+    # If all_tabs is requested: guarantee all 10 canonical packages (1..10) are included
+    if all_tabs:
+        for pkg, tab_num in sorted(TAB_PACKAGE_MAP.items(), key=lambda x: x[1]):
+            used_tabs.add(tab_num)
+            assigned.append((tab_num, pkg))
+    else:
+        # Pass 1: Canonical assignments for mapped clone packages (1..10) from running packages
+        for pkg in running_pkgs:
+            canonical_tab = TAB_PACKAGE_MAP.get(pkg)
+            if canonical_tab is not None:
+                used_tabs.add(canonical_tab)
+                assigned.append((canonical_tab, pkg))
+            else:
+                unmapped.append(pkg)
 
     # Pass 2: Assign lowest available tabs for unmapped packages without colliding
     for pkg in unmapped:
@@ -2379,11 +2387,13 @@ def handle_incoming_batch_action(
         try:
             acc_path_param = message.get("acc_path")
             tab_map_param = message.get("tab_map_path") or message.get("tab_accounts_path")
+            all_tabs_param = message.get("all_tabs", True)
             tabs = query_tab_list(
                 device_id=device_id,
                 acc_path=acc_path_param,
                 links_path=links_path,
                 tab_map_path=tab_map_param,
+                all_tabs=all_tabs_param,
             )
             status = "OPENED"
             executed = True
