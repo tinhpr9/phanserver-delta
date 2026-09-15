@@ -1325,6 +1325,109 @@ MegaRegan426:pass5:
         self.assertTrue(found)
         self.assertEqual(u, "PlayerCustom6 (tab_map)")
 
+    def test_stale_tab_accounts_file_with_nulls_is_automatically_healed(self):
+        """Verify that a stale tab_accounts.json on disk with nulls (from previous commit) is self-healed."""
+        import tempfile
+        stale_content = {
+            "com.tinh.vv.hi": "BreckenLife330",
+            "com.tinh.vv.hj": "ShadowWoodrow820",
+            "com.tinh.vv.hk": None,
+            "com.tinh.vv.hl": None,
+            "com.tinh.vv.hm": None,
+            "com.tinh.vv.hn": None,
+            "com.tinh.vv.ho": "Mega_Wiley623",
+            "com.tinh.vv.hp": "Zephyra_Pro731",
+            "com.tinh.vv.hq": None,
+            "com.tinh.vv.hr": None,
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            stale_file = pathlib.Path(tmpdir) / "tab_accounts.json"
+            stale_file.write_text(json.dumps(stale_content, indent=2), encoding="utf-8")
+
+            # 1. Test ensure_tab_accounts_file heals the file on disk
+            agent.ensure_tab_accounts_file(stale_file)
+            healed_disk = json.loads(stale_file.read_text(encoding="utf-8"))
+            self.assertEqual(healed_disk.get("com.tinh.vv.hk"), "MysticjUBuildery1999")
+            self.assertEqual(healed_disk.get("com.tinh.vv.hl"), "VanessaJoseph403")
+            self.assertEqual(healed_disk.get("com.tinh.vv.hm"), "JeremiahWilkerson46")
+            self.assertEqual(healed_disk.get("com.tinh.vv.hn"), "FuryuYQuantumD")
+
+            # 2. Reset with nulls and test load_tab_accounts also heals
+            stale_file.write_text(json.dumps(stale_content, indent=2), encoding="utf-8")
+            loaded = agent.load_tab_accounts(stale_file)
+            self.assertEqual(loaded.get("com.tinh.vv.hk"), "MysticjUBuildery1999")
+            self.assertEqual(loaded.get("com.tinh.vv.hl"), "VanessaJoseph403")
+
+    @mock.patch("agent.agent.run_adb_shell")
+    def test_stale_tab_accounts_file_query_tab_list_resolves_tab3_and_tab4(self, mock_adb):
+        """Verify query_tab_list with a stale tab_accounts.json resolves Tab 3 and Tab 4 without unknown."""
+        dumpsys_output = """
+        Stack #1:
+          TaskRecord{102 #102 A=com.tinh.vv.hj U=0}
+            Hist #0: ActivityRecord{2 u0 com.tinh.vv.hj/com.roblox.client.Activity t102}
+          TaskRecord{103 #103 A=com.tinh.vv.hk U=0}
+            Hist #0: ActivityRecord{3 u0 com.tinh.vv.hk/com.roblox.client.Activity t103}
+          TaskRecord{104 #104 A=com.tinh.vv.hl U=0}
+            Hist #0: ActivityRecord{4 u0 com.tinh.vv.hl/com.roblox.client.Activity t104}
+        """
+        mock_adb.side_effect = lambda cmd, **kw: dumpsys_output if "dumpsys" in str(cmd) else ""
+        import tempfile
+        stale_content = {
+            "com.tinh.vv.hi": "BreckenLife330",
+            "com.tinh.vv.hj": "ShadowWoodrow820",
+            "com.tinh.vv.hk": None,
+            "com.tinh.vv.hl": None,
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            stale_file = pathlib.Path(tmpdir) / "tab_accounts.json"
+            stale_file.write_text(json.dumps(stale_content, indent=2), encoding="utf-8")
+
+            tabs = agent.query_tab_list(device_id="m77", tab_map_path=stale_file)
+            self.assertEqual(len(tabs), 3)
+
+            tab2 = next(t for t in tabs if t["tab"] == 2)
+            self.assertEqual(tab2["package"], "com.tinh.vv.hj")
+            self.assertEqual(tab2["username"], "ShadowWoodrow820 (tab_map)")
+
+            tab3 = next(t for t in tabs if t["tab"] == 3)
+            self.assertEqual(tab3["package"], "com.tinh.vv.hk")
+            self.assertEqual(tab3["username"], "MysticjUBuildery1999 (tab_map)")
+
+            tab4 = next(t for t in tabs if t["tab"] == 4)
+            self.assertEqual(tab4["package"], "com.tinh.vv.hl")
+            self.assertEqual(tab4["username"], "VanessaJoseph403 (tab_map)")
+
+            html_out = agent.format_tab_list_html("m77", tabs)
+            self.assertIn("Tab 2: ShadowWoodrow820 (tab_map)", html_out)
+            self.assertIn("Tab 3: MysticjUBuildery1999 (tab_map)", html_out)
+            self.assertIn("Tab 4: VanessaJoseph403 (tab_map)", html_out)
+            self.assertNotIn("❓ (unknown)", html_out)
+
+    def test_stale_tab_map_file_heals_and_resolves_get_tab_map_username(self):
+        """Verify load_tab_accounts heals stale nulls and get_tab_map_username returns healed accounts."""
+        import tempfile
+        null_data = {
+            "com.tinh.vv.hk": None,
+            "com.tinh.vv.hl": "null",
+            "com.tinh.vv.hm": "unknown",
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            stale_file = pathlib.Path(tmpdir) / "tab_accounts.json"
+            stale_file.write_text(json.dumps(null_data, indent=2), encoding="utf-8")
+
+            healed_data = agent.load_tab_accounts(stale_file)
+            found3, u3 = agent.get_tab_map_username(tab_num=3, pkg="com.tinh.vv.hk", loaded_data=healed_data)
+            self.assertTrue(found3)
+            self.assertEqual(u3, "MysticjUBuildery1999 (tab_map)")
+
+            found4, u4 = agent.get_tab_map_username(tab_num=4, pkg="com.tinh.vv.hl", loaded_data=healed_data)
+            self.assertTrue(found4)
+            self.assertEqual(u4, "VanessaJoseph403 (tab_map)")
+
+            found5, u5 = agent.get_tab_map_username(tab_num=5, pkg="com.tinh.vv.hm", loaded_data=healed_data)
+            self.assertTrue(found5)
+            self.assertEqual(u5, "JeremiahWilkerson46 (tab_map)")
+
 
 if __name__ == "__main__":
     unittest.main()

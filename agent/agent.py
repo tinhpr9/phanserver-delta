@@ -850,7 +850,7 @@ def get_server_links_fallback_username(
 
 
 def ensure_tab_accounts_file(path: Optional[pathlib.Path | str] = None) -> pathlib.Path:
-    """Ensure tab_accounts.json exists with verified default mapping if missing or empty."""
+    """Ensure tab_accounts.json exists with verified default mapping if missing or empty, and self-heals stale null/empty entries."""
     target_path = pathlib.Path(path) if path else getattr(config, "DEFAULT_TAB_ACCOUNTS_PATH", pathlib.Path("/storage/emulated/0/Download/Shouko/tab_accounts.json"))
     try:
         if not target_path.is_file() or target_path.stat().st_size == 0:
@@ -858,13 +858,31 @@ def ensure_tab_accounts_file(path: Optional[pathlib.Path | str] = None) -> pathl
             tmp_path = target_path.with_suffix(f".tmp.{os.getpid()}_{time.time_ns()}")
             tmp_path.write_text(json.dumps(DEFAULT_TAB_ACCOUNTS, indent=2, ensure_ascii=False), encoding="utf-8")
             tmp_path.replace(target_path)
+        else:
+            content = target_path.read_text(encoding="utf-8-sig", errors="ignore")
+            if content.strip():
+                data = json.loads(content)
+                if isinstance(data, dict):
+                    modified = False
+                    for k, v in DEFAULT_TAB_ACCOUNTS.items():
+                        if v is not None:
+                            curr_v = data.get(k)
+                            if curr_v is None or (isinstance(curr_v, str) and (
+                                not curr_v.strip()
+                                or curr_v.strip().lower() in ("null", "none", "unknown", "false", "true", "undefined", "default", "guest", "❓")
+                                or curr_v.strip().startswith("❓")
+                            )):
+                                data[k] = v
+                                modified = True
+                    if modified:
+                        save_tab_accounts(data, target_path)
     except Exception:
         pass
     return target_path
 
 
 def load_tab_accounts(path: Optional[pathlib.Path | str] = None, auto_create: bool = False) -> dict[str, Any]:
-    """Load fixed tab-to-package-to-account mapping from tab_accounts.json."""
+    """Load fixed tab-to-package-to-account mapping from tab_accounts.json with automatic self-healing."""
     target_path = pathlib.Path(path) if path else getattr(config, "DEFAULT_TAB_ACCOUNTS_PATH", pathlib.Path("/storage/emulated/0/Download/Shouko/tab_accounts.json"))
     if auto_create and not target_path.is_file():
         ensure_tab_accounts_file(target_path)
@@ -874,6 +892,22 @@ def load_tab_accounts(path: Optional[pathlib.Path | str] = None, auto_create: bo
             if content.strip():
                 data = json.loads(content)
                 if isinstance(data, dict):
+                    modified = False
+                    for k, v in DEFAULT_TAB_ACCOUNTS.items():
+                        if v is not None:
+                            curr_v = data.get(k)
+                            if curr_v is None or (isinstance(curr_v, str) and (
+                                not curr_v.strip()
+                                or curr_v.strip().lower() in ("null", "none", "unknown", "false", "true", "undefined", "default", "guest", "❓")
+                                or curr_v.strip().startswith("❓")
+                            )):
+                                data[k] = v
+                                modified = True
+                    if modified:
+                        try:
+                            save_tab_accounts(data, target_path)
+                        except Exception:
+                            pass
                     return data
     except Exception:
         pass
@@ -2067,6 +2101,10 @@ def check_and_apply_auto_update(branch: str = "fix/delta-stability", force: bool
             print(f"[UPGRADE] git reset thất bại: {err}", flush=True)
             return False, f"reset_err: {err}"
 
+        try:
+            ensure_tab_accounts_file()
+        except Exception:
+            pass
         return True, None
     except Exception as e:
         print(f"[UPGRADE] Thất bại: {e}", flush=True)
@@ -2097,6 +2135,10 @@ def run_agent_loop(
             state = {}
 
     print(f"[*] Starting phanserver-delta agent: ID={device_id}, Group={device_group}, URL={report_url}", flush=True)
+    try:
+        ensure_tab_accounts_file()
+    except Exception:
+        pass
     try:
         subprocess.run(["termux-wake-lock"], capture_output=True, timeout=2)
     except Exception:
