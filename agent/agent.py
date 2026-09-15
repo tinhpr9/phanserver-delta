@@ -348,14 +348,14 @@ TAB_TO_PACKAGE_MAP = {v: k for k, v in TAB_PACKAGE_MAP.items()}
 DEFAULT_TAB_ACCOUNTS = {
     "com.tinh.vv.hi": "BreckenLife330",
     "com.tinh.vv.hj": "ShadowWoodrow820",
-    "com.tinh.vv.hk": None,
-    "com.tinh.vv.hl": None,
-    "com.tinh.vv.hm": None,
-    "com.tinh.vv.hn": None,
-    "com.tinh.vv.ho": "Zephyra_Pro731",
-    "com.tinh.vv.hp": "MysticjUBuildery1999",
-    "com.tinh.vv.hq": None,
-    "com.tinh.vv.hr": None,
+    "com.tinh.vv.hk": "MysticjUBuildery1999",
+    "com.tinh.vv.hl": "VanessaJoseph403",
+    "com.tinh.vv.hm": "JeremiahWilkerson46",
+    "com.tinh.vv.hn": "FuryuYQuantumD",
+    "com.tinh.vv.ho": "Mega_Wiley623",
+    "com.tinh.vv.hp": "Zephyra_Pro731",
+    "com.tinh.vv.hq": "Nova71Fox11Panda1991",
+    "com.tinh.vv.hr": "TigerYnG0ldenD199519",
 }
 
 
@@ -635,7 +635,7 @@ def get_acc_fallback_username(
     - Explicit acc_path="/dev/null" or nonexistent explicit path returns None immediately.
     - If tab_accounts.json is present (in acc_path's directory or default Shouko dir),
       consults fixed slot assignments so unassigned slots (like Tab 4 on M77) return None.
-    - M77 canonical invariants: Tab 4 is strictly unassigned, Tab 8 is MysticjUBuildery1999, Tab 7 is Zephyra_Pro731.
+    - M77 canonical invariants: Tab 3 is MysticjUBuildery1999, Tab 4 is VanessaJoseph403, Tab 8 is Zephyra_Pro731.
     Returns: 'username (acc.txt)' or None.
     """
     try:
@@ -789,9 +789,9 @@ def get_acc_fallback_username(
 
         # Guard against shifted line misassignments on M77
         if dev_num == 77:
-            if u == "MysticjUBuildery1999" and t_num != 8:
+            if u == "MysticjUBuildery1999" and t_num != 3:
                 return None
-            if u == "Zephyra_Pro731" and t_num != 7:
+            if u == "Zephyra_Pro731" and t_num != 8:
                 return None
 
         return u if u.endswith("(acc.txt)") else f"{u} (acc.txt)"

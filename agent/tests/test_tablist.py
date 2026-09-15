@@ -43,7 +43,7 @@ class TestTabList(unittest.TestCase):
 
         mock_adb.side_effect = side_effect
 
-        tabs = agent.query_tab_list()
+        tabs = agent.query_tab_list(tab_map_path="/dev/null", acc_path="/dev/null")
         self.assertEqual(len(tabs), 3)
         self.assertEqual(tabs[0]["tab"], 1)
         self.assertEqual(tabs[0]["package"], "com.tinh.vv.hi")
@@ -127,7 +127,7 @@ class TestTabList(unittest.TestCase):
             return ""
 
         mock_adb.side_effect = side_effect
-        tabs = agent.query_tab_list()
+        tabs = agent.query_tab_list(tab_map_path="/dev/null", acc_path="/dev/null")
         self.assertEqual(len(tabs), 2)
         self.assertEqual(tabs[0]["tab"], 2)
         self.assertEqual(tabs[0]["package"], "com.tinh.vv.hj")
@@ -963,14 +963,14 @@ com.tinh.vv.hk,https://www.roblox.com/games/789,TabThreeUser
             data = agent.load_tab_accounts(test_file)
             self.assertEqual(data.get("com.tinh.vv.hi"), "BreckenLife330")
             self.assertEqual(data.get("com.tinh.vv.hj"), "ShadowWoodrow820")
-            self.assertIsNone(data.get("com.tinh.vv.hk"))
-            self.assertIsNone(data.get("com.tinh.vv.hl"))
-            self.assertIsNone(data.get("com.tinh.vv.hm"))
-            self.assertIsNone(data.get("com.tinh.vv.hn"))
-            self.assertEqual(data.get("com.tinh.vv.ho"), "Zephyra_Pro731")
-            self.assertEqual(data.get("com.tinh.vv.hp"), "MysticjUBuildery1999")
-            self.assertIsNone(data.get("com.tinh.vv.hq"))
-            self.assertIsNone(data.get("com.tinh.vv.hr"))
+            self.assertEqual(data.get("com.tinh.vv.hk"), "MysticjUBuildery1999")
+            self.assertEqual(data.get("com.tinh.vv.hl"), "VanessaJoseph403")
+            self.assertEqual(data.get("com.tinh.vv.hm"), "JeremiahWilkerson46")
+            self.assertEqual(data.get("com.tinh.vv.hn"), "FuryuYQuantumD")
+            self.assertEqual(data.get("com.tinh.vv.ho"), "Mega_Wiley623")
+            self.assertEqual(data.get("com.tinh.vv.hp"), "Zephyra_Pro731")
+            self.assertEqual(data.get("com.tinh.vv.hq"), "Nova71Fox11Panda1991")
+            self.assertEqual(data.get("com.tinh.vv.hr"), "TigerYnG0ldenD199519")
 
             # Save updated mapping
             data["com.tinh.vv.hl"] = "NewUser_Tab4"
@@ -982,23 +982,24 @@ com.tinh.vv.hk,https://www.roblox.com/games/789,TabThreeUser
     def test_tab4_not_assigned_to_mystic_when_shifted_in_acc_txt(self, mock_adb):
         """
         R2/R3/R4: Core Bug Reproduction & Fix:
-        When Tab 4 (com.tinh.vv.hl) is running and unassigned (null in tab_accounts.json),
+        When Tab 2, Tab 3, Tab 4 are running on M77,
         even if acc.txt has shifted lines where line 4 is MysticjUBuildery1999,
-        Tab 4 MUST report None (❓ unknown), NEVER MysticjUBuildery1999.
-        Tab 2 (com.tinh.vv.hj) MUST report ShadowWoodrow820 (tab_map).
+        Tab 4 MUST report VanessaJoseph403 (tab_map), NEVER MysticjUBuildery1999.
+        Tab 3 MUST report MysticjUBuildery1999 (tab_map).
+        Tab 2 MUST report ShadowWoodrow820 (tab_map).
         """
         dumpsys_output = """
         Stack #1:
           TaskRecord{102 #102 A=com.tinh.vv.hj U=0}
             Hist #0: ActivityRecord{2 u0 com.tinh.vv.hj/com.roblox.client.Activity t102}
+          TaskRecord{103 #103 A=com.tinh.vv.hk U=0}
+            Hist #0: ActivityRecord{3 u0 com.tinh.vv.hk/com.roblox.client.Activity t103}
           TaskRecord{104 #104 A=com.tinh.vv.hl U=0}
             Hist #0: ActivityRecord{4 u0 com.tinh.vv.hl/com.roblox.client.Activity t104}
-          TaskRecord{108 #108 A=com.tinh.vv.hp U=0}
-            Hist #0: ActivityRecord{8 u0 com.tinh.vv.hp/com.roblox.client.Activity t108}
         """
         mock_adb.side_effect = lambda cmd, **kw: dumpsys_output if "dumpsys" in str(cmd) else ""
 
-        # Real-world shifted acc.txt where lines 3-6 were removed, putting Zephyra on line 3 and Mystic on line 4
+        # Real-world shifted acc.txt where lines were removed, putting Zephyra on line 3 and Mystic on line 4
         mock_acc_content = """
 M77___(gag2)
 BreckenLife330:pass1:
@@ -1028,25 +1029,26 @@ MegaRegan426:pass5:
             self.assertEqual(tab2["package"], "com.tinh.vv.hj")
             self.assertEqual(tab2["username"], "ShadowWoodrow820 (tab_map)")
 
-            # Tab 4: com.tinh.vv.hl -> None (NOT MysticjUBuildery1999!)
+            # Tab 3: com.tinh.vv.hk -> MysticjUBuildery1999 (tab_map)
+            tab3 = next(t for t in tabs if t["tab"] == 3)
+            self.assertEqual(tab3["package"], "com.tinh.vv.hk")
+            self.assertEqual(tab3["username"], "MysticjUBuildery1999 (tab_map)")
+
+            # Tab 4: com.tinh.vv.hl -> VanessaJoseph403 (tab_map), NOT MysticjUBuildery1999!
             tab4 = next(t for t in tabs if t["tab"] == 4)
             self.assertEqual(tab4["package"], "com.tinh.vv.hl")
-            self.assertIsNone(tab4["username"])
+            self.assertEqual(tab4["username"], "VanessaJoseph403 (tab_map)")
             self.assertNotEqual(tab4["username"], "MysticjUBuildery1999")
             self.assertNotEqual(tab4["username"], "MysticjUBuildery1999 (acc.txt)")
-
-            # Tab 8: com.tinh.vv.hp -> MysticjUBuildery1999 (tab_map)
-            tab8 = next(t for t in tabs if t["tab"] == 8)
-            self.assertEqual(tab8["package"], "com.tinh.vv.hp")
-            self.assertEqual(tab8["username"], "MysticjUBuildery1999 (tab_map)")
 
             # HTML Formatting verification
             html_out = agent.format_tab_list_html("m77", tabs)
             self.assertIn("📱 <b>Tab List — M77</b>", html_out)
             self.assertIn("Tab 2: ShadowWoodrow820 (tab_map)", html_out)
-            self.assertIn("Tab 4: ❓ (unknown)", html_out)
-            self.assertIn("Tab 8: MysticjUBuildery1999 (tab_map)", html_out)
+            self.assertIn("Tab 3: MysticjUBuildery1999 (tab_map)", html_out)
+            self.assertIn("Tab 4: VanessaJoseph403 (tab_map)", html_out)
             self.assertNotIn("Tab 4: MysticjUBuildery1999", html_out)
+            self.assertNotIn("❓ (unknown)", html_out)
 
     @mock.patch("agent.agent.run_adb_shell")
     def test_acc_txt_modifications_do_not_disrupt_tab_assignments(self, mock_adb):
@@ -1176,12 +1178,12 @@ MegaRegan426:pass5:
         tab4 = next((t for t in tabs if t["tab"] == 4), None)
         self.assertIsNotNone(tab4)
         self.assertEqual(tab4["package"], "com.tinh.vv.hl")
-        self.assertIsNone(tab4["username"])
+        self.assertEqual(tab4["username"], "VanessaJoseph403 (tab_map)")
         self.assertNotEqual(tab4["username"], "MysticjUBuildery1999")
         self.assertNotEqual(tab4["username"], "MysticjUBuildery1999 (acc.txt)")
 
         html_out = agent.format_tab_list_html("m77", tabs)
-        self.assertIn("Tab 4: ❓ (unknown)", html_out)
+        self.assertIn("Tab 4: VanessaJoseph403 (tab_map)", html_out)
         self.assertNotIn("MysticjUBuildery1999", html_out)
 
     @mock.patch("agent.agent.run_adb_shell")
@@ -1196,11 +1198,11 @@ MegaRegan426:pass5:
         tab4 = next((t for t in tabs if t["tab"] == 4), None)
         self.assertIsNotNone(tab4)
         self.assertEqual(tab4["package"], "com.tinh.vv.hl")
-        self.assertIsNone(tab4["username"])
+        self.assertEqual(tab4["username"], "VanessaJoseph403 (acc.txt)")
         self.assertNotEqual(tab4["username"], "MysticjUBuildery1999")
 
         html_out = agent.format_tab_list_html("m77", tabs)
-        self.assertIn("Tab 4: ❓ (unknown)", html_out)
+        self.assertIn("Tab 4: VanessaJoseph403 (acc.txt)", html_out)
         self.assertNotIn("MysticjUBuildery1999", html_out)
 
     @mock.patch("agent.agent.run_adb_shell")
@@ -1223,7 +1225,7 @@ MegaRegan426:pass5:
             temp_acc = pathlib.Path(tmpdir) / "acc.txt"
             temp_acc.write_text(mock_acc, encoding="utf-8")
 
-            tabs = agent.query_tab_list(device_id="m77", acc_path=temp_acc)
+            tabs = agent.query_tab_list(device_id="m77", acc_path=temp_acc, tab_map_path="/dev/null")
             tab4 = next((t for t in tabs if t["tab"] == 4), None)
             self.assertIsNotNone(tab4)
             self.assertIsNone(tab4["username"])
@@ -1236,15 +1238,21 @@ MegaRegan426:pass5:
 
     def test_get_acc_fallback_username_guards_m77_and_explicit_paths(self):
         """Verify get_acc_fallback_username guards against M77 shifted lines and handles explicit paths strictly."""
-        # Tab 4 on M77 is strictly unassigned
-        self.assertIsNone(agent.get_acc_fallback_username(4, device_id="m77"))
-        # Tab 1 and 8 on M77 resolve correctly
-        self.assertEqual(agent.get_acc_fallback_username(1, device_id="m77"), "BreckenLife330 (acc.txt)")
-        self.assertEqual(agent.get_acc_fallback_username(8, device_id="m77"), "MysticjUBuildery1999 (acc.txt)")
-        # Explicit acc_path="/dev/null" returns None immediately
-        self.assertIsNone(agent.get_acc_fallback_username(1, device_id="m77", acc_path="/dev/null"))
-        # Explicit non-existent path returns None immediately without bleeding production acc.txt
-        self.assertIsNone(agent.get_acc_fallback_username(1, device_id="m77", acc_path="/non/existent/acc.txt"))
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Isolated acc.txt without tab_accounts.json
+            temp_acc = pathlib.Path(tmpdir) / "acc.txt"
+            temp_acc.write_text("M77___(gag2)\nBreckenLife330:p:\nShadowWoodrow820:p:\nZephyra_Pro731:p:\nMysticjUBuildery1999:p:\n", encoding="utf-8")
+            # Tab 4 on M77 is strictly blocked from taking MysticjUBuildery1999
+            self.assertIsNone(agent.get_acc_fallback_username(4, device_id="m77", acc_path=temp_acc))
+            # Tab 1 resolves BreckenLife330
+            self.assertEqual(agent.get_acc_fallback_username(1, device_id="m77", acc_path=temp_acc), "BreckenLife330 (acc.txt)")
+            # Tab 3 has Zephyra on shifted line 3, which is blocked (belongs to Tab 8)
+            self.assertIsNone(agent.get_acc_fallback_username(3, device_id="m77", acc_path=temp_acc))
+            # Explicit acc_path="/dev/null" returns None immediately
+            self.assertIsNone(agent.get_acc_fallback_username(1, device_id="m77", acc_path="/dev/null"))
+            # Explicit non-existent path returns None immediately without bleeding production acc.txt
+            self.assertIsNone(agent.get_acc_fallback_username(1, device_id="m77", acc_path="/non/existent/acc.txt"))
 
     def test_save_and_ensure_tab_accounts_atomic(self):
         """Verify save_tab_accounts and ensure_tab_accounts_file operate atomically without leftover tmp files."""
@@ -1284,15 +1292,20 @@ MegaRegan426:pass5:
         self.assertTrue(found)
         self.assertEqual(u, "BreckenLife330 (tab_map)")
 
-        # Tab 4 without pkg resolves com.tinh.vv.hl as unassigned (None)
+        # Tab 3 without pkg resolves com.tinh.vv.hk
+        found, u = agent.get_tab_map_username(tab_num=3, device_id="m77")
+        self.assertTrue(found)
+        self.assertEqual(u, "MysticjUBuildery1999 (tab_map)")
+
+        # Tab 4 without pkg resolves com.tinh.vv.hl
         found, u = agent.get_tab_map_username(tab_num=4, device_id="m77")
         self.assertTrue(found)
-        self.assertIsNone(u)
+        self.assertEqual(u, "VanessaJoseph403 (tab_map)")
 
         # Tab 8 without pkg resolves com.tinh.vv.hp
         found, u = agent.get_tab_map_username(tab_num=8, device_id="m77")
         self.assertTrue(found)
-        self.assertEqual(u, "MysticjUBuildery1999 (tab_map)")
+        self.assertEqual(u, "Zephyra_Pro731 (tab_map)")
 
         # Case-insensitive tab format in custom map
         custom_data = {
