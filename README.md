@@ -40,6 +40,31 @@ phanserver-delta/
     └── agent_service.sh    # Device agent start/stop service
 ```
 
+## Telegram Bot Command Reference (Preiumbot)
+
+| Lệnh | Cú pháp mẫu | Mô tả chi tiết |
+| :--- | :--- | :--- |
+| **Kiểm tra trạng thái** | `/status` hoặc `STATUS` | Xem trạng thái hoạt động của Hub và danh sách máy Online/Offline. |
+| **Danh sách thiết bị** | `/devices` | Xem các mã máy đang kết nối (`m77`, `m72`...). |
+| **Xem file Release** | `/apks` hoặc `/release` | Xem danh sách file APK/ZIP mới nhất kèm số thứ tự (1, 2, 3...) và dung lượng. |
+| **Cài đặt 10 clone Roblox** | `/update m77 clone` | Tải và cài đặt toàn bộ 10 bản APK clone Roblox (`Delta-2.736..._clone*.apk`, ~1.6 GB). |
+| **Khôi phục cấu hình Delta** | `/update m77 delta` | Tải và bung file cấu hình `Delta_FolderBackup.zip` (7.8 MB) vào `/sdcard/Delta/`. |
+| **Cài đặt tất cả** | `/update all all` | Cài đặt toàn bộ các gói APK/ZIP trong Release cho mọi máy online. |
+| **Cài theo số thứ tự** | `/update m77 1` hoặc `1,2,5` | Cài đặt chính xác các file theo số thứ tự từ danh sách `/apks`. |
+| **Cài ngẫu nhiên** | `/update m77 random` | Bốc ngẫu nhiên gói cài đặt (`clone:random`, `random:3`). |
+| **Cài app riêng lẻ** | `/update m77 warp` | Cài ứng dụng cụ thể: `warp` (1.1.1.1), `opera`, `mt`, `taskbar`. |
+| **Sao lưu app** | `/backup m77 all full` | Đóng gói APK + Data và upload lên GitHub Release (Tag: `Backup`). |
+| **Nâng cấp Agent** | `/upgrade m77` hoặc `/upgrade all` | Kéo code Git mới nhất và tự khởi động lại ngầm trong 1 giây. |
+| **Nạp script Lua** | `/script m77 track <link>` | Ghi script vào `/sdcard/Delta/Autoexecute/track` để tự chạy khi mở game. |
+| **Xóa script Lua** | `/script m77 clean all` | Dọn dẹp script khỏi thư mục Autoexecute. |
+| **Điều khiển Tailscale VPN** | `/tailscale m77 on` (hoặc `/vpn m77 on`) | Bật/tắt/kiểm tra IP Tailscale VPN (`on`, `off`, `status`). |
+| **Phân server Roblox** | `/phanserver m77 10` | Phân phối server links cho các tab Roblox bằng giao thức 2PC nguyên tử. |
+
+> [!IMPORTANT]
+> **Lưu ý phân biệt `clone` vs `delta`**:
+> * Muốn cài **10 bản APK clone Roblox** (1.6 GB): Dùng `/update <máy> clone` (hoặc `delta_apk`).
+> * Muốn khôi phục **thư mục script Delta** (7.8 MB): Dùng `/update <máy> delta`.
+
 ## Running Tests
 ```bash
 # Run entire test suite (JS + Python)

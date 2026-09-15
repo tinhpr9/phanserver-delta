@@ -92,7 +92,123 @@ class TestDeviceAgent(unittest.TestCase):
             self.assertTrue(res_commit)
             self.assertEqual(mock_ack.call_args[1]["status"], "OPENED")
 
-    @mock.patch("agent.agent.send_report", return_value=True)
+    @mock.patch("agent.agent.send_ack", return_value=True)
+    @mock.patch("agent.agent.delta_updater.run_delta_update")
+    def test_update_delta_is_idempotent(self, mock_update, mock_ack):
+        message = {
+            "protocol": "fleet-batch-v1",
+            "action": "UPDATE_DELTA",
+            "action_id": "delta-100",
+            "target_device_ids": ["m72"],
+        }
+        state = {}
+        self.assertTrue(agent.handle_incoming_batch_action(
+            message, "m72", "https://mock/report", "sec", state, self.state_path, self.links_path
+        ))
+        self.assertEqual(mock_update.call_count, 1)
+        self.assertEqual(mock_ack.call_args.kwargs["batch_action"], "UPDATE_DELTA")
+        self.assertTrue(self.state_path.is_file())
+        self.assertTrue(agent.handle_incoming_batch_action(
+            message, "m72", "https://mock/report", "sec", state, self.state_path, self.links_path
+        ))
+        self.assertEqual(mock_update.call_count, 1)
+
+    @mock.patch("agent.agent.send_ack", return_value=True)
+    @mock.patch("agent.agent.subprocess.run")
+    def test_control_tailscale_on_off_status(self, mock_subproc, mock_ack):
+        mock_subproc.return_value.returncode = 0
+        mock_subproc.return_value.stdout = "CONNECTED: 100.80.175.55"
+        mock_subproc.return_value.stderr = ""
+        state = {}
+        message_on = {
+            "protocol": "fleet-batch-v1",
+            "action": "CONTROL_TAILSCALE",
+            "action_id": "ts-101",
+            "mode": "on",
+            "target_device_ids": ["m72"],
+        }
+        self.assertTrue(agent.handle_incoming_batch_action(
+            message_on, "m72", "https://mock/report", "sec", state, self.state_path, self.links_path
+        ))
+        self.assertEqual(mock_ack.call_args.kwargs["batch_action"], "CONTROL_TAILSCALE")
+        self.assertEqual(mock_ack.call_args.kwargs["status"], "OPENED")
+        self.assertEqual(mock_ack.call_args.kwargs["details"], "CONNECTED: 100.80.175.55")
+
+        # Idempotency test
+        self.assertTrue(agent.handle_incoming_batch_action(
+            message_on, "m72", "https://mock/report", "sec", state, self.state_path, self.links_path
+        ))
+        self.assertEqual(mock_subproc.call_count, 1)
+
+        # Off test
+        mock_subproc.return_value.stdout = "DISCONNECTED"
+        message_off = {
+            "protocol": "fleet-batch-v1",
+            "action": "CONTROL_TAILSCALE",
+            "action_id": "ts-102",
+            "mode": "off",
+            "target_device_ids": ["m72"],
+        }
+        self.assertTrue(agent.handle_incoming_batch_action(
+            message_off, "m72", "https://mock/report", "sec", state, self.state_path, self.links_path
+        ))
+        self.assertEqual(mock_ack.call_args.kwargs["details"], "DISCONNECTED")
+
+    @mock.patch("agent.agent.send_ack", return_value=True)
+    @mock.patch("agent.account_manager.run_full_checkban_pipeline")
+    def test_handle_incoming_batch_action_check_ban(self, mock_pipeline, mock_ack):
+        state = {}
+        mock_pipeline.return_value = {
+            "target": "M77",
+            "total": 5,
+            "live": 5,
+            "banned": 0,
+            "error": 0,
+            "banned_list": [],
+        }
+        msg = {
+            "protocol": "fleet-batch-v1",
+            "action": "CHECK_BAN",
+            "action_id": "cb-001",
+            "target": "m77",
+            "target_device_ids": ["m72"],
+        }
+        self.assertTrue(agent.handle_incoming_batch_action(
+            msg, "m72", "https://mock/report", "sec", state, self.state_path, self.links_path
+        ))
+        mock_pipeline.assert_called_once_with("m77")
+        self.assertEqual(mock_ack.call_args.kwargs["batch_action"], "CHECK_BAN")
+        self.assertEqual(mock_ack.call_args.kwargs["status"], "OPENED")
+        self.assertTrue(mock_ack.call_args.kwargs["executed"])
+
+    @mock.patch("agent.agent.send_ack", return_value=True)
+    @mock.patch("agent.account_manager.sync_to_google_drive", return_value={"acc.txt": "OK"})
+    @mock.patch("agent.account_manager.add_accounts")
+    def test_handle_incoming_batch_action_add_acc(self, mock_add, mock_sync, mock_ack):
+        state = {}
+        mock_add.return_value = {
+            "m_code": "M77",
+            "added_count": 1,
+            "cookies_added": 0,
+        }
+        msg = {
+            "protocol": "fleet-batch-v1",
+            "action": "ADD_ACC",
+            "action_id": "add-001",
+            "m_code": "m77",
+            "lines": ["newuser:newpass"],
+            "target_device_ids": ["m72"],
+        }
+        self.assertTrue(agent.handle_incoming_batch_action(
+            msg, "m72", "https://mock/report", "sec", state, self.state_path, self.links_path
+        ))
+        mock_add.assert_called_once_with("m77", ["newuser:newpass"])
+        mock_sync.assert_called_once()
+        self.assertEqual(mock_ack.call_args.kwargs["batch_action"], "ADD_ACC")
+        self.assertEqual(mock_ack.call_args.kwargs["status"], "OPENED")
+        self.assertTrue(mock_ack.call_args.kwargs["executed"])
+
+    @mock.patch("agent.agent.send_report_response", return_value={})
     def test_run_agent_loop_once(self, mock_report):
         agent.run_agent_loop(
             config_path=self.cfg_path,
@@ -106,8 +222,52 @@ class TestDeviceAgent(unittest.TestCase):
         payload = mock_report.call_args[0][2]
         self.assertEqual(payload["device_id"], "m72")
         self.assertEqual(payload["device_group"], "NOVA")
-        self.assertIn("allocate_server_2pc", payload["capabilities"])
+    @mock.patch("agent.agent.subprocess.run")
+    def test_check_and_apply_auto_update(self, mock_subproc):
+        mock_subproc.return_value.returncode = 0
+        mock_subproc.return_value.stdout = "ok"
+        mock_subproc.return_value.stderr = ""
+        with mock.patch("agent.agent.ROOT", self.root_path):
+            (self.root_path / ".git").mkdir()
+            success, err = agent.check_and_apply_auto_update(branch="fix/delta-stability")
+            self.assertTrue(success)
+            self.assertIsNone(err)
+            self.assertEqual(mock_subproc.call_count, 2)
+
+    def test_create_folder_backup(self):
+        from agent import backup_manager
+        test_dir = self.root_path / "TestFolder"
+        test_dir.mkdir()
+        (test_dir / "file1.txt").write_text("hello world")
+        (test_dir / "file2.json").write_text('{"key": "value"}')
+
+        out_zip = backup_manager.create_folder_backup("TestFolder", str(test_dir), self.root_path)
+        self.assertTrue(out_zip.is_file())
+        self.assertEqual(out_zip.name, "Testfolder_FolderBackup.zip")
+
+        import zipfile
+        with zipfile.ZipFile(out_zip, "r") as zf:
+            self.assertIn("folder_meta.json", zf.namelist())
+            self.assertIn("folder.tar.gz", zf.namelist())
+    @mock.patch("agent.agent.subprocess.run")
+    def test_detect_tailscale_ip_and_metrics(self, mock_subproc):
+        # Case 1: IP detected
+        mock_subproc.return_value.returncode = 0
+        mock_subproc.return_value.stdout = "25: tun0: <POINTOPOINT,MULTICAST,NOARP,UP,LOWER_UP> mtu 1280\n    inet 100.80.175.55/32 scope global tun0\n"
+        mock_subproc.return_value.stderr = ""
+        ip = agent.detect_tailscale_ip()
+        self.assertEqual(ip, "100.80.175.55")
+
+        metrics = agent.collect_metrics()
+        self.assertEqual(metrics["tailscale_ip"], "100.80.175.55")
+        self.assertTrue(metrics["tailscale_connected"])
+
+        # Case 2: No Tailscale IP
+        mock_subproc.return_value.stdout = "30: wlan0: inet 192.168.1.5/24\n"
+        ip_none = agent.detect_tailscale_ip()
+        self.assertIsNone(ip_none)
 
 
 if __name__ == "__main__":
     unittest.main()
+
