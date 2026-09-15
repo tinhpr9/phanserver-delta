@@ -359,6 +359,45 @@ DEFAULT_TAB_ACCOUNTS = {
 }
 
 
+def unwrap_su_inner(inner: str) -> str:
+    """
+    Safely unwrap and unescape outer wrapping quotes for su -c arguments.
+    Preserves inner quote structures (like 'echo 1' && 'echo 2') while properly
+    stripping enclosing quotes and handling escaped quotes/dollars/backslashes.
+    """
+    s = inner.strip()
+    if len(s) >= 2 and ((s[0] == '"' and s[-1] == '"') or (s[0] == "'" and s[-1] == "'")):
+        quote = s[0]
+        i = 1
+        in_escape = False
+        while i < len(s) - 1:
+            c = s[i]
+            if quote == '"':
+                if in_escape:
+                    in_escape = False
+                    i += 1
+                    continue
+                if c == '\\':
+                    in_escape = True
+                    i += 1
+                    continue
+                if c == '"':
+                    return s  # Closed early before end, don't strip
+            else:
+                if c == "'":
+                    return s  # Single quote closed early
+            i += 1
+        if in_escape:
+            # Trailing quote was escaped by preceding backslash, not a true closing quote
+            return s
+        body = s[1:-1]
+        if quote == '"':
+            # Unescape \" -> ", \$ -> $, \` -> `, \\ -> \
+            body = re.sub(r'\\([\"$`\\])', r'\1', body)
+        return body
+    return s
+
+
 def run_adb_shell(command: str | list[str], timeout: int = 15) -> str:
     """Execute an ADB shell command and return stdout."""
     raw_cmd = command if isinstance(command, str) else " ".join(command)
@@ -381,9 +420,7 @@ def run_adb_shell(command: str | list[str], timeout: int = 15) -> str:
     prefix_match = re.match(r"^(?:(?:/system/bin/|/system/xbin/)?su\s+-c\s+)(.*)$", raw_cmd)
     if prefix_match:
         inner_cmd = prefix_match.group(1).strip()
-        if (inner_cmd.startswith("'") and inner_cmd.endswith("'") and "'" not in inner_cmd[1:-1]) or \
-           (inner_cmd.startswith('"') and inner_cmd.endswith('"') and '"' not in inner_cmd[1:-1]):
-            inner_cmd = inner_cmd[1:-1]
+        inner_cmd = unwrap_su_inner(inner_cmd)
         fallback_shells = [
             ["sh", "-c", raw_cmd],
             ["/system/bin/su", "-c", inner_cmd],
@@ -413,7 +450,14 @@ def extract_username_from_text(text: Optional[str]) -> Optional[str]:
         return None
 
     import html
-    invalid_usernames = ("null", "none", "unknown", "false", "true", "undefined", "default", "guest", "❓")
+    invalid_usernames = (
+        "null", "none", "unknown", "false", "true", "undefined", "default", "guest", "anonymous",
+        "roblox", "client", "activity", "mainactivity", "protocol", "launch", "application", "app",
+        "home", "discover", "avatar", "marketplace", "settings", "chat", "loading", "login",
+        "signup", "sign_up", "profile", "games", "game", "experience", "experiences", "catalog",
+        "feed", "friends", "groups", "inventory", "messages", "notifications", "search",
+        "❓"
+    )
     historical_keywords = ("previous", "signout", "signedout", "history", "last_logged", "old_user", "prior_")
 
     # Clean non-printable control characters and null bytes (excluding \t, \n, \r)
@@ -528,6 +572,33 @@ def extract_username_from_text(text: Optional[str]) -> Optional[str]:
         except Exception:
             idx = next_brace + 1
 
+    # 1.5 Handle string-escaped JSON (e.g. {\"Username\":\"...\"} or {\\"Username\\":...})
+    if not found_any_dict and ('\\"' in text or '\\\\' in text):
+        try:
+            unescaped_json_text = text
+            for _ in range(3):
+                if '\\' not in unescaped_json_text:
+                    break
+                unescaped_json_text = unescaped_json_text.replace('\\\\', '\\').replace('\\"', '"')
+            trimmed_unesc = unescaped_json_text.strip()
+            idx_u = 0
+            while idx_u < len(trimmed_unesc):
+                next_b = trimmed_unesc.find("{", idx_u)
+                if next_b == -1:
+                    break
+                try:
+                    d_data, e_idx = decoder.raw_decode(trimmed_unesc, next_b)
+                    idx_u = max(e_idx, next_b + 1)
+                    if isinstance(d_data, dict):
+                        found_any_dict = True
+                        u = _extract_from_dict(d_data)
+                        if u:
+                            return u
+                except Exception:
+                    idx_u = next_b + 1
+        except Exception:
+            pass
+
     # Strip PreviousAccountsList and historical accounts before regex fallbacks (balanced bracket matching)
     cleaned_text = text
     for kw in ("previousaccountslist", "previousaccounts", "savedaccounts", "accountshistory"):
@@ -598,10 +669,10 @@ def extract_username_from_text(text: Optional[str]) -> Optional[str]:
     if found_any_dict and has_previous:
         return None
 
-    # 3. Check JSON keys (regex pattern including dotted names and escaped quotes)
+    # 3. Check JSON keys (regex pattern including dotted names and arbitrary escaped quotes)
     json_patterns = [
-        r'(?:\\?["\'])(?:[a-zA-Z0-9_\.]*\.)?(?:username|roblox_?username|account_?name|user_name|current_?username|display_?name|screen_?name)(?:\\?["\'])\s*:\s*(?:\\?["\'])+(?:[a-zA-Z0-9_\.]*\.)?([a-zA-Z0-9_]{3,30})(?:\\?["\'])+',
-        r'(?:\\?["\'])(?:[a-zA-Z0-9_\.]*\.)?(?:username|roblox_?username|account_?name|user_name|current_?username|display_?name|screen_?name)(?:\\?["\'])\s*:\s*(?:\\?["\'])?\s*([a-zA-Z0-9_]{3,30})\s*(?:\\?["\'])?',
+        r'(?:\\*["\'])(?:[a-zA-Z0-9_\.]*\.)?(?:username|roblox_?username|account_?name|user_name|current_?username|display_?name|screen_?name)(?:\\*["\'])\s*:\s*(?:\\*["\'])+(?:[a-zA-Z0-9_\.]*\.)?([a-zA-Z0-9_]{3,30})(?:\\*["\'])+',
+        r'(?:\\*["\'])(?:[a-zA-Z0-9_\.]*\.)?(?:username|roblox_?username|account_?name|user_name|current_?username|display_?name|screen_?name)(?:\\*["\'])\s*:\s*(?:\\*["\'])?\s*([a-zA-Z0-9_]{3,30})\s*(?:\\*["\'])?',
     ]
     for pat in json_patterns:
         m = re.search(pat, cleaned_text, re.IGNORECASE)
@@ -610,9 +681,12 @@ def extract_username_from_text(text: Optional[str]) -> Optional[str]:
             if val:
                 return val
 
-    # 4. Check key-value or activity state
+    # 4. Check key-value, activity state, window titles, or logcat output
     kv_patterns = [
         r'(?i:\busername|\broblox_?username|\broblox_?user|\baccount_?name|\buser_name|\bcurrent_?username|\bdisplay_?name|\bscreen_?name)\s*[:=]\s*["\']?\s*([a-zA-Z0-9_]{3,30})\b',
+        r'(?i:\btitle\s*=\s*["\']?Roblox\s*[-–—:]\s*.*?@([a-zA-Z0-9_]{3,30}))',
+        r'(?i:\btitle\s*=\s*["\']?Roblox\s*[-–—:]\s*[^a-zA-Z0-9_]*([a-zA-Z0-9_]{3,30})[^a-zA-Z0-9_\r\n]*["\']?(?:\r?\n|$))',
+        r'(?i:\bauthenticated\s+user[:\s]+["\']?([a-zA-Z0-9_]{3,30})["\']?)',
     ]
     for pat in kv_patterns:
         m = re.search(pat, cleaned_text, re.IGNORECASE)
@@ -1145,13 +1219,13 @@ def query_tab_list(
     matched_pkgs = []
     if dumpsys_out:
         # Match package before activity slash (e.g. com.tinh.vv.hi/com.roblox.client...)
-        for m in re.finditer(r"\b(com\.tinh\.vv\.[a-z0-9_\.]+|com\.roblox\.client)/", dumpsys_out):
+        for m in re.finditer(r"\b(com\.tinh\.vv\.[a-zA-Z0-9_\.-]+|com\.roblox\.client[a-zA-Z0-9_\.-]*)/", dumpsys_out):
             matched_pkgs.append(m.group(1))
         # Match affinity / realActivity
-        for m in re.finditer(r"(?:[A=]|affinity=[\"']?|realActivity=)(com\.tinh\.vv\.[a-z0-9_\.]+|com\.roblox\.client)\b", dumpsys_out):
+        for m in re.finditer(r"(?:[A=]|affinity=[\"']?|realActivity=)(com\.tinh\.vv\.[a-zA-Z0-9_\.-]+|com\.roblox\.client[a-zA-Z0-9_\.-]*)\b", dumpsys_out):
             matched_pkgs.append(m.group(1))
         # Match ProcessRecord
-        for m in re.finditer(r"ProcessRecord\{[^\}]*\b(com\.tinh\.vv\.[a-z0-9_\.]+|com\.roblox\.client)\b", dumpsys_out):
+        for m in re.finditer(r"ProcessRecord\{[^\}]*\b(com\.tinh\.vv\.[a-zA-Z0-9_\.-]+|com\.roblox\.client[a-zA-Z0-9_\.-]*)\b", dumpsys_out):
             matched_pkgs.append(m.group(1))
 
     # Also discover running packages via ps (supports ps -A for multi-user/Android 8+)
@@ -1159,7 +1233,7 @@ def query_tab_list(
     if not ps_out:
         ps_out = run_adb_shell("ps")
     if ps_out:
-        for m in re.finditer(r"\b(com\.tinh\.vv\.[a-z0-9_\.]+|com\.roblox\.client)\b", ps_out):
+        for m in re.finditer(r"\b(com\.tinh\.vv\.[a-zA-Z0-9_\.-]+|com\.roblox\.client[a-zA-Z0-9_\.-]*)\b", ps_out):
             matched_pkgs.append(m.group(1))
 
     # Deduplicate while preserving discovery order
@@ -1170,6 +1244,7 @@ def query_tab_list(
             seen_pkgs.add(pkg)
             running_pkgs.append(pkg)
 
+    pkg_pid_map: dict[str, str] = {}
     # Fallback to local /proc discovery if running on Linux/Android host without ADB output
     if not running_pkgs:
         try:
@@ -1180,8 +1255,9 @@ def query_tab_list(
                         cmdline_f = pid_entry / "cmdline"
                         if cmdline_f.is_file():
                             raw_cmdline = cmdline_f.read_text(errors="ignore")
-                            for m in re.finditer(r"\b(com\.tinh\.vv\.[a-z0-9_\.]+|com\.roblox\.client)\b", raw_cmdline):
+                            for m in re.finditer(r"\b(com\.tinh\.vv\.[a-zA-Z0-9_\.-]+|com\.roblox\.client[a-zA-Z0-9_\.-]*)\b", raw_cmdline):
                                 p = m.group(1)
+                                pkg_pid_map[p] = pid_entry.name
                                 if p not in seen_pkgs:
                                     seen_pkgs.add(p)
                                     running_pkgs.append(p)
@@ -1208,6 +1284,10 @@ def query_tab_list(
                         pkg_user_map[pkg] = int(m_ps.group(1))
                     except Exception:
                         pass
+            if pkg not in pkg_pid_map:
+                m_ps_pid = re.search(r"^\s*\S+\s+(\d+)\s+.*\b" + re.escape(pkg) + r"\b", ps_out, re.MULTILINE)
+                if m_ps_pid:
+                    pkg_pid_map[pkg] = m_ps_pid.group(1)
 
     # 3. Assign tab numbers with collision prevention:
     # Pass 1: Canonical assignments for mapped clone packages (1..10)
@@ -1244,26 +1324,62 @@ def query_tab_list(
         "/data/data/com.roblox.client*/shared_prefs/*.xml "
         "/data/user/*/*/shared_prefs/*.xml"
     )
-    batch_regex = r'(\"(Username|DisplayName)\":\"[a-zA-Z0-9_]+\"|name=\"(Username|DisplayName|RobloxUsername)\">[a-zA-Z0-9_]+<)'
-    batch_cmd = f"su -c \"grep -H -aoEi '{batch_regex}' {batch_targets} 2>/dev/null\""
+    batch_regex = r'((Username|DisplayName|RobloxUsername)[\"\\ ]*:[\"\\ ]*([a-zA-Z0-9_]{3,30})|name=[\"\\ ]*(Username|DisplayName|RobloxUsername)[\"\\ ]*>[\"\\ ]*([a-zA-Z0-9_]{3,30}))'
+    batch_cmd = (
+        f"su -c \"for f in {batch_targets}; do "
+        f"[ -f \\\"\\$f\\\" ] || continue; "
+        f"res=\\$(head -c 1048576 \\\"\\$f\\\" 2>/dev/null | grep -aoEi '{batch_regex}' 2>/dev/null | head -n 2); "
+        f"[ -z \\\"\\$res\\\" ] && res=\\$(grep -aoEi '{batch_regex}' \\\"\\$f\\\" 2>/dev/null | head -n 2); "
+        f"[ -n \\\"\\$res\\\" ] && echo \\\"\\$f: \\$res\\\"; "
+        f"done; true\""
+    )
     batch_out = run_adb_shell(batch_cmd)
     if batch_out:
-        re_pkg = re.compile(r"\b(com\.tinh\.vv\.[a-z0-9_\.]+|com\.roblox\.client[a-z0-9_\.]*)\b")
-        re_user = re.compile(r'(?:"(?:Username|DisplayName)":\s*"|name="(?:Username|DisplayName|RobloxUsername)">)([a-zA-Z0-9_]{3,30})["<]', re.IGNORECASE)
+        re_pkg = re.compile(r"\b(com\.tinh\.vv\.[a-zA-Z0-9_\.-]+|com\.roblox\.client[a-zA-Z0-9_\.-]*)\b")
+        re_exact_user = re.compile(
+            r'(?:'
+            r'(?:\\*["\']?)?(?:Username|RobloxUsername)(?:\\*["\']?)?\s*[:=>]\s*(?:\\*["\']*)?'
+            r'|name=[\"\\ ]*(?:Username|RobloxUsername)[\"\\ ]*>[\\\" ]*'
+            r')([a-zA-Z0-9_]{3,30})',
+            re.IGNORECASE
+        )
+        re_disp_name = re.compile(
+            r'(?:'
+            r'(?:\\*["\']?)?DisplayName(?:\\*["\']?)?\s*[:=>]\s*(?:\\*["\']*)?'
+            r'|name=[\"\\ ]*DisplayName[\"\\ ]*>[\\\" ]*'
+            r')([a-zA-Z0-9_]{3,30})',
+            re.IGNORECASE
+        )
+        current_pkg = None
         for line in batch_out.splitlines():
             m_pkg = re_pkg.search(line)
-            m_u = re_user.search(line)
-            if m_pkg and m_u:
-                p_name = m_pkg.group(1)
-                u_name = m_u.group(1)
-                if u_name.lower() in ("null", "none", "unknown", "guest"):
+            if m_pkg:
+                current_pkg = m_pkg.group(1)
+            target_pkg = m_pkg.group(1) if m_pkg else current_pkg
+            if not target_pkg:
+                continue
+
+            # Prioritize exact Username/RobloxUsername over DisplayName
+            m_exact = re_exact_user.search(line)
+            if m_exact:
+                u_name = m_exact.group(1)
+                if u_name.lower() not in ("null", "none", "unknown", "guest", "false", "true", "undefined", "default", "roblox", "client", "activity", "mainactivity"):
+                    batch_live_users[target_pkg] = u_name
+                    batch_is_exact[target_pkg] = True
                     continue
-                is_exact = bool(re.search(r"Username", line, re.IGNORECASE))
-                if p_name not in batch_live_users or (is_exact and not batch_is_exact.get(p_name)):
-                    batch_live_users[p_name] = u_name
-                    batch_is_exact[p_name] = is_exact
+
+            # If no exact username found yet on this target_pkg, try DisplayName
+            if not batch_is_exact.get(target_pkg):
+                m_disp = re_disp_name.search(line)
+                if m_disp:
+                    u_disp = m_disp.group(1)
+                    if u_disp.lower() not in ("null", "none", "unknown", "guest", "false", "true", "undefined", "default", "roblox", "client", "activity", "mainactivity"):
+                        batch_live_users[target_pkg] = u_disp
+                        batch_is_exact[target_pkg] = False
 
     # 4. Determine logged-in username for each running instance via Multi-Tier Fallback
+    dumpsys_win_out = None
+    logcat_out = None
     tab_list = []
     for tab_num, pkg in assigned:
         username = batch_live_users.get(pkg)
@@ -1326,19 +1442,22 @@ def query_tab_list(
 
             appstorage_cmds = [
                 f"cat {paths_arg} 2>/dev/null",
-                f"su -c 'cat {paths_arg} 2>/dev/null'",
-                f"/system/bin/su -c 'cat {paths_arg} 2>/dev/null'",
-                f"/system/xbin/su -c 'cat {paths_arg} 2>/dev/null'",
+                f"su -c \"cat {paths_arg} 2>/dev/null\"",
+                f"/system/bin/su -c \"cat {paths_arg} 2>/dev/null\"",
+                f"/system/xbin/su -c \"cat {paths_arg} 2>/dev/null\"",
+                f"run-as {pkg} sh -c 'cat files/appData/LocalStorage/appStorage.json files/appStorage.json 2>/dev/null'",
                 f"run-as {pkg} cat files/appData/LocalStorage/appStorage.json 2>/dev/null",
                 f"run-as {pkg} cat files/appStorage.json 2>/dev/null",
                 f"run-as {pkg} cat /data/data/{pkg}/files/appData/LocalStorage/appStorage.json 2>/dev/null",
                 f"run-as {pkg} cat /data/data/{pkg}/files/appStorage.json 2>/dev/null",
             ]
             if user_id is not None:
+                appstorage_cmds.append(f"run-as --user {user_id} {pkg} sh -c 'cat files/appData/LocalStorage/appStorage.json files/appStorage.json 2>/dev/null'")
                 appstorage_cmds.append(f"run-as --user {user_id} {pkg} cat files/appData/LocalStorage/appStorage.json 2>/dev/null")
                 appstorage_cmds.append(f"run-as --user {user_id} {pkg} cat files/appStorage.json 2>/dev/null")
             for uid in user_ids_to_try:
                 if uid != 0 and uid != user_id:
+                    appstorage_cmds.append(f"run-as --user {uid} {pkg} sh -c 'cat files/appData/LocalStorage/appStorage.json files/appStorage.json 2>/dev/null'")
                     appstorage_cmds.append(f"run-as --user {uid} {pkg} cat files/appData/LocalStorage/appStorage.json 2>/dev/null")
                     appstorage_cmds.append(f"run-as --user {uid} {pkg} cat files/appStorage.json 2>/dev/null")
 
@@ -1365,13 +1484,20 @@ def query_tab_list(
 
             shared_prefs_cmds = [
                 f"cat {sp_arg} 2>/dev/null",
-                f"su -c 'cat {sp_arg} 2>/dev/null'",
-                f"/system/bin/su -c 'cat {sp_arg} 2>/dev/null'",
-                f"/system/xbin/su -c 'cat {sp_arg} 2>/dev/null'",
+                f"su -c \"cat {sp_arg} 2>/dev/null\"",
+                f"/system/bin/su -c \"cat {sp_arg} 2>/dev/null\"",
+                f"/system/xbin/su -c \"cat {sp_arg} 2>/dev/null\"",
+                f"run-as {pkg} sh -c 'cat shared_prefs/*.xml 2>/dev/null'",
                 f"run-as {pkg} cat shared_prefs/{pkg}_preferences.xml 2>/dev/null",
                 f"run-as {pkg} cat shared_prefs/com.roblox.client_preferences.xml 2>/dev/null",
                 f"cat /data/data/{pkg}/files/*.json /data/data/{pkg}/files/user* /data/data/{pkg}/files/*.txt /data/data/{pkg}/files/*.dat /data/user/*/{pkg}/files/*.json /data/user/*/{pkg}/files/user* /data/user/*/{pkg}/files/*.txt /data/user/*/{pkg}/files/*.dat 2>/dev/null",
             ]
+            if user_id is not None:
+                shared_prefs_cmds.append(f"run-as --user {user_id} {pkg} sh -c 'cat shared_prefs/*.xml 2>/dev/null'")
+            for uid in user_ids_to_try:
+                if uid != 0 and uid != user_id:
+                    shared_prefs_cmds.append(f"run-as --user {uid} {pkg} sh -c 'cat shared_prefs/*.xml 2>/dev/null'")
+
             for cmd in shared_prefs_cmds:
                 out = run_adb_shell(cmd)
                 if out:
@@ -1379,7 +1505,7 @@ def query_tab_list(
                     if username:
                         break
 
-        # --- Tier 3: Dumpsys activity analysis ---
+        # --- Tier 3: Dumpsys activity, window titles & logcat analysis ---
         if not username and dumpsys_out:
             lines = dumpsys_out.splitlines()
             pkg_lines = []
@@ -1393,7 +1519,9 @@ def query_tab_list(
                     cur_block_lines = 0
                     pkg_lines.append(line)
                 elif capturing:
-                    if line.startswith((" ", "\t")):
+                    if any(other_pkg in line for other_pkg in seen_pkgs if other_pkg != pkg):
+                        capturing = False
+                    elif line.startswith((" ", "\t")):
                         cur_block_lines += 1
                         if cur_block_lines <= 35:
                             pkg_lines.append(line)
@@ -1401,6 +1529,57 @@ def query_tab_list(
                         capturing = False
             if pkg_lines:
                 username = extract_username_from_text("\n".join(pkg_lines))
+
+        # Check dumpsys window if not found in activity dumpsys
+        if not username:
+            if dumpsys_win_out is None:
+                dumpsys_win_out = run_adb_shell("dumpsys window windows")
+                if not dumpsys_win_out:
+                    dumpsys_win_out = run_adb_shell("dumpsys window")
+            if dumpsys_win_out:
+                lines = dumpsys_win_out.splitlines()
+                pkg_win_lines = []
+                capturing = False
+                cur_block_lines = 0
+                for line in lines:
+                    if not line.strip():
+                        continue
+                    is_window_header = bool(re.search(r'\bWindow\s+#\d+|\bWindow\{', line))
+                    if is_window_header:
+                        if pkg in line:
+                            capturing = True
+                            cur_block_lines = 0
+                            pkg_win_lines.append(line)
+                        else:
+                            capturing = False
+                    elif capturing:
+                        if any(other_pkg in line for other_pkg in seen_pkgs if other_pkg != pkg):
+                            capturing = False
+                        elif line.startswith((" ", "\t")):
+                            cur_block_lines += 1
+                            if cur_block_lines <= 25:
+                                pkg_win_lines.append(line)
+                        else:
+                            capturing = False
+                if pkg_win_lines:
+                    username = extract_username_from_text("\n".join(pkg_win_lines))
+
+        # Check recent logcat if still not found
+        if not username:
+            if logcat_out is None:
+                logcat_out = run_adb_shell("logcat -d -t 150")
+            if logcat_out:
+                pkg_pid = pkg_pid_map.get(pkg)
+                pkg_log_lines = []
+                for l in logcat_out.splitlines():
+                    if pkg in l:
+                        pkg_log_lines.append(l)
+                    elif pkg_pid and f" {pkg_pid} " in l:
+                        pkg_log_lines.append(l)
+                    elif len(running_pkgs) == 1 and ("roblox" in l.lower() or "authenticated user" in l.lower()):
+                        pkg_log_lines.append(l)
+                if pkg_log_lines:
+                    username = extract_username_from_text("\n".join(pkg_log_lines))
 
         # --- Tier 4: Config Fallback (tab_accounts.json, server_links.txt, legacy acc.txt) ---
         # 1. Fixed slot store: tab_accounts.json (Priority over acc.txt to prevent dồn dòng misassignment)

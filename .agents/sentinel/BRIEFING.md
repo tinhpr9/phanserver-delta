@@ -1,7 +1,7 @@
-# BRIEFING — 2026-09-14T16:15:00Z
+# BRIEFING — 2026-09-15T09:23:00Z
 
 ## Mission
-Khắc phục triệt để lỗi lệnh `/tablist` hiển thị `❓ (unknown)` trên M77: nâng cấp cơ chế trích xuất tên tài khoản Roblox trong `agent/agent.py` theo kiến trúc nhiều tầng (multi-tier fallback: appStorage.json, XML, dumpsys, và acc.txt fallback), bảo toàn formatting Telegram, vượt qua toàn bộ test suite và bảo toàn File ID theo Rule 34.
+Điều tra và khắc phục triệt để nguyên nhân lệnh `/tablist m77` trên thiết bị M77 vẫn rơi vào fallback tĩnh `(tab_map)` sau khi nâng cấp (`/upgrade m77`), không trích xuất được username thật từ ứng dụng đang chạy.
 
 ## 🔒 My Identity
 - Archetype: sentinel
@@ -16,6 +16,8 @@ Khắc phục triệt để lỗi lệnh `/tablist` hiển thị `❓ (unknown)`
 - Victory Auditor Gen 3: a10f5355-6e4a-42e0-95dc-da98fb834e61
 - Active SWE Orchestrator Gen 4: 055c36c9-c416-486c-8f99-e2f5d2aa259b
 - Victory Auditor Gen 4: b3b39883-13ad-4952-9034-c110c7f0b4cc
+- Active SWE Orchestrator Gen 5: 8fc10635-148b-40ad-8ac1-fb8c58566fb2
+- Victory Auditor Gen 5: [TBD]
 
 ## 🔒 Key Constraints
 - No technical decisions — relay only
@@ -28,24 +30,24 @@ Khắc phục triệt để lỗi lệnh `/tablist` hiển thị `❓ (unknown)`
 - On-demand only: no background cron or polling for /tablist
 
 ## User Context
-- **Last user request**: Khắc phục triệt để lỗi lệnh `/tablist` hiển thị `❓ (unknown)` trên M77. Nâng cấp cơ chế trích xuất tên tài khoản Roblox trong `agent/agent.py` theo kiến trúc nhiều tầng (multi-tier fallback).
+- **Last user request**: Điều tra và khắc phục triệt để nguyên nhân lệnh `/tablist m77` trên thiết bị M77 vẫn rơi vào fallback tĩnh `(tab_map)`, không trích xuất được username thật từ ứng dụng đang chạy.
 - **Pending clarifications**: none
-- **Delivered results**: [pending victory audit]
+- **Delivered results**: [in progress]
 
 ## Project Status
-- **Phase**: auditing
-- **Active Orchestrator**: 055c36c9-c416-486c-8f99-e2f5d2aa259b (teamwork_preview_swe_2) — claimed victory
-- **Active Victory Auditor**: teamwork_preview_victory_auditor_4 [pending spawn]
-- **Crons**: task-24 (Progress Reporting */8), task-26 (Liveness Check */10)
+- **Phase**: in progress
+- **Active Orchestrator**: 8fc10635-148b-40ad-8ac1-fb8c58566fb2 (teamwork_preview_swe_3)
+- **Active Victory Auditor**: [TBD]
+- **Crons**: task-34 (Progress Reporting */8), task-36 (Liveness Check */10)
 - **Routing Decision**: SWE Light (teamwork_preview_swe)
+- **Routing Rationale**: User explicitly stated "This is a single self-contained fix; keep it small and focused" and the task is focused on fixing username extraction for `/tablist m77`.
 
 ## Victory Audit Status
-- **Triggered**: yes
+- **Triggered**: no
 - **Verdict**: pending
 - **Retry count**: 0
 
 ## Artifact Index
 - /root/phanserver-delta/.agents/ORIGINAL_REQUEST.md — Verbatim user requests
 - /root/phanserver-delta/.agents/sentinel/BRIEFING.md — Sentinel briefing
-- /root/phanserver-delta/.agents/teamwork_preview_swe_2/handoff.md — SWE Orchestrator handoff
-- /root/phanserver-delta/.agents/teamwork_preview_victory_auditor_4/ — Victory Auditor workspace
+- /root/phanserver-delta/.agents/teamwork_preview_swe_3/DISPATCH.md — SWE Light Orchestrator dispatch instructions

@@ -1,5 +1,7 @@
 import json
+import os
 import pathlib
+import tempfile
 import unittest
 from unittest import mock
 
@@ -1566,6 +1568,486 @@ MegaRegan426:pass5:
         tabs = agent.query_tab_list(tab_map_path="/dev/null", acc_path="/dev/null")
         self.assertEqual(len(tabs), 1)
         self.assertEqual(tabs[0]["username"], "Zephyra_Pro731")
+
+    def test_run_adb_shell_unwrap_su_inner_complex_quotes(self):
+        """Test unwrap_su_inner handles complex shell quotes, escapes, and chained commands."""
+        # Simple wrapping
+        self.assertEqual(agent.unwrap_su_inner('"cat test"'), "cat test")
+        self.assertEqual(agent.unwrap_su_inner("'cat test'"), "cat test")
+        # Chained single quotes inside double quotes
+        self.assertEqual(agent.unwrap_su_inner("\"'echo 1' && 'echo 2'\""), "'echo 1' && 'echo 2'")
+        # Escaped quotes and variables
+        self.assertEqual(
+            agent.unwrap_su_inner('"{ [ -f \\"\\$f\\" ] && echo \\"\\$f\\"; }"'),
+            '{ [ -f "$f" ] && echo "$f"; }'
+        )
+        # Unwrapped commands not enclosed in single pair of quotes
+        self.assertEqual(agent.unwrap_su_inner('"cmd1" && "cmd2"'), '"cmd1" && "cmd2"')
+        self.assertEqual(agent.unwrap_su_inner("'cmd1' && 'cmd2'"), "'cmd1' && 'cmd2'")
+
+    @mock.patch("subprocess.run")
+    def test_run_adb_shell_with_nested_su_quotes_stripping(self, mock_run):
+        """Verify run_adb_shell strips outer quotes from su -c with nested quotes."""
+        executed = []
+        def fake_run(cmd, **kwargs):
+            executed.append(cmd)
+            res = mock.MagicMock()
+            if cmd[0] == "/system/bin/su":
+                res.returncode = 0
+                res.stdout = "ok\n"
+                return res
+            res.returncode = 1
+            res.stdout = ""
+            return res
+
+        mock_run.side_effect = fake_run
+        cmd = 'su -c "for f in /data/data/*; do [ -f \\"\\$f\\" ] && grep -aoEi \\"Username\\" \\"\\$f\\"; done"'
+        out = agent.run_adb_shell(cmd)
+        self.assertEqual(out.strip(), "ok")
+        su_call = next(c for c in executed if c[0] == "/system/bin/su")
+        self.assertEqual(su_call[1], "-c")
+        self.assertEqual(su_call[2], 'for f in /data/data/*; do [ -f "$f" ] && grep -aoEi "Username" "$f"; done')
+
+    @mock.patch("agent.agent.run_adb_shell")
+    def test_batch_root_grep_escaped_json_m77(self, mock_adb):
+        """Verify batch root grep correctly extracts live usernames on M77 when JSON is escaped."""
+        dumpsys_output = """
+        Stack #1:
+          TaskRecord{102 #102 A=com.tinh.vv.hj U=0}
+            Hist #0: ActivityRecord{2 u0 com.tinh.vv.hj/com.roblox.client.Activity t102}
+          TaskRecord{103 #103 A=com.tinh.vv.hk U=0}
+            Hist #0: ActivityRecord{3 u0 com.tinh.vv.hk/com.roblox.client.Activity t103}
+          TaskRecord{104 #104 A=com.tinh.vv.hl U=0}
+            Hist #0: ActivityRecord{4 u0 com.tinh.vv.hl/com.roblox.client.Activity t104}
+        """
+        # Grep output with escaped backslash quotes as found in real appStorage.json on M77
+        grep_batch_output = (
+            '/data/data/com.tinh.vv.hj/files/appData/LocalStorage/appStorage.json: Username\\":\\"ShadowWoodrow820"\n'
+            '/data/data/com.tinh.vv.hk/files/appData/LocalStorage/appStorage.json: \\"Username\\":\\"MysticjUBuildery1999\\"\n'
+            '/data/data/com.tinh.vv.hl/files/appData/LocalStorage/appStorage.json: Username\\":\\"VanessaJoseph403"\n'
+        )
+
+        def side_effect(cmd, **kwargs):
+            cmd_str = str(cmd)
+            if "dumpsys activity" in cmd_str:
+                return dumpsys_output
+            if "grep" in cmd_str:
+                return grep_batch_output
+            return ""
+
+        mock_adb.side_effect = side_effect
+
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            temp_map_path = pathlib.Path(tmpdir) / "tab_accounts.json"
+            agent.ensure_tab_accounts_file(temp_map_path)
+
+            tabs = agent.query_tab_list(device_id="m77", tab_map_path=temp_map_path)
+            self.assertEqual(len(tabs), 3)
+
+            # Tab 2: com.tinh.vv.hj -> ShadowWoodrow820 (LIVE without suffix)
+            tab2 = next(t for t in tabs if t["tab"] == 2)
+            self.assertEqual(tab2["package"], "com.tinh.vv.hj")
+            self.assertEqual(tab2["username"], "ShadowWoodrow820")
+            self.assertFalse(tab2["username"].endswith("(tab_map)"))
+
+            # Tab 3: com.tinh.vv.hk -> MysticjUBuildery1999 (LIVE without suffix)
+            tab3 = next(t for t in tabs if t["tab"] == 3)
+            self.assertEqual(tab3["package"], "com.tinh.vv.hk")
+            self.assertEqual(tab3["username"], "MysticjUBuildery1999")
+            self.assertFalse(tab3["username"].endswith("(tab_map)"))
+
+            # Tab 4: com.tinh.vv.hl -> VanessaJoseph403 (LIVE without suffix)
+            tab4 = next(t for t in tabs if t["tab"] == 4)
+            self.assertEqual(tab4["package"], "com.tinh.vv.hl")
+            self.assertEqual(tab4["username"], "VanessaJoseph403")
+            self.assertFalse(tab4["username"].endswith("(tab_map)"))
+
+            # HTML Output check: NO (tab_map) suffix in live report
+            html_out = agent.format_tab_list_html("m77", tabs)
+            self.assertIn("Tab 2: ShadowWoodrow820", html_out)
+            self.assertIn("Tab 3: MysticjUBuildery1999", html_out)
+            self.assertIn("Tab 4: VanessaJoseph403", html_out)
+            self.assertNotIn("(tab_map)", html_out)
+
+    @mock.patch("agent.agent.run_adb_shell")
+    def test_run_as_extraction_fallback_when_root_denied(self, mock_adb):
+        """Verify run-as fallback extracts username from app files without full root."""
+        dumpsys_output = """
+        Stack #1:
+          TaskRecord{104 #104 A=com.tinh.vv.hl U=0}
+            Hist #0: ActivityRecord{4 u0 com.tinh.vv.hl/com.roblox.client.Activity t104}
+        """
+        def side_effect(cmd, **kwargs):
+            cmd_str = str(cmd)
+            if "dumpsys activity" in cmd_str:
+                return dumpsys_output
+            # Root batch grep fails / returns empty (permission denied)
+            if "for f in" in cmd_str or "grep" in cmd_str:
+                return ""
+            # run-as succeeds
+            if "run-as com.tinh.vv.hl" in cmd_str:
+                return '{"CurrentUser":"{\\"Username\\":\\"VanessaJoseph403\\"}"}'
+            return ""
+
+        mock_adb.side_effect = side_effect
+
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            temp_map_path = pathlib.Path(tmpdir) / "tab_accounts.json"
+            agent.ensure_tab_accounts_file(temp_map_path)
+
+            tabs = agent.query_tab_list(device_id="m77", tab_map_path=temp_map_path)
+            self.assertEqual(len(tabs), 1)
+            self.assertEqual(tabs[0]["tab"], 4)
+            self.assertEqual(tabs[0]["package"], "com.tinh.vv.hl")
+            self.assertEqual(tabs[0]["username"], "VanessaJoseph403")
+            self.assertFalse(tabs[0]["username"].endswith("(tab_map)"))
+
+    @mock.patch("agent.agent.run_adb_shell")
+    def test_dumpsys_window_extraction_tier3(self, mock_adb):
+        """Verify Tier 3 dumpsys window extracts username from window titles."""
+        dumpsys_output = """
+        Stack #1:
+          TaskRecord{104 #104 A=com.tinh.vv.hl U=0}
+            Hist #0: ActivityRecord{4 u0 com.tinh.vv.hl/com.roblox.client.Activity t104}
+        """
+        window_output = """
+        WINDOW MANAGER WINDOWS (dumpsys window windows)
+          Window #1 Window{1a2b3c u0 com.tinh.vv.hl/com.roblox.client.ActivityProtocolLaunch}:
+            mCurrentFocus=null
+            title="Roblox - VanessaJoseph403"
+        """
+        def side_effect(cmd, **kwargs):
+            cmd_str = str(cmd)
+            if "dumpsys activity" in cmd_str:
+                return dumpsys_output
+            if "dumpsys window" in cmd_str:
+                return window_output
+            return ""
+
+        mock_adb.side_effect = side_effect
+
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            temp_map_path = pathlib.Path(tmpdir) / "tab_accounts.json"
+            agent.ensure_tab_accounts_file(temp_map_path)
+
+            tabs = agent.query_tab_list(device_id="m77", tab_map_path=temp_map_path)
+            self.assertEqual(len(tabs), 1)
+            self.assertEqual(tabs[0]["username"], "VanessaJoseph403")
+            self.assertFalse(tabs[0]["username"].endswith("(tab_map)"))
+
+    @mock.patch("agent.agent.run_adb_shell")
+    def test_logcat_extraction_tier3(self, mock_adb):
+        """Verify Tier 3 logcat extracts username from recent application log lines."""
+        dumpsys_output = """
+        Stack #1:
+          TaskRecord{104 #104 A=com.tinh.vv.hl U=0}
+            Hist #0: ActivityRecord{4 u0 com.tinh.vv.hl/com.roblox.client.Activity t104}
+        """
+        logcat_output = """
+        09-15 10:00:00.000  1234  1234 I Roblox: Authenticated user: VanessaJoseph403
+        """
+        def side_effect(cmd, **kwargs):
+            cmd_str = str(cmd)
+            if "dumpsys activity" in cmd_str:
+                return dumpsys_output
+            if "logcat" in cmd_str:
+                return logcat_output
+            return ""
+
+        mock_adb.side_effect = side_effect
+
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            temp_map_path = pathlib.Path(tmpdir) / "tab_accounts.json"
+            agent.ensure_tab_accounts_file(temp_map_path)
+
+            tabs = agent.query_tab_list(device_id="m77", tab_map_path=temp_map_path)
+            self.assertEqual(len(tabs), 1)
+            self.assertEqual(tabs[0]["username"], "VanessaJoseph403")
+            self.assertFalse(tabs[0]["username"].endswith("(tab_map)"))
+
+    def test_extract_username_from_text_arbitrary_escaped_json(self):
+        """Verify extract_username_from_text handles multiple levels of string escaping."""
+        self.assertEqual(agent.extract_username_from_text('{"Username":"VanessaJoseph403"}'), "VanessaJoseph403")
+        self.assertEqual(agent.extract_username_from_text(r'{\"Username\":\"VanessaJoseph403\"}'), "VanessaJoseph403")
+        self.assertEqual(agent.extract_username_from_text(r'{\\"Username\\":\\"VanessaJoseph403\\"}'), "VanessaJoseph403")
+        self.assertEqual(agent.extract_username_from_text(r'{\\\"Username\\\":\\\"VanessaJoseph403\\\"}'), "VanessaJoseph403")
+        self.assertEqual(agent.extract_username_from_text(r'\"Username\":\"VanessaJoseph403\"'), "VanessaJoseph403")
+        self.assertEqual(agent.extract_username_from_text(r'\\"Username\\":\\"VanessaJoseph403\\"'), "VanessaJoseph403")
+        self.assertEqual(agent.extract_username_from_text(r'{"CurrentUser":"{\"Username\":\"VanessaJoseph403\"}"}'), "VanessaJoseph403")
+
+
+    def test_window_title_generic_roblox_and_components_not_extracted(self):
+        """Verify generic component titles like Roblox or MainActivity are not extracted as usernames."""
+        self.assertIsNone(agent.extract_username_from_text('title="Roblox"'))
+        self.assertIsNone(agent.extract_username_from_text('title="MainActivity"'))
+        self.assertIsNone(agent.extract_username_from_text('title="Roblox Client"'))
+
+    def test_window_title_with_emojis_and_decorations(self):
+        """Verify Roblox usernames are extracted from window titles containing emojis and handles."""
+        self.assertEqual(agent.extract_username_from_text('title="Roblox - 👑 VanessaJoseph403 👑"'), "VanessaJoseph403")
+        self.assertEqual(agent.extract_username_from_text('title="Roblox - 🎮 Gamer_Boy99 🎮"'), "Gamer_Boy99")
+        self.assertEqual(agent.extract_username_from_text('title="Roblox - ProGamer (@VanessaJoseph403)"'), "VanessaJoseph403")
+        self.assertEqual(agent.extract_username_from_text('title="Roblox – VanessaJoseph403"'), "VanessaJoseph403")
+        self.assertEqual(agent.extract_username_from_text('title="Roblox — VanessaJoseph403"'), "VanessaJoseph403")
+        self.assertEqual(agent.extract_username_from_text('title="Roblox: VanessaJoseph403"'), "VanessaJoseph403")
+
+    @mock.patch("agent.agent.run_adb_shell")
+    def test_dumpsys_window_avoids_cross_tab_contamination(self, mock_adb):
+        """Verify dumpsys window parser respects window boundaries and does not leak adjacent window titles."""
+        dumpsys_output = """
+        Stack #1:
+          TaskRecord{102 #102 A=com.tinh.vv.hj U=0}
+            Hist #0: ActivityRecord{2 u0 com.tinh.vv.hj/com.roblox.client.ActivityProtocolLaunch t102}
+          TaskRecord{103 #103 A=com.tinh.vv.hk U=0}
+            Hist #0: ActivityRecord{3 u0 com.tinh.vv.hk/com.roblox.client.ActivityProtocolLaunch t103}
+        """
+        window_output = """
+        WINDOW MANAGER WINDOWS (dumpsys window windows)
+          Window #1 Window{1111 u0 com.tinh.vv.hj/com.roblox.client.ActivityProtocolLaunch}:
+            mCurrentFocus=null
+            mHasSurface=true
+            title="Roblox"
+          Window #2 Window{2222 u0 com.tinh.vv.hk/com.roblox.client.ActivityProtocolLaunch}:
+            mCurrentFocus=null
+            title="Roblox - MysticjUBuildery1999"
+        """
+        def side_effect(cmd, **kwargs):
+            cmd_str = str(cmd)
+            if "dumpsys activity" in cmd_str:
+                return dumpsys_output
+            if "dumpsys window" in cmd_str:
+                return window_output
+            return ""
+
+        mock_adb.side_effect = side_effect
+
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            temp_map_path = pathlib.Path(tmpdir) / "tab_accounts.json"
+            agent.ensure_tab_accounts_file(temp_map_path)
+
+            tabs = agent.query_tab_list(device_id="m77", tab_map_path=temp_map_path)
+            self.assertEqual(len(tabs), 2)
+
+            # Tab 2: com.tinh.vv.hj must NOT steal Tab 3's window title; falls back to its own tab_map
+            tab2 = next(t for t in tabs if t["package"] == "com.tinh.vv.hj")
+            self.assertEqual(tab2["username"], "ShadowWoodrow820 (tab_map)")
+
+            # Tab 3: com.tinh.vv.hk must have live username MysticjUBuildery1999 without suffix
+            tab3 = next(t for t in tabs if t["package"] == "com.tinh.vv.hk")
+            self.assertEqual(tab3["username"], "MysticjUBuildery1999")
+            self.assertFalse(tab3["username"].endswith("(tab_map)"))
+
+    @mock.patch("agent.agent.run_adb_shell")
+    def test_logcat_avoids_cross_tab_contamination_with_multiple_instances(self, mock_adb):
+        """Verify generic logcat lines are not falsely attributed across multiple running Roblox instances."""
+        dumpsys_output = """
+        Stack #1:
+          TaskRecord{102 #102 A=com.tinh.vv.hj U=0}
+            Hist #0: ActivityRecord{2 u0 com.tinh.vv.hj/com.roblox.client.ActivityProtocolLaunch t102}
+          TaskRecord{103 #103 A=com.tinh.vv.hk U=0}
+            Hist #0: ActivityRecord{3 u0 com.tinh.vv.hk/com.roblox.client.ActivityProtocolLaunch t103}
+        """
+        logcat_output = """
+        09-15 10:00:00.000  9999  9999 I Roblox: Authenticated user: VanessaJoseph403
+        """
+        def side_effect(cmd, **kwargs):
+            cmd_str = str(cmd)
+            if "dumpsys activity" in cmd_str:
+                return dumpsys_output
+            if "logcat" in cmd_str:
+                return logcat_output
+            return ""
+
+        mock_adb.side_effect = side_effect
+
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            temp_map_path = pathlib.Path(tmpdir) / "tab_accounts.json"
+            agent.ensure_tab_accounts_file(temp_map_path)
+
+            tabs = agent.query_tab_list(device_id="m77", tab_map_path=temp_map_path)
+            self.assertEqual(len(tabs), 2)
+
+            tab2 = next(t for t in tabs if t["package"] == "com.tinh.vv.hj")
+            tab3 = next(t for t in tabs if t["package"] == "com.tinh.vv.hk")
+
+            # Neither tab should steal VanessaJoseph403 from generic logcat
+            self.assertNotEqual(tab2["username"], "VanessaJoseph403")
+            self.assertNotEqual(tab3["username"], "VanessaJoseph403")
+            self.assertEqual(tab2["username"], "ShadowWoodrow820 (tab_map)")
+            self.assertEqual(tab3["username"], "MysticjUBuildery1999 (tab_map)")
+
+    @mock.patch("agent.agent.run_adb_shell")
+    def test_batch_grep_display_name_before_username_priority(self, mock_adb):
+        """Verify batch grep prioritizes exact Username over DisplayName even when DisplayName appears first."""
+        dumpsys_output = """
+        Stack #1:
+          TaskRecord{104 #104 A=com.tinh.vv.hl U=0}
+            Hist #0: ActivityRecord{4 u0 com.tinh.vv.hl/com.roblox.client.Activity t104}
+        """
+        grep_batch_output = (
+            '/data/data/com.tinh.vv.hl/files/appData/LocalStorage/appStorage.json: "DisplayName":"Vanessa","Username":"VanessaJoseph403"\n'
+        )
+        def side_effect(cmd, **kwargs):
+            cmd_str = str(cmd)
+            if "dumpsys activity" in cmd_str:
+                return dumpsys_output
+            if "grep" in cmd_str:
+                return grep_batch_output
+            return ""
+
+        mock_adb.side_effect = side_effect
+
+        tabs = agent.query_tab_list(tab_map_path="/dev/null", acc_path="/dev/null")
+        self.assertEqual(len(tabs), 1)
+        self.assertEqual(tabs[0]["username"], "VanessaJoseph403")
+
+    def test_unwrap_su_inner_edge_cases(self):
+        """Verify unwrap_su_inner handles escaped trailing quotes and escapes accurately."""
+        # Trailing escaped quote should NOT be stripped (unclosed string)
+        self.assertEqual(agent.unwrap_su_inner(r'"echo test\"'), r'"echo test\"')
+        # Trailing escaped backslash before quote is closed properly
+        self.assertEqual(agent.unwrap_su_inner(r'"echo test\\"'), 'echo test\\')
+        # Single quotes inside double quotes
+        self.assertEqual(agent.unwrap_su_inner('"echo \'hello\'"'), "echo 'hello'")
+
+    def test_batch_cmd_preserves_shell_dollar_variable_without_premature_expansion(self):
+        """Verify batch command escapes $f properly so outer shell (adb shell/sh -c) does not expand to empty string."""
+        import subprocess
+        # Simulate adbd outer shell: sh -c "raw_cmd"
+        # We create a mock su that records the exact arguments passed to it
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mock_su = os.path.join(tmpdir, "su")
+            log_file = os.path.join(tmpdir, "su.log")
+            with open(mock_su, "w") as f:
+                f.write(f"#!/bin/sh\necho \"$@\" > {log_file}\n")
+            os.chmod(mock_su, 0o755)
+
+            # Generate batch_cmd with test target
+            batch_targets = "/data/data/com.tinh.vv.*/files/appData/LocalStorage/appStorage.json"
+            batch_regex = r'((Username|DisplayName|RobloxUsername)[\"\\ ]*:[\"\\ ]*([a-zA-Z0-9_]{3,30}))'
+            batch_cmd = (
+                f"{mock_su} -c \"for f in {batch_targets}; do "
+                f"[ -f \\\"\\$f\\\" ] || continue; "
+                f"res=\\$(head -c 1048576 \\\"\\$f\\\" 2>/dev/null | grep -aoEi '{batch_regex}' 2>/dev/null | head -n 2); "
+                f"[ -z \\\"\\$res\\\" ] && res=\\$(grep -aoEi '{batch_regex}' \\\"\\$f\\\" 2>/dev/null | head -n 2); "
+                f"[ -n \\\"\\$res\\\" ] && echo \\\"\\$f: \\$res\\\"; "
+                f"done; true\""
+            )
+
+            # Execute via sh -c as adbd does
+            subprocess.run(["sh", "-c", batch_cmd], capture_output=True, text=True)
+            with open(log_file) as f:
+                captured_args = f.read()
+
+            # Ensure $f was NOT expanded to empty string ""
+            self.assertIn('$f', captured_args)
+            self.assertNotIn('[ -f "" ]', captured_args)
+
+    def test_window_title_rejects_roblox_navigation_screens_and_game_titles(self):
+        """Verify Roblox navigation screens (Home, Profile, Discover) and game titles (Blox Fruits) are rejected."""
+        # System UI navigation screens
+        self.assertIsNone(agent.extract_username_from_text('title="Roblox - Home"'))
+        self.assertIsNone(agent.extract_username_from_text('title="Roblox - Profile"'))
+        self.assertIsNone(agent.extract_username_from_text('title="Roblox - Discover"'))
+        self.assertIsNone(agent.extract_username_from_text('title="Roblox - Settings"'))
+        self.assertIsNone(agent.extract_username_from_text('title="Roblox - Avatar"'))
+        self.assertIsNone(agent.extract_username_from_text('title="Roblox - Marketplace"'))
+        self.assertIsNone(agent.extract_username_from_text('title="Roblox - Chat"'))
+        self.assertIsNone(agent.extract_username_from_text('title="Roblox - Loading..."'))
+        self.assertIsNone(agent.extract_username_from_text('title="Roblox - Login"'))
+        self.assertIsNone(agent.extract_username_from_text('title="Roblox - SignUp"'))
+
+        # Game titles (multi-word without @)
+        self.assertIsNone(agent.extract_username_from_text('title="Roblox - Blox Fruits"'))
+        self.assertIsNone(agent.extract_username_from_text('title="Roblox - Adopt Me!"'))
+        self.assertIsNone(agent.extract_username_from_text('title="Roblox - Pet Simulator 99"'))
+
+        # Real usernames must still succeed
+        self.assertEqual(agent.extract_username_from_text('title="Roblox - 👑 VanessaJoseph403 👑"'), "VanessaJoseph403")
+        self.assertEqual(agent.extract_username_from_text('title="Roblox - Gamer_Boy99"'), "Gamer_Boy99")
+        self.assertEqual(agent.extract_username_from_text('title="Roblox - ProGamer (@VanessaJoseph403)"'), "VanessaJoseph403")
+
+    @mock.patch("agent.agent.run_adb_shell")
+    def test_dumpsys_activity_avoids_cross_tab_contamination(self, mock_adb):
+        """Verify dumpsys activity parser isolates packages and does not allow Tab 2 to steal Tab 3's intent username."""
+        dumpsys_output = """
+        Stack #1:
+          TaskRecord{102 #102 A=com.tinh.vv.hj U=0}
+            Hist #0: ActivityRecord{2 u0 com.tinh.vv.hj/com.roblox.client.ActivityProtocolLaunch t102}
+              Intent { act=android.intent.action.MAIN cat=[android.intent.category.LAUNCHER] }
+          TaskRecord{103 #103 A=com.tinh.vv.hk U=0}
+            Hist #0: ActivityRecord{3 u0 com.tinh.vv.hk/com.roblox.client.ActivityProtocolLaunch t103}
+              Intent { act=android.intent.action.VIEW dat=roblox://placeId=123&username=MysticjUBuildery1999 }
+        """
+        def side_effect(cmd, **kwargs):
+            cmd_str = str(cmd)
+            if "dumpsys activity" in cmd_str:
+                return dumpsys_output
+            return ""
+
+        mock_adb.side_effect = side_effect
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            temp_map_path = pathlib.Path(tmpdir) / "tab_accounts.json"
+            agent.ensure_tab_accounts_file(temp_map_path)
+
+            tabs = agent.query_tab_list(device_id="m77", tab_map_path=temp_map_path)
+            self.assertEqual(len(tabs), 2)
+
+            # Tab 2: com.tinh.vv.hj must NOT steal Tab 3's MysticjUBuildery1999 from dumpsys activity
+            tab2 = next(t for t in tabs if t["package"] == "com.tinh.vv.hj")
+            self.assertEqual(tab2["username"], "ShadowWoodrow820 (tab_map)")
+
+            # Tab 3: com.tinh.vv.hk must have live username MysticjUBuildery1999 from its own intent
+            tab3 = next(t for t in tabs if t["package"] == "com.tinh.vv.hk")
+            self.assertEqual(tab3["username"], "MysticjUBuildery1999")
+            self.assertFalse(tab3["username"].endswith("(tab_map)"))
+
+    @mock.patch("agent.agent.run_adb_shell")
+    def test_direct_boot_bfu_locked_storage_graceful_fallback(self, mock_adb):
+        """Verify Direct Boot / BFU locked state gracefully falls back to tab_accounts.json without crashing."""
+        dumpsys_output = """
+        Stack #1:
+          TaskRecord{102 #102 A=com.tinh.vv.hj U=0}
+            Hist #0: ActivityRecord{2 u0 com.tinh.vv.hj/com.roblox.client.ActivityProtocolLaunch t102}
+        """
+        # All storage reads fail or return permission denied / empty
+        mock_adb.return_value = ""
+        mock_adb.side_effect = lambda cmd, **kwargs: dumpsys_output if "dumpsys activity" in str(cmd) else ""
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            temp_map_path = pathlib.Path(tmpdir) / "tab_accounts.json"
+            agent.ensure_tab_accounts_file(temp_map_path)
+
+            tabs = agent.query_tab_list(device_id="m77", tab_map_path=temp_map_path)
+            self.assertEqual(len(tabs), 1)
+            self.assertEqual(tabs[0]["tab"], 2)
+            self.assertEqual(tabs[0]["package"], "com.tinh.vv.hj")
+            # Graceful fallback to fixed slot in tab_accounts.json
+            self.assertEqual(tabs[0]["username"], "ShadowWoodrow820 (tab_map)")
+
+    @mock.patch("agent.agent.run_adb_shell")
+    def test_package_discovery_with_hyphens_and_uppercase(self, mock_adb):
+        """Verify package discovery regex captures packages with hyphens, underscores, and uppercase letters."""
+        dumpsys_output = """
+        Stack #1:
+          TaskRecord{105 #105 A=com.tinh.vv.clone-1 U=0}
+            Hist #0: ActivityRecord{5 u0 com.tinh.vv.clone-1/com.roblox.client.Activity t105}
+          TaskRecord{106 #106 A=com.roblox.client-beta U=0}
+            Hist #0: ActivityRecord{6 u0 com.roblox.client-beta/com.roblox.client.Activity t106}
+        """
+        mock_adb.side_effect = lambda cmd, **kwargs: dumpsys_output if "dumpsys activity" in str(cmd) else ""
+
+        tabs = agent.query_tab_list(tab_map_path="/dev/null", acc_path="/dev/null")
+        pkgs = [t["package"] for t in tabs]
+        self.assertIn("com.tinh.vv.clone-1", pkgs)
+        self.assertIn("com.roblox.client-beta", pkgs)
 
 
 if __name__ == "__main__":
