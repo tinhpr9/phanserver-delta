@@ -10,6 +10,7 @@ DEFAULT_DEVICE_GROUP_PATH = pathlib.Path("/storage/emulated/0/Download/Shouko/de
 DEFAULT_STATE_PATH = pathlib.Path("/storage/emulated/0/Download/Shouko/aot_group_state.json")
 DEFAULT_SERVER_LINKS_PATH = pathlib.Path("/storage/emulated/0/Download/Shouko/server_links.txt")
 DEFAULT_ACC_TXT_PATH = pathlib.Path("/storage/emulated/0/Download/Shouko/acc.txt")
+DEFAULT_TAB_ACCOUNTS_PATH = pathlib.Path("/storage/emulated/0/Download/Shouko/tab_accounts.json")
 
 
 def normalize_device_id(value: Any) -> Optional[str]:

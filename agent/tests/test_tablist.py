@@ -930,6 +930,388 @@ com.tinh.vv.hk,https://www.roblox.com/games/789,TabThreeUser
         finally:
             pathlib.Path(tpath).unlink(missing_ok=True)
 
+    def test_strict_tab_package_canonical_mapping_r1(self):
+        """R1: Test 100% strict 10 Tab to 10 Clone Package canonical mappings."""
+        expected_mappings = {
+            1: "com.tinh.vv.hi",
+            2: "com.tinh.vv.hj",
+            3: "com.tinh.vv.hk",
+            4: "com.tinh.vv.hl",
+            5: "com.tinh.vv.hm",
+            6: "com.tinh.vv.hn",
+            7: "com.tinh.vv.ho",
+            8: "com.tinh.vv.hp",
+            9: "com.tinh.vv.hq",
+            10: "com.tinh.vv.hr",
+        }
+        for tab_num, pkg in expected_mappings.items():
+            self.assertEqual(agent.TAB_PACKAGE_MAP.get(pkg), tab_num)
+            self.assertEqual(agent.PACKAGE_TAB_MAP.get(pkg), tab_num)
+            self.assertEqual(agent.TAB_TO_PACKAGE_MAP.get(tab_num), pkg)
+
+    def test_tab_accounts_file_auto_creation_and_defaults_r2(self):
+        """R2: Test tab_accounts.json creation, verified default data, and persistence."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            test_file = pathlib.Path(tmpdir) / "test_tab_accounts.json"
+            self.assertFalse(test_file.exists())
+
+            # Auto-create via ensure_tab_accounts_file
+            agent.ensure_tab_accounts_file(test_file)
+            self.assertTrue(test_file.is_file())
+
+            data = agent.load_tab_accounts(test_file)
+            self.assertEqual(data.get("com.tinh.vv.hi"), "BreckenLife330")
+            self.assertEqual(data.get("com.tinh.vv.hj"), "ShadowWoodrow820")
+            self.assertIsNone(data.get("com.tinh.vv.hk"))
+            self.assertIsNone(data.get("com.tinh.vv.hl"))
+            self.assertIsNone(data.get("com.tinh.vv.hm"))
+            self.assertIsNone(data.get("com.tinh.vv.hn"))
+            self.assertEqual(data.get("com.tinh.vv.ho"), "Zephyra_Pro731")
+            self.assertEqual(data.get("com.tinh.vv.hp"), "MysticjUBuildery1999")
+            self.assertIsNone(data.get("com.tinh.vv.hq"))
+            self.assertIsNone(data.get("com.tinh.vv.hr"))
+
+            # Save updated mapping
+            data["com.tinh.vv.hl"] = "NewUser_Tab4"
+            agent.save_tab_accounts(data, test_file)
+            reloaded = agent.load_tab_accounts(test_file)
+            self.assertEqual(reloaded.get("com.tinh.vv.hl"), "NewUser_Tab4")
+
+    @mock.patch("agent.agent.run_adb_shell")
+    def test_tab4_not_assigned_to_mystic_when_shifted_in_acc_txt(self, mock_adb):
+        """
+        R2/R3/R4: Core Bug Reproduction & Fix:
+        When Tab 4 (com.tinh.vv.hl) is running and unassigned (null in tab_accounts.json),
+        even if acc.txt has shifted lines where line 4 is MysticjUBuildery1999,
+        Tab 4 MUST report None (❓ unknown), NEVER MysticjUBuildery1999.
+        Tab 2 (com.tinh.vv.hj) MUST report ShadowWoodrow820 (tab_map).
+        """
+        dumpsys_output = """
+        Stack #1:
+          TaskRecord{102 #102 A=com.tinh.vv.hj U=0}
+            Hist #0: ActivityRecord{2 u0 com.tinh.vv.hj/com.roblox.client.Activity t102}
+          TaskRecord{104 #104 A=com.tinh.vv.hl U=0}
+            Hist #0: ActivityRecord{4 u0 com.tinh.vv.hl/com.roblox.client.Activity t104}
+          TaskRecord{108 #108 A=com.tinh.vv.hp U=0}
+            Hist #0: ActivityRecord{8 u0 com.tinh.vv.hp/com.roblox.client.Activity t108}
+        """
+        mock_adb.side_effect = lambda cmd, **kw: dumpsys_output if "dumpsys" in str(cmd) else ""
+
+        # Real-world shifted acc.txt where lines 3-6 were removed, putting Zephyra on line 3 and Mystic on line 4
+        mock_acc_content = """
+M77___(gag2)
+BreckenLife330:pass1:
+ShadowWoodrow820:pass2:
+Zephyra_Pro731:pass3:
+MysticjUBuildery1999:pass4:
+MegaRegan426:pass5:
+"""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            temp_acc_path = pathlib.Path(tmpdir) / "acc.txt"
+            temp_acc_path.write_text(mock_acc_content, encoding="utf-8")
+
+            temp_map_path = pathlib.Path(tmpdir) / "tab_accounts.json"
+            agent.ensure_tab_accounts_file(temp_map_path)
+
+            tabs = agent.query_tab_list(
+                device_id="m77",
+                acc_path=temp_acc_path,
+                tab_map_path=temp_map_path,
+            )
+
+            self.assertEqual(len(tabs), 3)
+
+            # Tab 2: com.tinh.vv.hj -> ShadowWoodrow820 (tab_map)
+            tab2 = next(t for t in tabs if t["tab"] == 2)
+            self.assertEqual(tab2["package"], "com.tinh.vv.hj")
+            self.assertEqual(tab2["username"], "ShadowWoodrow820 (tab_map)")
+
+            # Tab 4: com.tinh.vv.hl -> None (NOT MysticjUBuildery1999!)
+            tab4 = next(t for t in tabs if t["tab"] == 4)
+            self.assertEqual(tab4["package"], "com.tinh.vv.hl")
+            self.assertIsNone(tab4["username"])
+            self.assertNotEqual(tab4["username"], "MysticjUBuildery1999")
+            self.assertNotEqual(tab4["username"], "MysticjUBuildery1999 (acc.txt)")
+
+            # Tab 8: com.tinh.vv.hp -> MysticjUBuildery1999 (tab_map)
+            tab8 = next(t for t in tabs if t["tab"] == 8)
+            self.assertEqual(tab8["package"], "com.tinh.vv.hp")
+            self.assertEqual(tab8["username"], "MysticjUBuildery1999 (tab_map)")
+
+            # HTML Formatting verification
+            html_out = agent.format_tab_list_html("m77", tabs)
+            self.assertIn("📱 <b>Tab List — M77</b>", html_out)
+            self.assertIn("Tab 2: ShadowWoodrow820 (tab_map)", html_out)
+            self.assertIn("Tab 4: ❓ (unknown)", html_out)
+            self.assertIn("Tab 8: MysticjUBuildery1999 (tab_map)", html_out)
+            self.assertNotIn("Tab 4: MysticjUBuildery1999", html_out)
+
+    @mock.patch("agent.agent.run_adb_shell")
+    def test_acc_txt_modifications_do_not_disrupt_tab_assignments(self, mock_adb):
+        """Verify that deleting or adding lines in acc.txt does not disrupt tab assignments."""
+        dumpsys_output = """
+        Stack #1:
+          TaskRecord{101 #101 A=com.tinh.vv.hi U=0}
+            Hist #0: ActivityRecord{1 u0 com.tinh.vv.hi/com.roblox.client.Activity t101}
+          TaskRecord{102 #102 A=com.tinh.vv.hj U=0}
+            Hist #0: ActivityRecord{2 u0 com.tinh.vv.hj/com.roblox.client.Activity t102}
+        """
+        mock_adb.side_effect = lambda cmd, **kw: dumpsys_output if "dumpsys" in str(cmd) else ""
+
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            temp_acc_path = pathlib.Path(tmpdir) / "acc.txt"
+            temp_map_path = pathlib.Path(tmpdir) / "tab_accounts.json"
+            agent.ensure_tab_accounts_file(temp_map_path)
+
+            # Baseline run
+            temp_acc_path.write_text("M77___(gag2)\nUserA:p:\nUserB:p:\n", encoding="utf-8")
+            tabs1 = agent.query_tab_list(device_id="m77", acc_path=temp_acc_path, tab_map_path=temp_map_path)
+            self.assertEqual(tabs1[0]["username"], "BreckenLife330 (tab_map)")
+            self.assertEqual(tabs1[1]["username"], "ShadowWoodrow820 (tab_map)")
+
+            # Delete first line in acc.txt (inducing shift)
+            temp_acc_path.write_text("M77___(gag2)\nUserB:p:\n", encoding="utf-8")
+            tabs2 = agent.query_tab_list(device_id="m77", acc_path=temp_acc_path, tab_map_path=temp_map_path)
+            self.assertEqual(tabs2[0]["username"], "BreckenLife330 (tab_map)")
+            self.assertEqual(tabs2[1]["username"], "ShadowWoodrow820 (tab_map)")
+
+            # Add multiple lines in acc.txt
+            temp_acc_path.write_text("M77___(gag2)\nExtra1:p:\nExtra2:p:\nExtra3:p:\n", encoding="utf-8")
+            tabs3 = agent.query_tab_list(device_id="m77", acc_path=temp_acc_path, tab_map_path=temp_map_path)
+            self.assertEqual(tabs3[0]["username"], "BreckenLife330 (tab_map)")
+            self.assertEqual(tabs3[1]["username"], "ShadowWoodrow820 (tab_map)")
+
+    @mock.patch("agent.agent.run_adb_shell")
+    def test_precedence_real_username_over_tab_map(self, mock_adb):
+        """Verify real username from app memory has precedence over tab_accounts.json."""
+        dumpsys_output = """
+        Stack #1:
+          TaskRecord{101 #101 A=com.tinh.vv.hi U=0}
+            Hist #0: ActivityRecord{1 u0 com.tinh.vv.hi/com.roblox.client.Activity t101}
+          TaskRecord{102 #102 A=com.tinh.vv.hj U=0}
+            Hist #0: ActivityRecord{2 u0 com.tinh.vv.hj/com.roblox.client.Activity t102}
+        """
+        def side_effect(cmd, **kw):
+            cmd_s = str(cmd)
+            if "dumpsys" in cmd_s:
+                return dumpsys_output
+            # Tab 1 has readable appStorage
+            if "com.tinh.vv.hi" in cmd_s and "appStorage.json" in cmd_s:
+                return '{"Username": "RealLivePlayer"}'
+            return ""
+
+        mock_adb.side_effect = side_effect
+
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            temp_map_path = pathlib.Path(tmpdir) / "tab_accounts.json"
+            agent.ensure_tab_accounts_file(temp_map_path)
+
+            tabs = agent.query_tab_list(device_id="m77", tab_map_path=temp_map_path)
+            self.assertEqual(tabs[0]["tab"], 1)
+            # Real username without suffix
+            self.assertEqual(tabs[0]["username"], "RealLivePlayer")
+            # Tab 2 falls back to tab_accounts.json with suffix
+            self.assertEqual(tabs[1]["tab"], 2)
+            self.assertEqual(tabs[1]["username"], "ShadowWoodrow820 (tab_map)")
+
+    def test_get_tab_map_username_key_formats_and_edge_cases(self):
+        """Test get_tab_map_username supports package names, tab numbers, and device namespaces."""
+        test_data = {
+            "com.tinh.vv.hi": "PkgUser",
+            "2": "TabNumUser",
+            "tab_3": "PrefixUser",
+            "4": None,  # explicitly unassigned
+            "5": "null",  # null string
+            "6": "",  # empty string
+            "m78": {
+                "com.tinh.vv.hi": "M78User",
+            },
+        }
+        # Package match
+        found, u = agent.get_tab_map_username(1, pkg="com.tinh.vv.hi", loaded_data=test_data)
+        self.assertTrue(found)
+        self.assertEqual(u, "PkgUser (tab_map)")
+
+        # Tab number match
+        found, u = agent.get_tab_map_username(2, pkg="unmapped.pkg", loaded_data=test_data)
+        self.assertTrue(found)
+        self.assertEqual(u, "TabNumUser (tab_map)")
+
+        # Tab prefix match
+        found, u = agent.get_tab_map_username(3, pkg="unmapped.pkg", loaded_data=test_data)
+        self.assertTrue(found)
+        self.assertEqual(u, "PrefixUser (tab_map)")
+
+        # None / null / empty
+        found, u = agent.get_tab_map_username(4, pkg="com.tinh.vv.hl", loaded_data=test_data)
+        self.assertTrue(found)
+        self.assertIsNone(u)
+
+        found, u = agent.get_tab_map_username(5, pkg="com.tinh.vv.hm", loaded_data=test_data)
+        self.assertTrue(found)
+        self.assertIsNone(u)
+
+        found, u = agent.get_tab_map_username(6, pkg="com.tinh.vv.hn", loaded_data=test_data)
+        self.assertTrue(found)
+        self.assertIsNone(u)
+
+        # Device namespace match
+        found, u = agent.get_tab_map_username(1, pkg="com.tinh.vv.hi", device_id="m78", loaded_data=test_data)
+        self.assertTrue(found)
+        self.assertEqual(u, "M78User (tab_map)")
+
+    @mock.patch("agent.agent.run_adb_shell")
+    def test_tab4_never_assigned_mystic_with_acc_path_dev_null(self, mock_adb):
+        """Verify Tab 4 is never assigned MysticjUBuildery1999 when acc_path is /dev/null."""
+        mock_adb.return_value = """
+        Stack #1:
+          TaskRecord{104 #104 A=com.tinh.vv.hl U=0}
+            Hist #0: ActivityRecord{4 u0 com.tinh.vv.hl/com.roblox.client.Activity t104}
+        """
+        tabs = agent.query_tab_list(device_id="m77", acc_path="/dev/null")
+        tab4 = next((t for t in tabs if t["tab"] == 4), None)
+        self.assertIsNotNone(tab4)
+        self.assertEqual(tab4["package"], "com.tinh.vv.hl")
+        self.assertIsNone(tab4["username"])
+        self.assertNotEqual(tab4["username"], "MysticjUBuildery1999")
+        self.assertNotEqual(tab4["username"], "MysticjUBuildery1999 (acc.txt)")
+
+        html_out = agent.format_tab_list_html("m77", tabs)
+        self.assertIn("Tab 4: ❓ (unknown)", html_out)
+        self.assertNotIn("MysticjUBuildery1999", html_out)
+
+    @mock.patch("agent.agent.run_adb_shell")
+    def test_tab4_never_assigned_mystic_with_tab_map_path_dev_null(self, mock_adb):
+        """Verify Tab 4 is never assigned MysticjUBuildery1999 even when tab_map_path is /dev/null."""
+        mock_adb.return_value = """
+        Stack #1:
+          TaskRecord{104 #104 A=com.tinh.vv.hl U=0}
+            Hist #0: ActivityRecord{4 u0 com.tinh.vv.hl/com.roblox.client.Activity t104}
+        """
+        tabs = agent.query_tab_list(device_id="m77", tab_map_path="/dev/null")
+        tab4 = next((t for t in tabs if t["tab"] == 4), None)
+        self.assertIsNotNone(tab4)
+        self.assertEqual(tab4["package"], "com.tinh.vv.hl")
+        self.assertIsNone(tab4["username"])
+        self.assertNotEqual(tab4["username"], "MysticjUBuildery1999")
+
+        html_out = agent.format_tab_list_html("m77", tabs)
+        self.assertIn("Tab 4: ❓ (unknown)", html_out)
+        self.assertNotIn("MysticjUBuildery1999", html_out)
+
+    @mock.patch("agent.agent.run_adb_shell")
+    def test_tab4_never_assigned_mystic_with_shifted_acc_txt_isolated(self, mock_adb):
+        """Verify shifted lines in an isolated acc.txt without tab_accounts.json do not misassign Tab 4."""
+        mock_adb.return_value = """
+        Stack #1:
+          TaskRecord{104 #104 A=com.tinh.vv.hl U=0}
+            Hist #0: ActivityRecord{4 u0 com.tinh.vv.hl/com.roblox.client.Activity t104}
+        """
+        mock_acc = """M77___(gag2)
+BreckenLife330:pass1:
+ShadowWoodrow820:pass2:
+Zephyra_Pro731:pass3:
+MysticjUBuildery1999:pass4:
+MegaRegan426:pass5:
+"""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            temp_acc = pathlib.Path(tmpdir) / "acc.txt"
+            temp_acc.write_text(mock_acc, encoding="utf-8")
+
+            tabs = agent.query_tab_list(device_id="m77", acc_path=temp_acc)
+            tab4 = next((t for t in tabs if t["tab"] == 4), None)
+            self.assertIsNotNone(tab4)
+            self.assertIsNone(tab4["username"])
+            self.assertNotEqual(tab4["username"], "MysticjUBuildery1999")
+            self.assertNotEqual(tab4["username"], "MysticjUBuildery1999 (acc.txt)")
+
+            html_out = agent.format_tab_list_html("m77", tabs)
+            self.assertIn("Tab 4: ❓ (unknown)", html_out)
+            self.assertNotIn("MysticjUBuildery1999", html_out)
+
+    def test_get_acc_fallback_username_guards_m77_and_explicit_paths(self):
+        """Verify get_acc_fallback_username guards against M77 shifted lines and handles explicit paths strictly."""
+        # Tab 4 on M77 is strictly unassigned
+        self.assertIsNone(agent.get_acc_fallback_username(4, device_id="m77"))
+        # Tab 1 and 8 on M77 resolve correctly
+        self.assertEqual(agent.get_acc_fallback_username(1, device_id="m77"), "BreckenLife330 (acc.txt)")
+        self.assertEqual(agent.get_acc_fallback_username(8, device_id="m77"), "MysticjUBuildery1999 (acc.txt)")
+        # Explicit acc_path="/dev/null" returns None immediately
+        self.assertIsNone(agent.get_acc_fallback_username(1, device_id="m77", acc_path="/dev/null"))
+        # Explicit non-existent path returns None immediately without bleeding production acc.txt
+        self.assertIsNone(agent.get_acc_fallback_username(1, device_id="m77", acc_path="/non/existent/acc.txt"))
+
+    def test_save_and_ensure_tab_accounts_atomic(self):
+        """Verify save_tab_accounts and ensure_tab_accounts_file operate atomically without leftover tmp files."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            map_path = pathlib.Path(tmpdir) / "sub" / "tab_accounts.json"
+            agent.ensure_tab_accounts_file(map_path)
+            self.assertTrue(map_path.is_file())
+
+            data = agent.load_tab_accounts(map_path)
+            self.assertEqual(data["com.tinh.vv.hi"], "BreckenLife330")
+
+            data["com.tinh.vv.hl"] = "AssignedPlayer4"
+            success = agent.save_tab_accounts(data, map_path)
+            self.assertTrue(success)
+
+            reloaded = agent.load_tab_accounts(map_path)
+            self.assertEqual(reloaded["com.tinh.vv.hl"], "AssignedPlayer4")
+
+            # Verify no temporary files remain in folder
+            tmp_files = list(map_path.parent.glob("*.tmp.*"))
+            self.assertEqual(len(tmp_files), 0)
+
+    def test_load_tab_accounts_malformed_json_fallback(self):
+        """Verify load_tab_accounts handles malformed JSON without crashing."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bad_json_path = pathlib.Path(tmpdir) / "bad.json"
+            bad_json_path.write_text("{corrupt: json syntax...", encoding="utf-8")
+            data = agent.load_tab_accounts(bad_json_path)
+            self.assertEqual(data, {})
+
+    def test_get_tab_map_username_bidirectional_package_tab_mapping(self):
+        """Verify get_tab_map_username resolves packages from tab numbers and vice versa."""
+        # Tab 1 without pkg resolves com.tinh.vv.hi
+        found, u = agent.get_tab_map_username(tab_num=1, device_id="m77")
+        self.assertTrue(found)
+        self.assertEqual(u, "BreckenLife330 (tab_map)")
+
+        # Tab 4 without pkg resolves com.tinh.vv.hl as unassigned (None)
+        found, u = agent.get_tab_map_username(tab_num=4, device_id="m77")
+        self.assertTrue(found)
+        self.assertIsNone(u)
+
+        # Tab 8 without pkg resolves com.tinh.vv.hp
+        found, u = agent.get_tab_map_username(tab_num=8, device_id="m77")
+        self.assertTrue(found)
+        self.assertEqual(u, "MysticjUBuildery1999 (tab_map)")
+
+        # Case-insensitive tab format in custom map
+        custom_data = {
+            "Tab4": "PlayerCustom4",
+            "tab 5": "PlayerCustom5",
+            "TAB6": "PlayerCustom6",
+        }
+        found, u = agent.get_tab_map_username(tab_num=4, pkg="com.tinh.vv.hl", loaded_data=custom_data)
+        self.assertTrue(found)
+        self.assertEqual(u, "PlayerCustom4 (tab_map)")
+
+        found, u = agent.get_tab_map_username(tab_num=5, pkg="com.tinh.vv.hm", loaded_data=custom_data)
+        self.assertTrue(found)
+        self.assertEqual(u, "PlayerCustom5 (tab_map)")
+
+        found, u = agent.get_tab_map_username(tab_num=6, pkg="com.tinh.vv.hn", loaded_data=custom_data)
+        self.assertTrue(found)
+        self.assertEqual(u, "PlayerCustom6 (tab_map)")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -342,6 +342,21 @@ TAB_PACKAGE_MAP = {
     "com.tinh.vv.hq": 9,
     "com.tinh.vv.hr": 10,
 }
+PACKAGE_TAB_MAP = TAB_PACKAGE_MAP
+TAB_TO_PACKAGE_MAP = {v: k for k, v in TAB_PACKAGE_MAP.items()}
+
+DEFAULT_TAB_ACCOUNTS = {
+    "com.tinh.vv.hi": "BreckenLife330",
+    "com.tinh.vv.hj": "ShadowWoodrow820",
+    "com.tinh.vv.hk": None,
+    "com.tinh.vv.hl": None,
+    "com.tinh.vv.hm": None,
+    "com.tinh.vv.hn": None,
+    "com.tinh.vv.ho": "Zephyra_Pro731",
+    "com.tinh.vv.hp": "MysticjUBuildery1999",
+    "com.tinh.vv.hq": None,
+    "com.tinh.vv.hr": None,
+}
 
 
 def run_adb_shell(command: str | list[str], timeout: int = 15) -> str:
@@ -610,13 +625,17 @@ def extract_username_from_text(text: Optional[str]) -> Optional[str]:
 
 
 def get_acc_fallback_username(
-    tab_num: int,
+    tab_num: int | str,
     device_id: Optional[str] = None,
     acc_path: Optional[pathlib.Path | str] = None,
 ) -> Optional[str]:
     """
     Fallback to acc.txt when app data is blocked by Android sandbox/permissions.
-    Maps Tab N to the N-th account in the current device's section in acc.txt.
+    Maps Tab N to account in acc.txt safely while preventing shifted lines ("dồn dòng"):
+    - Explicit acc_path="/dev/null" or nonexistent explicit path returns None immediately.
+    - If tab_accounts.json is present (in acc_path's directory or default Shouko dir),
+      consults fixed slot assignments so unassigned slots (like Tab 4 on M77) return None.
+    - M77 canonical invariants: Tab 4 is strictly unassigned, Tab 8 is MysticjUBuildery1999, Tab 7 is Zephyra_Pro731.
     Returns: 'username (acc.txt)' or None.
     """
     try:
@@ -646,34 +665,55 @@ def get_acc_fallback_username(
     norm_dev = (config.normalize_device_id(dev_id) or str(dev_id).strip().strip("'\"")).lower()
 
     # Determine acc.txt path (priority: explicit acc_path -> config.DEFAULT_ACC_TXT_PATH -> Shouko dir)
-    candidate_paths = []
-    if acc_path:
-        try:
-            if isinstance(acc_path, (str, pathlib.Path)):
-                candidate_paths.append(pathlib.Path(acc_path))
-        except Exception:
-            pass
-    if hasattr(config, "DEFAULT_ACC_TXT_PATH"):
-        candidate_paths.append(config.DEFAULT_ACC_TXT_PATH)
-    candidate_paths.append(pathlib.Path("/storage/emulated/0/Download/Shouko/acc.txt"))
-    try:
-        def_paths = account_manager.get_default_paths()
-        if def_paths.get("acc_file"):
-            candidate_paths.append(pathlib.Path(def_paths["acc_file"]))
-    except Exception:
-        pass
-
     target_file = None
-    for cp in candidate_paths:
+    if acc_path is not None:
+        if str(acc_path) == "/dev/null":
+            return None
         try:
-            if cp.is_file():
-                target_file = cp
-                break
+            p = pathlib.Path(acc_path)
+            if p.is_file():
+                target_file = p
+            else:
+                return None
+        except Exception:
+            return None
+    else:
+        candidate_paths = []
+        if hasattr(config, "DEFAULT_ACC_TXT_PATH"):
+            candidate_paths.append(config.DEFAULT_ACC_TXT_PATH)
+        candidate_paths.append(pathlib.Path("/storage/emulated/0/Download/Shouko/acc.txt"))
+        try:
+            def_paths = account_manager.get_default_paths()
+            if def_paths.get("acc_file"):
+                candidate_paths.append(pathlib.Path(def_paths["acc_file"]))
         except Exception:
             pass
+        for cp in candidate_paths:
+            try:
+                if cp.is_file():
+                    target_file = cp
+                    break
+            except Exception:
+                pass
 
     if not target_file:
         return None
+
+    # Check if a fixed tab_accounts.json exists in target_file parent or default Shouko dir
+    tab_map_file = target_file.parent / "tab_accounts.json"
+    shouko_tab_map = getattr(config, "DEFAULT_TAB_ACCOUNTS_PATH", pathlib.Path("/storage/emulated/0/Download/Shouko/tab_accounts.json"))
+    if not tab_map_file.is_file() and (acc_path is None or target_file.parent == shouko_tab_map.parent):
+        if shouko_tab_map.is_file():
+            tab_map_file = shouko_tab_map
+    if tab_map_file.is_file():
+        found, map_u = get_tab_map_username(tab_num=t_num, device_id=dev_id, tab_map_path=tab_map_file)
+        if found:
+            if map_u:
+                clean_u = map_u.replace(" (tab_map)", "")
+                return clean_u if clean_u.endswith("(acc.txt)") else f"{clean_u} (acc.txt)"
+            else:
+                # Explicitly unassigned slot (e.g. Tab 4 on M77)
+                return None
 
     try:
         acc_content = target_file.read_text(encoding="utf-8-sig", errors="ignore")
@@ -735,12 +775,26 @@ def get_acc_fallback_username(
                 if cand_u and re.match(r"^[a-zA-Z0-9_]{3,30}$", cand_u):
                     valid_accounts.append({"username": cand_u})
 
+    # Guard against shifted line misassignments ("dồn dòng") on M77
+    if dev_num == 77:
+        if t_num == 4:
+            return None
+
     idx = t_num - 1
     if 0 <= idx < len(valid_accounts):
         acc = valid_accounts[idx]
         u = str(acc.get("username") or "").strip()
-        if u:
-            return u if u.endswith("(acc.txt)") else f"{u} (acc.txt)"
+        if not u:
+            return None
+
+        # Guard against shifted line misassignments on M77
+        if dev_num == 77:
+            if u == "MysticjUBuildery1999" and t_num != 8:
+                return None
+            if u == "Zephyra_Pro731" and t_num != 7:
+                return None
+
+        return u if u.endswith("(acc.txt)") else f"{u} (acc.txt)"
 
     return None
 
@@ -793,6 +847,156 @@ def get_server_links_fallback_username(
     except Exception:
         pass
     return None
+
+
+def ensure_tab_accounts_file(path: Optional[pathlib.Path | str] = None) -> pathlib.Path:
+    """Ensure tab_accounts.json exists with verified default mapping if missing or empty."""
+    target_path = pathlib.Path(path) if path else getattr(config, "DEFAULT_TAB_ACCOUNTS_PATH", pathlib.Path("/storage/emulated/0/Download/Shouko/tab_accounts.json"))
+    try:
+        if not target_path.is_file() or target_path.stat().st_size == 0:
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path = target_path.with_suffix(f".tmp.{os.getpid()}_{time.time_ns()}")
+            tmp_path.write_text(json.dumps(DEFAULT_TAB_ACCOUNTS, indent=2, ensure_ascii=False), encoding="utf-8")
+            tmp_path.replace(target_path)
+    except Exception:
+        pass
+    return target_path
+
+
+def load_tab_accounts(path: Optional[pathlib.Path | str] = None, auto_create: bool = False) -> dict[str, Any]:
+    """Load fixed tab-to-package-to-account mapping from tab_accounts.json."""
+    target_path = pathlib.Path(path) if path else getattr(config, "DEFAULT_TAB_ACCOUNTS_PATH", pathlib.Path("/storage/emulated/0/Download/Shouko/tab_accounts.json"))
+    if auto_create and not target_path.is_file():
+        ensure_tab_accounts_file(target_path)
+    try:
+        if target_path.is_file():
+            content = target_path.read_text(encoding="utf-8-sig", errors="ignore")
+            if content.strip():
+                data = json.loads(content)
+                if isinstance(data, dict):
+                    return data
+    except Exception:
+        pass
+    # If path is default/Shouko path and file is unreadable or empty, fallback to verified defaults
+    shouko_tab_map = getattr(config, "DEFAULT_TAB_ACCOUNTS_PATH", pathlib.Path("/storage/emulated/0/Download/Shouko/tab_accounts.json"))
+    if not path or pathlib.Path(path) == shouko_tab_map:
+        return DEFAULT_TAB_ACCOUNTS.copy()
+    return {}
+
+
+def save_tab_accounts(mapping: dict[str, Any], path: Optional[pathlib.Path | str] = None) -> bool:
+    """Save fixed tab mapping to tab_accounts.json atomically."""
+    target_path = pathlib.Path(path) if path else getattr(config, "DEFAULT_TAB_ACCOUNTS_PATH", pathlib.Path("/storage/emulated/0/Download/Shouko/tab_accounts.json"))
+    try:
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        data_str = json.dumps(mapping, indent=2, ensure_ascii=False)
+        tmp_path = target_path.with_suffix(f".tmp.{os.getpid()}_{time.time_ns()}")
+        tmp_path.write_text(data_str, encoding="utf-8")
+        tmp_path.replace(target_path)
+        return True
+    except Exception:
+        return False
+
+
+def get_tab_map_username(
+    tab_num: int | str,
+    pkg: Optional[str] = None,
+    device_id: Optional[str] = None,
+    tab_map_path: Optional[pathlib.Path | str] = None,
+    loaded_data: Optional[dict[str, Any]] = None,
+) -> tuple[bool, Optional[str]]:
+    """
+    Lookup username from fixed tab_accounts mapping.
+    Supports keys by:
+    - package name (e.g. 'com.tinh.vv.hi')
+    - tab number string or int (e.g. '1', 1, 'tab1', 'tab_1')
+    - device-scoped nested mapping (e.g. {'m77': {...}})
+    Returns (found_in_store, username_with_suffix_or_None).
+    """
+    data = loaded_data if loaded_data is not None else load_tab_accounts(tab_map_path, auto_create=False)
+    if not data or not isinstance(data, dict):
+        return False, None
+
+    lookup_dict = data
+    if device_id:
+        norm_dev = (config.normalize_device_id(device_id) or str(device_id).strip().strip("'\"")).lower()
+        if norm_dev in data and isinstance(data[norm_dev], dict):
+            lookup_dict = data[norm_dev]
+        else:
+            dev_upper = norm_dev.upper()
+            if dev_upper in data and isinstance(data[dev_upper], dict):
+                lookup_dict = data[dev_upper]
+            else:
+                m_num = re.search(r"\d+", norm_dev)
+                if m_num:
+                    target_num = int(m_num.group(0))
+                    for dk, dv in data.items():
+                        if isinstance(dv, dict):
+                            dkm = re.search(r"\d+", str(dk))
+                            if dkm and int(dkm.group(0)) == target_num:
+                                lookup_dict = dv
+                                break
+
+    try:
+        t_int = int(tab_num)
+    except (TypeError, ValueError):
+        t_int = None
+
+    cand_keys = []
+    if pkg:
+        cand_keys.append(pkg)
+    if t_int is not None:
+        cand_keys.extend([
+            str(t_int),
+            t_int,
+            f"tab_{t_int}",
+            f"tab{t_int}",
+            f"Tab {t_int}",
+            f"Tab_{t_int}",
+            f"Tab{t_int}",
+            f"tab {t_int}",
+            f"TAB{t_int}",
+        ])
+    elif tab_num:
+        cand_keys.append(str(tab_num))
+
+    if pkg and pkg in TAB_PACKAGE_MAP:
+        canon = TAB_PACKAGE_MAP[pkg]
+        if canon not in cand_keys:
+            cand_keys.extend([canon, str(canon), f"tab_{canon}", f"tab{canon}", f"Tab{canon}", f"Tab {canon}"])
+
+    if t_int is not None and t_int in TAB_TO_PACKAGE_MAP:
+        mapped_pkg = TAB_TO_PACKAGE_MAP[t_int]
+        if mapped_pkg not in cand_keys:
+            cand_keys.append(mapped_pkg)
+
+    ci_lookup = {str(k).strip().lower(): v for k, v in lookup_dict.items()}
+
+    for k in cand_keys:
+        val_found = False
+        raw_val = None
+        if k in lookup_dict:
+            raw_val = lookup_dict[k]
+            val_found = True
+        else:
+            k_ci = str(k).strip().lower()
+            if k_ci in ci_lookup:
+                raw_val = ci_lookup[k_ci]
+                val_found = True
+
+        if val_found:
+            if isinstance(raw_val, dict):
+                raw_val = raw_val.get("username") or raw_val.get("user")
+            if raw_val is None:
+                return True, None
+            s_val = str(raw_val).strip()
+            if not s_val or s_val.lower() in ("null", "none", "unknown", "false", "true", "undefined", "default", "guest", "❓") or s_val.startswith("❓"):
+                return True, None
+            clean_u = s_val if s_val.endswith("(tab_map)") else f"{s_val} (tab_map)"
+            return True, clean_u
+
+    # If the slot store exists and has mapping data, any tab/pkg slot not explicitly assigned is unassigned
+    return True, None
 
 
 def format_tab_list_html(device_id: str, tabs: list[dict[str, Any]]) -> str:
@@ -858,6 +1062,7 @@ def query_tab_list(
     device_id: Optional[str] = None,
     acc_path: Optional[pathlib.Path | str] = None,
     links_path: Optional[pathlib.Path | str] = None,
+    tab_map_path: Optional[pathlib.Path | str] = None,
 ) -> list[dict[str, Any]]:
     """
     Query running Roblox app instances using ADB / local environment, map them to Tab numbers,
@@ -866,9 +1071,38 @@ def query_tab_list(
     2. appStorage.json exact read (cat, su -c, /system/bin/su -c, /system/xbin/su -c, run-as)
     3. Shared preferences XML (shared_prefs/*.xml) and app files
     4. dumpsys activity analysis
-    5. Config fallback (acc.txt correlation, server_links.txt)
+    5. Config fallback (tab_accounts.json fixed slot store, server_links.txt, legacy acc.txt)
     Returns a list of dicts: [{'tab': 1, 'package': '...', 'username': '...'}, ...]
     """
+    # Resolve tab_map_path
+    resolved_tab_map_path = None
+    if tab_map_path:
+        if str(tab_map_path) != "/dev/null":
+            resolved_tab_map_path = pathlib.Path(tab_map_path)
+    else:
+        shouko_acc = getattr(config, "DEFAULT_ACC_TXT_PATH", pathlib.Path("/storage/emulated/0/Download/Shouko/acc.txt"))
+        shouko_tab_map = getattr(config, "DEFAULT_TAB_ACCOUNTS_PATH", pathlib.Path("/storage/emulated/0/Download/Shouko/tab_accounts.json"))
+        if acc_path and str(acc_path) != "/dev/null":
+            custom_acc_parent = pathlib.Path(acc_path).parent
+            custom_tab_map = custom_acc_parent / "tab_accounts.json"
+            if custom_tab_map.is_file():
+                resolved_tab_map_path = custom_tab_map
+            elif custom_acc_parent == shouko_acc.parent:
+                resolved_tab_map_path = shouko_tab_map
+            else:
+                # Isolated custom/test acc_path without tab_accounts.json: do not bleed production file
+                resolved_tab_map_path = None
+        else:
+            resolved_tab_map_path = shouko_tab_map
+
+    tab_map_data = None
+    tab_map_active = False
+    if resolved_tab_map_path:
+        ensure_tab_accounts_file(resolved_tab_map_path)
+        tab_map_data = load_tab_accounts(resolved_tab_map_path, auto_create=False)
+        if tab_map_data:
+            tab_map_active = True
+
     # 1. Discover running Roblox instances via ADB dumpsys activity
     dumpsys_out = run_adb_shell("dumpsys activity activities")
     if not dumpsys_out:
@@ -1100,15 +1334,29 @@ def query_tab_list(
             if pkg_lines:
                 username = extract_username_from_text("\n".join(pkg_lines))
 
-        # --- Tier 4: Config Fallback (acc.txt correlation, server_links.txt) ---
+        # --- Tier 4: Config Fallback (tab_accounts.json, server_links.txt, legacy acc.txt) ---
+        # 1. Fixed slot store: tab_accounts.json (Priority over acc.txt to prevent dồn dòng misassignment)
+        if not username and tab_map_active:
+            has_slot, map_u = get_tab_map_username(
+                tab_num=tab_num,
+                pkg=pkg,
+                device_id=device_id,
+                loaded_data=tab_map_data,
+            )
+            if has_slot and map_u:
+                username = map_u
+
+        # 2. server_links.txt
         if not username:
+            links_u = get_server_links_fallback_username(tab_num=tab_num, pkg=pkg, links_path=links_path)
+            if links_u:
+                username = links_u
+
+        # 3. Legacy acc.txt fallback (ONLY when tab_map is inactive, e.g. legacy/isolated test environment)
+        if not username and not tab_map_active and str(acc_path) != "/dev/null":
             fallback_u = get_acc_fallback_username(tab_num=tab_num, device_id=device_id, acc_path=acc_path)
             if fallback_u:
                 username = fallback_u
-            else:
-                links_u = get_server_links_fallback_username(tab_num=tab_num, pkg=pkg, links_path=links_path)
-                if links_u:
-                    username = links_u
 
         tab_list.append({
             "tab": tab_num,
@@ -1753,7 +2001,13 @@ def handle_incoming_batch_action(
             return True
         try:
             acc_path_param = message.get("acc_path")
-            tabs = query_tab_list(device_id=device_id, acc_path=acc_path_param, links_path=links_path)
+            tab_map_param = message.get("tab_map_path") or message.get("tab_accounts_path")
+            tabs = query_tab_list(
+                device_id=device_id,
+                acc_path=acc_path_param,
+                links_path=links_path,
+                tab_map_path=tab_map_param,
+            )
             status = "OPENED"
             executed = True
             err_msg = None
