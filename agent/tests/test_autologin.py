@@ -204,6 +204,109 @@ class TestAutoLogin(unittest.TestCase):
         # Verify summary message mentions replaced accounts
         self.assertIn("thay", res["message"])
 
+    def test_auto_login_replaces_dead_cookies_and_facelock(self):
+        # 1. Setup dead cookie and face lock files
+        dead_file = self.base_dir / "acc_dead_cookies.txt"
+        dead_file.write_text("DeadUser1:p1:_|WARNING:dead_ck\n", encoding="utf-8")
+        face_file = self.base_dir / "acc_face_lock.txt"
+        face_file.write_text("FaceUser2:p2:_|WARNING:face_ck\n", encoding="utf-8")
+
+        # 2. Setup tab_accounts.json mapping
+        tab_map_file = self.base_dir / "tab_accounts.json"
+        tab_map_file.write_text(json.dumps({
+            "com.tinh.vv.hi": "CleanUser1",
+            "com.tinh.vv.hj": "DeadUser1",   # dead cookie -> must replace
+            "com.tinh.vv.hk": "FaceUser2",   # face lock -> must replace
+        }), encoding="utf-8")
+
+        # 3. Setup acc.txt (# M77)
+        acc_file = self.base_dir / "acc.txt"
+        acc_file.write_text(
+            "M77___(gag2)\n"
+            "CleanUser1:p1\n"
+            "DeadUser1:p2\n"       # Dead in acc.txt, must NOT be picked as candidate!
+            "FaceUser2:p3\n"       # Face-locked in acc.txt, must NOT be picked!
+            "CleanReplacement1:p4\n"
+            "CleanReplacement2:p5\n",
+            encoding="utf-8"
+        )
+
+        # 4. Setup cookie store
+        cookie_file = self.base_dir / "Data_Tong_Cookies.txt"
+        cookie_file.write_text(
+            "CleanReplacement1:p4:_|WARNING:rep_cookie1\n"
+            "CleanReplacement2:p5:_|WARNING:rep_cookie2\n",
+            encoding="utf-8"
+        )
+
+        res = account_manager.auto_login_unlogged_tabs(
+            "m77", base_dir=str(self.base_dir), base_data_dir=str(self.data_dir)
+        )
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["total_logged"], 2)
+
+        updated_tabs = json.loads(tab_map_file.read_text(encoding="utf-8"))
+        self.assertEqual(updated_tabs.get("com.tinh.vv.hi"), "CleanUser1")
+        self.assertEqual(updated_tabs.get("com.tinh.vv.hj"), "CleanReplacement1")
+        self.assertEqual(updated_tabs.get("com.tinh.vv.hk"), "CleanReplacement2")
+
+        # Verify summary message contains dead and face details
+        self.assertIn("cookie chết", res["message"])
+        self.assertIn("FaceID", res["message"])
+
+    def test_auto_login_live_tabs_and_reserve_replenishment(self):
+        # 1. Device section in acc.txt only has 1 clean account and 1 duplicate
+        acc_file = self.base_dir / "acc.txt"
+        acc_file.write_text(
+            "M77___(gag2)\n"
+            "UserA:p1\n"
+            "UserB:p2\n",
+            encoding="utf-8"
+        )
+
+        # 2. Reserve file has additional clean accounts
+        reserve_file = self.base_dir / "acc_du_phong.txt"
+        reserve_file.write_text(
+            "ReserveUser1:p_res1:_|WARNING:cookie_reserve1\n"
+            "ReserveUser2:p_res2:_|WARNING:cookie_reserve2\n",
+            encoding="utf-8"
+        )
+
+        # 3. Live tabs on device: Tab 3 and Tab 6 both running UserA (Duplicate!)
+        # Tab 1 running UserA, Tab 2 running UserB
+        live_users = {
+            "com.tinh.vv.hi": "UserA",
+            "com.tinh.vv.hj": "UserB",
+            "com.tinh.vv.hk": "UserA", # Duplicate on Tab 3!
+        }
+
+        tab_map_file = self.base_dir / "tab_accounts.json"
+        tab_map_file.write_text(json.dumps({
+            "com.tinh.vv.hi": "UserA",
+            "com.tinh.vv.hj": "UserB",
+            "com.tinh.vv.hk": "OldStaticUser", # Overridden by live tab UserA
+        }), encoding="utf-8")
+
+        res = account_manager.auto_login_unlogged_tabs(
+            "m77",
+            base_dir=str(self.base_dir),
+            base_data_dir=str(self.data_dir),
+            live_tab_users=live_users,
+        )
+        self.assertTrue(res["ok"])
+        self.assertGreaterEqual(res["total_logged"], 1)
+
+        updated_tabs = json.loads(tab_map_file.read_text(encoding="utf-8"))
+        self.assertEqual(updated_tabs.get("com.tinh.vv.hi"), "UserA")
+        self.assertEqual(updated_tabs.get("com.tinh.vv.hj"), "UserB")
+        # Tab 3 duplicate must be replaced by ReserveUser1 from reserve pool
+        self.assertEqual(updated_tabs.get("com.tinh.vv.hk"), "ReserveUser1")
+
+        # Verify cookie.txt was written with reserve cookie
+        cookie_txt = self.base_dir / "cookie.txt"
+        self.assertTrue(cookie_txt.is_file())
+        self.assertIn("cookie_reserve1", cookie_txt.read_text(encoding="utf-8"))
+
 
 if __name__ == "__main__":
     unittest.main()

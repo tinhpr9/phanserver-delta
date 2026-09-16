@@ -1763,12 +1763,18 @@ def write_cookie_to_package(package: str, cookie_value: str, base_data_dir: str 
     return sqlite_ok, sqlite_status
 
 
-def auto_login_unlogged_tabs(device_id: str, base_dir: str = None, base_data_dir: str = "/data/data") -> dict:
+def auto_login_unlogged_tabs(
+    device_id: str,
+    base_dir: str = None,
+    base_data_dir: str = "/data/data",
+    live_tab_users: dict[str, str] | None = None,
+) -> dict:
     """
-    Tự động quét các tab Roblox clone chưa có tài khoản đăng nhập trên thiết bị (device_id),
-    lấy tài khoản tương ứng từ mục phân bổ trong acc.txt (# <device_id>),
-    khớp cookie từ Data_Tong_Cookies.txt (hoặc Cookies.txt),
-    và nạp trực tiếp cookie vào WebView Cookies của package.
+    Tự động quét các tab Roblox clone chưa có tài khoản đăng nhập hoặc bị lỗi/ban/trùng trên thiết bị (device_id),
+    lấy tài khoản tương ứng từ mục phân bổ trong acc.txt (# <device_id>) hoặc kho dự trữ,
+    khớp cookie từ Data_Tong_Cookies.txt (hoặc Cookies.txt / kho dự trữ),
+    bắn cookie vào /storage/emulated/0/Download/cookie.txt (tương thích native tool mode),
+    và nạp trực tiếp cookie vào WebView Cookies SQLite của package.
     """
     paths = get_default_paths(base_dir)
     acc_file = paths["acc_file"]
@@ -1819,39 +1825,66 @@ def auto_login_unlogged_tabs(device_id: str, base_dir: str = None, base_data_dir
         10: "com.tinh.vv.hr",
     }
 
-    # 1. Gather banned usernames from all local and cache sources
+    # 1. Gather all problematic usernames from local files and cache
     banned_usernames = set()
-    for fname in ("acc_bi_ban.txt", "nhat_ky_ban.txt"):
-        fpath = os.path.join(bdir, fname)
-        if os.path.exists(fpath):
-            try:
-                with open(fpath, "r", encoding="utf-8", errors="ignore") as f:
-                    for line in f:
-                        stripped = line.strip()
-                        if stripped:
-                            u = stripped.split(":")[0].strip().lower()
-                            if u:
-                                banned_usernames.add(u)
-            except Exception:
-                pass
+    dead_usernames = set()
+    facelock_usernames = set()
+    captcha_usernames = set()
 
-    # Quota-Guard ban cache
+    search_dirs = [bdir] if base_dir else [bdir, "/storage/emulated/0/Download", "/storage/emulated/0/Download/Shouko"]
+
+    def _read_user_set(filenames: tuple[str, ...], target_set: set[str]) -> None:
+        for fname in filenames:
+            for d in search_dirs:
+                fpath = os.path.join(d, fname)
+                if os.path.exists(fpath):
+                    try:
+                        with open(fpath, "r", encoding="utf-8", errors="ignore") as f:
+                            for line in f:
+                                stripped = line.strip()
+                                if stripped and not stripped.startswith(("#", "<", "{", "[")):
+                                    u = stripped.split(":")[0].strip().lower()
+                                    if u:
+                                        target_set.add(u)
+                    except Exception:
+                        pass
+
+    _read_user_set(("acc_bi_ban.txt", "nhat_ky_ban.txt"), banned_usernames)
+    _read_user_set(("acc_dead_cookies.txt",), dead_usernames)
+    _read_user_set(("acc_face_lock.txt", "nhat_ky_face_lock.txt"), facelock_usernames)
+    _read_user_set(("acc_captcha_lock.txt", "nhat_ky_captcha_lock.txt"), captcha_usernames)
+
+    # Quota-Guard ban / fault cache
     with _CACHE_LOCK:
         for u_cached, cdata in _QUOTA_GUARD_CACHE.items():
-            if isinstance(cdata, dict) and str(cdata.get("status") or "").upper() in ("BANNED", "BAN_WARN"):
-                banned_usernames.add(u_cached.strip().lower())
+            if isinstance(cdata, dict):
+                st = str(cdata.get("status") or "").upper()
+                u_c = u_cached.strip().lower()
+                if st in ("BANNED", "BAN_WARN"):
+                    banned_usernames.add(u_c)
+                elif st in ("DEAD", "EXPIRED"):
+                    dead_usernames.add(u_c)
+                elif st in ("FACE_LOCK", "FACEID"):
+                    facelock_usernames.add(u_c)
+                elif st in ("CAPTCHA_LOCK", "CAPTCHA"):
+                    captcha_usernames.add(u_c)
+
+    problematic_usernames = banned_usernames | dead_usernames | facelock_usernames | captcha_usernames
 
     # 2. Identify tabs needing login or replacement
-    # Reasons:
-    # - "unassigned": tab has no username (empty/null/unknown)
-    # - "banned": tab's current username is known to be banned
-    # - "duplicate": tab's current username was already assigned to an earlier tab
+    # Prioritize live app usernames (detected on device) over static tab_accounts.json mapping
     assigned_valid_usernames = set()
     tabs_to_login = []
 
     for tab_num, pkg in sorted(TAB_PKG_MAP.items()):
-        current_u = tab_accounts.get(pkg)
+        current_u = None
+        if live_tab_users and pkg in live_tab_users:
+            current_u = live_tab_users[pkg]
+        if not current_u:
+            current_u = tab_accounts.get(pkg)
+
         u_str = str(current_u or "").strip()
+        # Clean out any annotation suffixes like (baned), (tab_map), (acc.txt), etc.
         u_clean = re.sub(r"\s*\(.*?\)$", "", u_str).strip()
         u_lower = u_clean.lower()
 
@@ -1859,6 +1892,12 @@ def auto_login_unlogged_tabs(device_id: str, base_dir: str = None, base_data_dir
             tabs_to_login.append((tab_num, pkg, "unassigned"))
         elif u_lower in banned_usernames or "(baned)" in u_str.lower() or "(banned)" in u_str.lower():
             tabs_to_login.append((tab_num, pkg, f"banned: {u_clean}"))
+        elif u_lower in dead_usernames:
+            tabs_to_login.append((tab_num, pkg, f"dead_cookie: {u_clean}"))
+        elif u_lower in facelock_usernames:
+            tabs_to_login.append((tab_num, pkg, f"face_lock: {u_clean}"))
+        elif u_lower in captcha_usernames:
+            tabs_to_login.append((tab_num, pkg, f"captcha_lock: {u_clean}"))
         elif u_lower in assigned_valid_usernames:
             tabs_to_login.append((tab_num, pkg, f"duplicate: {u_clean}"))
         else:
@@ -1874,16 +1913,66 @@ def auto_login_unlogged_tabs(device_id: str, base_dir: str = None, base_data_dir
             "message": f"Tất cả 10 tab trên {device_id.upper()} đều đã có tài khoản sạch hợp lệ, không có tab nào bị ban."
         }
 
-    # 3. Candidate accounts from dev_section that are clean (not banned) and not yet assigned to any valid tab
+    # 3. Candidate accounts from dev_section that are clean and not yet assigned to any valid tab
     candidate_accounts = [
         acc for acc in dev_section["accounts"]
         if acc["username"].strip().lower() not in assigned_valid_usernames
-        and acc["username"].strip().lower() not in banned_usernames
+        and acc["username"].strip().lower() not in problematic_usernames
     ]
+
+    # If dev_section does not have enough clean candidates, replenish from reserve files
+    if len(candidate_accounts) < len(tabs_to_login):
+        known_cand_users = {acc["username"].strip().lower() for acc in candidate_accounts}
+        if base_dir:
+            reserve_files = [
+                paths.get("acc_du_phong_file", os.path.join(bdir, "acc_du_phong.txt")),
+                os.path.join(bdir, "acc_khong_trung_moi.txt"),
+            ]
+        else:
+            reserve_files = [
+                paths.get("acc_du_phong_file", os.path.join(bdir, "acc_du_phong.txt")),
+                os.path.join(bdir, "acc_khong_trung_moi.txt"),
+                "/storage/emulated/0/Download/acc_du_phong.txt",
+                "/storage/emulated/0/Download/acc_khong_trung_moi.txt",
+                "/storage/emulated/0/Download/Shouko/acc_du_phong.txt",
+                "/storage/emulated/0/Download/Shouko/acc_khong_trung_moi.txt",
+            ]
+        for rf in reserve_files:
+            if not os.path.exists(rf):
+                continue
+            try:
+                with open(rf, "r", encoding="utf-8", errors="ignore") as f:
+                    for line in f:
+                        line_s = line.strip()
+                        if not line_s or line_s.startswith(("#", "<", "{", "[")):
+                            continue
+                        parts = line_s.split(":")
+                        u_cand = parts[0].strip()
+                        u_cand_lower = u_cand.lower()
+                        if (
+                            u_cand
+                            and u_cand_lower not in assigned_valid_usernames
+                            and u_cand_lower not in problematic_usernames
+                            and u_cand_lower not in known_cand_users
+                        ):
+                            candidate_accounts.append({
+                                "username": u_cand,
+                                "password": parts[1].strip() if len(parts) > 1 else "",
+                                "raw_line": line_s,
+                            })
+                            known_cand_users.add(u_cand_lower)
+                            if len(candidate_accounts) >= len(tabs_to_login):
+                                break
+            except Exception:
+                pass
+            if len(candidate_accounts) >= len(tabs_to_login):
+                break
 
     if not candidate_accounts:
         banned_tabs_count = sum(1 for _, _, r in tabs_to_login if "banned" in r)
         dup_tabs_count = sum(1 for _, _, r in tabs_to_login if "duplicate" in r)
+        dead_tabs_count = sum(1 for _, _, r in tabs_to_login if "dead" in r)
+        face_tabs_count = sum(1 for _, _, r in tabs_to_login if "face" in r)
         empty_tabs_count = sum(1 for _, _, r in tabs_to_login if r == "unassigned")
         return {
             "ok": True,
@@ -1893,21 +1982,42 @@ def auto_login_unlogged_tabs(device_id: str, base_dir: str = None, base_data_dir
             "logged_in": [],
             "message": (
                 f"Phát hiện {len(tabs_to_login)} tab cần nạp trên {device_id.upper()} "
-                f"({banned_tabs_count} tab ban, {dup_tabs_count} tab trùng, {empty_tabs_count} tab trống), "
-                f"nhưng không còn tài khoản sạch khả dụng trong mục {device_id.upper()} của acc.txt."
+                f"({banned_tabs_count} tab ban, {dead_tabs_count} cookie chết, {face_tabs_count} FaceID, {dup_tabs_count} tab trùng, {empty_tabs_count} tab trống), "
+                f"nhưng không còn tài khoản sạch khả dụng trong mục {device_id.upper()} của acc.txt hay kho dự trữ."
             )
         }
 
-    # 4. Load cookie map
+    # 4. Load cookie map across all known sources
     cookie_map = {}
-    for cf_name in ("Data_Tong_Cookies.txt", "Cookies.txt", "cookie.txt"):
-        cf_path = os.path.join(bdir, cf_name)
+    if base_dir:
+        cookie_search_files = [
+            os.path.join(bdir, "Data_Tong_Cookies.txt"),
+            os.path.join(bdir, "Cookies.txt"),
+            os.path.join(bdir, "cookie.txt"),
+            paths.get("acc_du_phong_file", os.path.join(bdir, "acc_du_phong.txt")),
+            os.path.join(bdir, "acc_khong_trung_moi.txt"),
+        ]
+    else:
+        cookie_search_files = [
+            os.path.join(bdir, "Data_Tong_Cookies.txt"),
+            os.path.join(bdir, "Cookies.txt"),
+            os.path.join(bdir, "cookie.txt"),
+            "/storage/emulated/0/Download/Data_Tong_Cookies.txt",
+            "/storage/emulated/0/Download/cookie.txt",
+            "/storage/emulated/0/Download/Shouko/Data_Tong_Cookies.txt",
+            paths.get("acc_du_phong_file", os.path.join(bdir, "acc_du_phong.txt")),
+            os.path.join(bdir, "acc_khong_trung_moi.txt"),
+            "/storage/emulated/0/Download/acc_du_phong.txt",
+            "/storage/emulated/0/Download/acc_khong_trung_moi.txt",
+            "/storage/emulated/0/Download/Shouko/acc_du_phong.txt",
+        ]
+    for cf_path in cookie_search_files:
         if os.path.exists(cf_path):
             try:
                 with open(cf_path, "r", encoding="utf-8", errors="ignore") as f:
                     for line in f:
                         line_str = line.strip()
-                        if not line_str or ":" not in line_str:
+                        if not line_str or ":" not in line_str or line_str.startswith(("<", "{", "[")):
                             continue
                         parts = line_str.split(":")
                         u_norm = parts[0].strip().lower()
@@ -1923,6 +2033,8 @@ def auto_login_unlogged_tabs(device_id: str, base_dir: str = None, base_data_dir
 
     newly_logged = []
     unresolved_tabs = []
+    all_new_cookies = []
+
     for tab_num, pkg, reason in tabs_to_login:
         if not candidate_accounts:
             unresolved_tabs.append((tab_num, pkg, reason))
@@ -1936,29 +2048,11 @@ def auto_login_unlogged_tabs(device_id: str, base_dir: str = None, base_data_dir
             raw_l = acc["raw_line"]
             cookie_val = raw_l[raw_l.index("_|WARNING:"):].strip()
 
-        # Write cookie to package and push to device cookie.txt
+        # Write cookie to package
         cookie_written = False
         if cookie_val:
-            # Push cookie to device cookie.txt for native tool compatibility
-            device_cookie_targets = [
-                "/storage/emulated/0/Download/cookie.txt",
-                os.path.join(bdir, "cookie.txt"),
-                os.path.join(bdir, "Cookies.txt"),
-            ]
-            for ctarget in device_cookie_targets:
-                try:
-                    os.makedirs(os.path.dirname(ctarget), exist_ok=True)
-                    with open(ctarget, "w", encoding="utf-8") as cf:
-                        cf.write(f"{cookie_val}\n")
-                except Exception:
-                    pass
-                if base_data_dir == "/data/data" and (os.path.exists("/system/bin/su") or os.path.exists("/system/xbin/su")):
-                    try:
-                        subprocess.run(["su", "-c", f'echo "{cookie_val}" > "{ctarget}"'], capture_output=True, timeout=5)
-                    except Exception:
-                        pass
-
             cookie_written, _ = write_cookie_to_package(pkg, cookie_val, base_data_dir=base_data_dir)
+            all_new_cookies.append(cookie_val)
 
         # Record into tab_accounts mapping
         tab_accounts[pkg] = uname
@@ -1972,6 +2066,30 @@ def auto_login_unlogged_tabs(device_id: str, base_dir: str = None, base_data_dir
             "cookie_written": cookie_written
         })
 
+    # Push all new cookies into device cookie.txt for native tool mode compatibility
+    if all_new_cookies:
+        cookies_blob = "\n".join(all_new_cookies) + "\n"
+        if base_dir:
+            device_cookie_targets = [os.path.join(bdir, "cookie.txt")]
+        else:
+            device_cookie_targets = [
+                "/storage/emulated/0/Download/cookie.txt",
+                os.path.join(bdir, "cookie.txt"),
+                os.path.join(bdir, "Cookies.txt"),
+            ]
+        for ctarget in device_cookie_targets:
+            try:
+                os.makedirs(os.path.dirname(ctarget), exist_ok=True)
+                with open(ctarget, "a", encoding="utf-8") as cf:
+                    cf.write(cookies_blob)
+            except Exception:
+                pass
+            if base_data_dir == "/data/data" and (os.path.exists("/system/bin/su") or os.path.exists("/system/xbin/su")):
+                try:
+                    subprocess.run(["su", "-c", f'echo "{cookies_blob.strip()}" >> "{ctarget}"'], capture_output=True, timeout=5)
+                except Exception:
+                    pass
+
     # Save updated tab_accounts.json
     if newly_logged:
         try:
@@ -1981,12 +2099,21 @@ def auto_login_unlogged_tabs(device_id: str, base_dir: str = None, base_data_dir
             pass
 
     banned_replaced = sum(1 for item in newly_logged if "banned" in item.get("replaced_reason", ""))
+    dead_replaced = sum(1 for item in newly_logged if "dead" in item.get("replaced_reason", ""))
+    face_replaced = sum(1 for item in newly_logged if "face" in item.get("replaced_reason", ""))
+    captcha_replaced = sum(1 for item in newly_logged if "captcha" in item.get("replaced_reason", ""))
     dup_replaced = sum(1 for item in newly_logged if "duplicate" in item.get("replaced_reason", ""))
     empty_replaced = sum(1 for item in newly_logged if item.get("replaced_reason") == "unassigned")
 
     summary_parts = []
     if banned_replaced > 0:
         summary_parts.append(f"thay {banned_replaced} acc ban")
+    if dead_replaced > 0:
+        summary_parts.append(f"thay {dead_replaced} acc cookie chết")
+    if face_replaced > 0:
+        summary_parts.append(f"thay {face_replaced} acc FaceID lock")
+    if captcha_replaced > 0:
+        summary_parts.append(f"thay {captcha_replaced} acc captcha")
     if dup_replaced > 0:
         summary_parts.append(f"thay {dup_replaced} acc trùng")
     if empty_replaced > 0:

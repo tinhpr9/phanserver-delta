@@ -1207,7 +1207,7 @@ def check_tabs_ban_status(tabs: list[dict[str, Any]], base_dir: Optional[pathlib
             try:
                 for line in fpath.read_text(encoding="utf-8", errors="ignore").splitlines():
                     stripped = line.strip()
-                    if stripped:
+                    if stripped and not stripped.startswith(("#", "<", "{", "[")):
                         u = stripped.split(":")[0].strip().lower()
                         if u:
                             banned_usernames.add(u)
@@ -1246,13 +1246,13 @@ def check_tabs_ban_status(tabs: list[dict[str, Any]], base_dir: Optional[pathlib
                 try:
                     for line in cf.read_text(encoding="utf-8", errors="ignore").splitlines():
                         l_str = line.strip()
-                        if not l_str or ":" not in l_str:
+                        if not l_str or ":" not in l_str or l_str.startswith(("#", "<", "{", "[")):
                             continue
                         parts = l_str.split(":")
                         u_norm = parts[0].strip().lower()
                         c = ""
                         if "_|WARNING:" in l_str:
-                            c = l_str[l_str.index("_|WARNING:"):].strip()
+                            c = line_str[line_str.index("_|WARNING:"):].strip() if "line_str" in locals() else l_str[l_str.index("_|WARNING:"):].strip()
                         elif len(parts) > 2:
                             c = ":".join(parts[2:]).strip()
                         if c and u_norm not in cookie_map:
@@ -1273,8 +1273,20 @@ def check_tabs_ban_status(tabs: list[dict[str, Any]], base_dir: Optional[pathlib
                     for uname, info in zp_res.items():
                         if isinstance(info, dict):
                             st = str(info.get("status") or "").upper()
-                            if st in ("BANNED", "BAN_WARN"):
+                            if st in ("BANNED", "BAN_WARN", "DEAD", "FACE_LOCK", "FACEID", "CAPTCHA_LOCK"):
                                 banned_usernames.add(uname.strip().lower())
+            except Exception:
+                pass
+
+        # Also check Roblox official public API directly for unverified accounts
+        remaining_unverified = [u for u in usernames_need_api if u.lower() not in banned_usernames]
+        if remaining_unverified and hasattr(account_manager, "query_roblox_api_batch_check_bans"):
+            try:
+                rbx_res = account_manager.query_roblox_api_batch_check_bans(remaining_unverified)
+                if isinstance(rbx_res, dict):
+                    for uname, info in rbx_res.items():
+                        if isinstance(info, dict) and info.get("isBanned") is True:
+                            banned_usernames.add(uname.strip().lower())
             except Exception:
                 pass
 
@@ -2438,7 +2450,29 @@ def handle_incoming_batch_action(
             if not account_manager:
                 raise RuntimeError("account_manager module not found")
             base_dir_param = message.get("base_dir")
-            res_data = account_manager.auto_login_unlogged_tabs(device_id=device_id, base_dir=base_dir_param)
+            live_map = {}
+            try:
+                custom_acc = os.path.join(base_dir_param, "acc.txt") if base_dir_param else None
+                custom_tab_map = os.path.join(base_dir_param, "tab_accounts.json") if base_dir_param else None
+                live_tabs = query_tab_list(
+                    device_id=device_id,
+                    acc_path=custom_acc if custom_acc and os.path.exists(custom_acc) else ("/dev/null" if base_dir_param else None),
+                    tab_map_path=custom_tab_map if custom_tab_map and os.path.exists(custom_tab_map) else None,
+                )
+                for lt in live_tabs:
+                    pkg = lt.get("package")
+                    u = lt.get("username")
+                    if pkg and u:
+                        clean_u = re.sub(r"\s*\(.*?\)$", "", str(u)).strip()
+                        if clean_u and clean_u.lower() not in ("null", "none", "unknown", "❓"):
+                            live_map[pkg] = clean_u
+            except Exception:
+                live_map = {}
+            res_data = account_manager.auto_login_unlogged_tabs(
+                device_id=device_id,
+                base_dir=base_dir_param,
+                live_tab_users=live_map if live_map else None,
+            )
             status = "OPENED"
             executed = True
             err_msg = None
