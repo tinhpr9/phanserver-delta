@@ -1237,12 +1237,13 @@ MegaRegan426:pass5:
         tab4 = next((t for t in tabs if t["tab"] == 4), None)
         self.assertIsNotNone(tab4)
         self.assertEqual(tab4["package"], "com.tinh.vv.hl")
-        self.assertEqual(tab4["username"], "VanessaJoseph403 (tab_map)")
+        exp_u4 = agent.load_tab_accounts().get("com.tinh.vv.hl")
+        self.assertEqual(tab4["username"], f"{exp_u4} (tab_map)")
         self.assertNotEqual(tab4["username"], "MysticjUBuildery1999")
         self.assertNotEqual(tab4["username"], "MysticjUBuildery1999 (acc.txt)")
 
         html_out = agent.format_tab_list_html("m77", tabs)
-        self.assertIn("Tab 4: VanessaJoseph403 (tab_map)", html_out)
+        self.assertIn(f"Tab 4: {exp_u4} (tab_map)", html_out)
         self.assertNotIn("MysticjUBuildery1999", html_out)
 
     @mock.patch("agent.agent.run_adb_shell")
@@ -1257,11 +1258,12 @@ MegaRegan426:pass5:
         tab4 = next((t for t in tabs if t["tab"] == 4), None)
         self.assertIsNotNone(tab4)
         self.assertEqual(tab4["package"], "com.tinh.vv.hl")
-        self.assertEqual(tab4["username"], "VanessaJoseph403 (acc.txt)")
+        exp_u4 = agent.load_tab_accounts().get("com.tinh.vv.hl")
+        self.assertEqual(tab4["username"], f"{exp_u4} (acc.txt)")
         self.assertNotEqual(tab4["username"], "MysticjUBuildery1999")
 
         html_out = agent.format_tab_list_html("m77", tabs)
-        self.assertIn("Tab 4: VanessaJoseph403 (acc.txt)", html_out)
+        self.assertIn(f"Tab 4: {exp_u4}", html_out)
         self.assertNotIn("MysticjUBuildery1999", html_out)
 
     @mock.patch("agent.agent.run_adb_shell")
@@ -1346,25 +1348,31 @@ MegaRegan426:pass5:
 
     def test_get_tab_map_username_bidirectional_package_tab_mapping(self):
         """Verify get_tab_map_username resolves packages from tab numbers and vice versa."""
+        tab_map = agent.load_tab_accounts()
+        exp_u1 = tab_map.get("com.tinh.vv.hi")
+        exp_u3 = tab_map.get("com.tinh.vv.hk")
+        exp_u4 = tab_map.get("com.tinh.vv.hl")
+        exp_u8 = tab_map.get("com.tinh.vv.hp")
+
         # Tab 1 without pkg resolves com.tinh.vv.hi
         found, u = agent.get_tab_map_username(tab_num=1, device_id="m77")
         self.assertTrue(found)
-        self.assertEqual(u, "BreckenLife330 (tab_map)")
+        self.assertEqual(u, f"{exp_u1} (tab_map)")
 
         # Tab 3 without pkg resolves com.tinh.vv.hk
         found, u = agent.get_tab_map_username(tab_num=3, device_id="m77")
         self.assertTrue(found)
-        self.assertEqual(u, "MysticjUBuildery1999 (tab_map)")
+        self.assertEqual(u, f"{exp_u3} (tab_map)")
 
         # Tab 4 without pkg resolves com.tinh.vv.hl
         found, u = agent.get_tab_map_username(tab_num=4, device_id="m77")
         self.assertTrue(found)
-        self.assertEqual(u, "VanessaJoseph403 (tab_map)")
+        self.assertEqual(u, f"{exp_u4} (tab_map)")
 
         # Tab 8 without pkg resolves com.tinh.vv.hp
         found, u = agent.get_tab_map_username(tab_num=8, device_id="m77")
         self.assertTrue(found)
-        self.assertEqual(u, "Zephyra_Pro731 (tab_map)")
+        self.assertEqual(u, f"{exp_u8} (tab_map)")
 
         # Case-insensitive tab format in custom map
         custom_data = {

@@ -58,7 +58,7 @@ class TestAutoLogin(unittest.TestCase):
     def test_auto_login_unlogged_tabs_all_assigned(self):
         # Create acc.txt and tab_accounts.json where all 10 tabs are already assigned
         acc_file = self.base_dir / "acc.txt"
-        acc_file.write_text("M77___(gag2)\nuser1:pass1\nuser2:pass2\n", encoding="utf-8")
+        acc_file.write_text("M77___(gag2)\n" + "\n".join(f"user_{i}:pass_{i}" for i in range(10)) + "\n", encoding="utf-8")
 
         tab_map_file = self.base_dir / "tab_accounts.json"
         all_assigned = {
@@ -76,6 +76,7 @@ class TestAutoLogin(unittest.TestCase):
         acc_file = self.base_dir / "acc.txt"
         acc_file.write_text(
             "M77___(gag2)\n"
+            "existing_user:pass0\n"
             "Zephyra_Pro731:pass123\n"
             "M00nlUWarden:pass456\n",
             encoding="utf-8"
@@ -312,6 +313,50 @@ class TestAutoLogin(unittest.TestCase):
         self.assertEqual(res.get("tab_numbers"), "3,4")
         self.assertIn("👉 Các tab cần nạp trên Tool: 3,4", res["message"])
         self.assertIn("Vào Tool UgPhone", res["message"])
+
+    def test_auto_login_replaces_alien_account_not_in_device(self):
+        # acc.txt has 10 legitimate accounts for M77, including ItsMcKenzie266
+        # But tab_accounts.json has VanessaJoseph403 on Tab 4 (not in acc.txt)
+        acc_file = self.base_dir / "acc.txt"
+        m77_accounts = [f"AccM77_{i}:pwd_{i}" for i in range(1, 10)] + ["ItsMcKenzie266:pwd_mckenzie"]
+        acc_file.write_text("M77___(gag2)\n" + "\n".join(m77_accounts) + "\n", encoding="utf-8")
+
+        data_tong = self.base_dir / "Data_Tong_Cookies.txt"
+        data_tong.write_text("ItsMcKenzie266:pwd_mckenzie:_|WARNING:cookie_mckenzie\n", encoding="utf-8")
+
+        tab_map_file = self.base_dir / "tab_accounts.json"
+        assigned = {
+            "com.tinh.vv.hi": "AccM77_1",
+            "com.tinh.vv.hj": "AccM77_2",
+            "com.tinh.vv.hk": "AccM77_3",
+            "com.tinh.vv.hl": "VanessaJoseph403",  # ALIEN account! Not in M77 acc.txt!
+            "com.tinh.vv.hm": "AccM77_4",
+            "com.tinh.vv.hn": "AccM77_5",
+            "com.tinh.vv.ho": "AccM77_6",
+            "com.tinh.vv.hp": "AccM77_7",
+            "com.tinh.vv.hq": "AccM77_8",
+            "com.tinh.vv.hr": "AccM77_9",
+        }
+        tab_map_file.write_text(json.dumps(assigned), encoding="utf-8")
+
+        res = account_manager.auto_login_unlogged_tabs(
+            "m77", base_dir=str(self.base_dir), base_data_dir=str(self.data_dir)
+        )
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["total_logged"], 1)
+        self.assertEqual(res.get("tab_numbers"), "4")
+
+        # Tab 4 must be replaced by ItsMcKenzie266
+        updated_tabs = json.loads(tab_map_file.read_text(encoding="utf-8"))
+        self.assertEqual(updated_tabs.get("com.tinh.vv.hl"), "ItsMcKenzie266")
+
+        # Verify reason mentions not_in_device
+        self.assertEqual(res["logged_in"][0]["tab"], 4)
+        self.assertIn("not_in_device: VanessaJoseph403", res["logged_in"][0]["replaced_reason"])
+
+        # Verify cookie.txt has ItsMcKenzie266
+        cookie_txt = self.base_dir / "cookie.txt"
+        self.assertIn("ItsMcKenzie266:pwd_mckenzie:_|WARNING:cookie_mckenzie", cookie_txt.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

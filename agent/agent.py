@@ -2458,6 +2458,7 @@ def handle_incoming_batch_action(
                     device_id=device_id,
                     acc_path=custom_acc if custom_acc and os.path.exists(custom_acc) else ("/dev/null" if base_dir_param else None),
                     tab_map_path=custom_tab_map if custom_tab_map and os.path.exists(custom_tab_map) else None,
+                    all_tabs=True,
                 )
                 for lt in live_tabs:
                     pkg = lt.get("package")
@@ -2465,7 +2466,10 @@ def handle_incoming_batch_action(
                     if pkg and u:
                         clean_u = re.sub(r"\s*\(.*?\)$", "", str(u)).strip()
                         if clean_u and clean_u.lower() not in ("null", "none", "unknown", "❓"):
-                            live_map[pkg] = clean_u
+                            if lt.get("is_banned") or "(baned)" in str(u).lower() or "(banned)" in str(u).lower():
+                                live_map[pkg] = f"{clean_u} (baned)"
+                            else:
+                                live_map[pkg] = clean_u
             except Exception:
                 live_map = {}
             res_data = account_manager.auto_login_unlogged_tabs(

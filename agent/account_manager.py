@@ -1874,8 +1874,37 @@ def auto_login_unlogged_tabs(
     # 2. Identify tabs needing login or replacement
     # Prioritize live app usernames (detected on device) over static tab_accounts.json mapping
     assigned_valid_usernames = set()
-    tabs_to_login = []
+    dev_accounts = dev_section.get("accounts", [])
+    dev_usernames = {acc["username"].strip().lower() for acc in dev_accounts if acc.get("username")}
 
+    # Read reserve usernames to recognize legitimate reserve accounts already assigned
+    reserve_usernames = set()
+    if base_dir:
+        res_check_files = [
+            paths.get("acc_du_phong_file", os.path.join(bdir, "acc_du_phong.txt")),
+            os.path.join(bdir, "acc_khong_trung_moi.txt"),
+        ]
+    else:
+        res_check_files = [
+            paths.get("acc_du_phong_file", os.path.join(bdir, "acc_du_phong.txt")),
+            os.path.join(bdir, "acc_khong_trung_moi.txt"),
+            "/storage/emulated/0/Download/acc_du_phong.txt",
+            "/storage/emulated/0/Download/acc_khong_trung_moi.txt",
+            "/storage/emulated/0/Download/Shouko/acc_du_phong.txt",
+            "/storage/emulated/0/Download/Shouko/acc_khong_trung_moi.txt",
+        ]
+    for rcf in res_check_files:
+        if os.path.exists(rcf):
+            try:
+                with open(rcf, "r", encoding="utf-8", errors="ignore") as f:
+                    for line in f:
+                        l_s = line.strip()
+                        if l_s and ":" in l_s and not l_s.startswith(("#", "<", "{", "[")):
+                            reserve_usernames.add(l_s.split(":")[0].strip().lower())
+            except Exception:
+                pass
+
+    tabs_to_login = []
     for tab_num, pkg in sorted(TAB_PKG_MAP.items()):
         current_u = None
         if live_tab_users and pkg in live_tab_users:
@@ -1898,6 +1927,8 @@ def auto_login_unlogged_tabs(
             tabs_to_login.append((tab_num, pkg, f"face_lock: {u_clean}"))
         elif u_lower in captcha_usernames:
             tabs_to_login.append((tab_num, pkg, f"captcha_lock: {u_clean}"))
+        elif dev_usernames and u_lower not in dev_usernames and u_lower not in reserve_usernames:
+            tabs_to_login.append((tab_num, pkg, f"not_in_device: {u_clean}"))
         elif u_lower in assigned_valid_usernames:
             tabs_to_login.append((tab_num, pkg, f"duplicate: {u_clean}"))
         else:
@@ -1973,6 +2004,7 @@ def auto_login_unlogged_tabs(
         dup_tabs_count = sum(1 for _, _, r in tabs_to_login if "duplicate" in r)
         dead_tabs_count = sum(1 for _, _, r in tabs_to_login if "dead" in r)
         face_tabs_count = sum(1 for _, _, r in tabs_to_login if "face" in r)
+        alien_tabs_count = sum(1 for _, _, r in tabs_to_login if "not_in_device" in r)
         empty_tabs_count = sum(1 for _, _, r in tabs_to_login if r == "unassigned")
         return {
             "ok": True,
@@ -1982,7 +2014,7 @@ def auto_login_unlogged_tabs(
             "logged_in": [],
             "message": (
                 f"Phát hiện {len(tabs_to_login)} tab cần nạp trên {device_id.upper()} "
-                f"({banned_tabs_count} tab ban, {dead_tabs_count} cookie chết, {face_tabs_count} FaceID, {dup_tabs_count} tab trùng, {empty_tabs_count} tab trống), "
+                f"({banned_tabs_count} tab ban, {dead_tabs_count} cookie chết, {face_tabs_count} FaceID, {alien_tabs_count} ngoài danh sách, {dup_tabs_count} tab trùng, {empty_tabs_count} tab trống), "
                 f"nhưng không còn tài khoản sạch khả dụng trong mục {device_id.upper()} của acc.txt hay kho dự trữ."
             )
         }
@@ -2116,6 +2148,7 @@ def auto_login_unlogged_tabs(
     face_replaced = sum(1 for item in newly_logged if "face" in item.get("replaced_reason", ""))
     captcha_replaced = sum(1 for item in newly_logged if "captcha" in item.get("replaced_reason", ""))
     dup_replaced = sum(1 for item in newly_logged if "duplicate" in item.get("replaced_reason", ""))
+    alien_replaced = sum(1 for item in newly_logged if "not_in_device" in item.get("replaced_reason", ""))
     empty_replaced = sum(1 for item in newly_logged if item.get("replaced_reason") == "unassigned")
 
     summary_parts = []
@@ -2129,6 +2162,8 @@ def auto_login_unlogged_tabs(
         summary_parts.append(f"thay {captcha_replaced} acc captcha")
     if dup_replaced > 0:
         summary_parts.append(f"thay {dup_replaced} acc trùng")
+    if alien_replaced > 0:
+        summary_parts.append(f"thay {alien_replaced} acc ngoài danh sách")
     if empty_replaced > 0:
         summary_parts.append(f"nạp {empty_replaced} tab trống")
     details_clause = f" ({', '.join(summary_parts)})" if summary_parts else ""
