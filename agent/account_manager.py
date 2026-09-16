@@ -2048,11 +2048,20 @@ def auto_login_unlogged_tabs(
             raw_l = acc["raw_line"]
             cookie_val = raw_l[raw_l.index("_|WARNING:"):].strip()
 
+        # Extract password for full User:Pass:Cookie format
+        pwd = acc.get("password") or ""
+        if not pwd and ":" in str(acc.get("raw_line", "")):
+            raw_parts = acc["raw_line"].split(":")
+            if len(raw_parts) > 1:
+                pwd = raw_parts[1].strip()
+
         # Write cookie to package
         cookie_written = False
         if cookie_val:
             cookie_written, _ = write_cookie_to_package(pkg, cookie_val, base_data_dir=base_data_dir)
-            all_new_cookies.append(cookie_val)
+            # Full line: Username:Password:Cookie per tool requirement
+            full_line = f"{uname}:{pwd}:{cookie_val}"
+            all_new_cookies.append(full_line)
 
         # Record into tab_accounts mapping
         tab_accounts[pkg] = uname
@@ -2066,7 +2075,7 @@ def auto_login_unlogged_tabs(
             "cookie_written": cookie_written
         })
 
-    # Push all new cookies into device cookie.txt for native tool mode compatibility
+    # Overwrite device cookie.txt with exact new cookies for native tool mode compatibility
     if all_new_cookies:
         cookies_blob = "\n".join(all_new_cookies) + "\n"
         if base_dir:
@@ -2080,13 +2089,17 @@ def auto_login_unlogged_tabs(
         for ctarget in device_cookie_targets:
             try:
                 os.makedirs(os.path.dirname(ctarget), exist_ok=True)
-                with open(ctarget, "a", encoding="utf-8") as cf:
+                with open(ctarget, "w", encoding="utf-8") as cf:
                     cf.write(cookies_blob)
             except Exception:
                 pass
             if base_data_dir == "/data/data" and (os.path.exists("/system/bin/su") or os.path.exists("/system/xbin/su")):
                 try:
-                    subprocess.run(["su", "-c", f'echo "{cookies_blob.strip()}" >> "{ctarget}"'], capture_output=True, timeout=5)
+                    subprocess.run(
+                        ["su", "-c", f"cat << 'EOF' > '{ctarget}'\n{cookies_blob}EOF\n"],
+                        capture_output=True,
+                        timeout=5,
+                    )
                 except Exception:
                     pass
 
@@ -2120,9 +2133,26 @@ def auto_login_unlogged_tabs(
         summary_parts.append(f"nạp {empty_replaced} tab trống")
     details_clause = f" ({', '.join(summary_parts)})" if summary_parts else ""
 
-    msg = f"Đã đăng nhập thành công {len(newly_logged)} tài khoản{details_clause} vào các tab trên {device_id.upper()}."
+    tab_numbers = [str(item["tab"]) for item in newly_logged]
+    tab_numbers_str = ",".join(tab_numbers)
+
+    msg_lines = [
+        f"Đã bơm {len(newly_logged)} cookie sạch (định dạng User:Pass:Cookie) vào cookie.txt cho {device_id.upper()}{details_clause}:"
+    ]
+    for item in newly_logged:
+        t_num = item["tab"]
+        u_name = item["username"]
+        r_reason = item.get("replaced_reason", "")
+        msg_lines.append(f"• Tab {t_num}: {u_name} ({r_reason})")
+
+    if tab_numbers_str:
+        msg_lines.append(f"\n👉 Các tab cần nạp trên Tool: {tab_numbers_str}")
+        msg_lines.append("Vào Tool UgPhone > Chọn [7] Login via Cookie > [2] Login via cookies (existing package) > Nhập danh sách tab trên.")
+
     if unresolved_tabs:
-        msg += f" Còn {len(unresolved_tabs)} tab chưa có tài khoản do thiếu acc sạch trong acc.txt."
+        msg_lines.append(f"\n⚠️ Còn {len(unresolved_tabs)} tab chưa có tài khoản do thiếu acc sạch trong acc.txt.")
+
+    msg = "\n".join(msg_lines)
 
     return {
         "ok": True,
@@ -2130,6 +2160,7 @@ def auto_login_unlogged_tabs(
         "total_unlogged": len(tabs_to_login),
         "total_logged": len(newly_logged),
         "logged_in": newly_logged,
+        "tab_numbers": tab_numbers_str,
         "unresolved_tabs": [{"tab": t, "package": p, "reason": r} for t, p, r in unresolved_tabs],
         "message": msg
     }

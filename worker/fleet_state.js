@@ -1953,9 +1953,17 @@ export class FleetState {
         if (loggedIn.length === 0) {
           msg = `🔐 <b>Auto-Login — ${escapeHtml(devName)}</b>\n${escapeHtml(detailsObj.message || "Tất cả các tab đều đã có tài khoản gán.")}`;
         } else {
-          msg = `🔐 <b>Auto-Login — ${escapeHtml(devName)}</b>\n✅ Đã đăng nhập thành công ${loggedIn.length} tài khoản vào các tab trống:\n`;
+          msg = `🍪 <b>Auto-Login — ${escapeHtml(devName)}</b>\n✅ Đã bơm ${loggedIn.length} cookie sạch vào <code>cookie.txt</code>:\n`;
           for (const item of loggedIn) {
-            msg += `• Tab ${escapeHtml(String(item.tab))}: <code>${escapeHtml(String(item.username))}</code>\n`;
+            const reason = item.replaced_reason ? ` <i>(${escapeHtml(item.replaced_reason)})</i>` : "";
+            msg += `• Tab ${escapeHtml(String(item.tab))}: <code>${escapeHtml(String(item.username))}</code>${reason}\n`;
+          }
+          if (detailsObj.tab_numbers) {
+            msg += `\n👉 <b>Các tab cần nạp trên Tool:</b> <code>${escapeHtml(detailsObj.tab_numbers)}</code>\n`;
+            msg += `<i>Vào Tool UgPhone > Chọn [7] Login via Cookie > [2] Login via cookies > Nhập: <code>${escapeHtml(detailsObj.tab_numbers)}</code></i>\n`;
+          }
+          if (Array.isArray(detailsObj.unresolved_tabs) && detailsObj.unresolved_tabs.length > 0) {
+            msg += `\n⚠️ Còn ${detailsObj.unresolved_tabs.length} tab chưa có tài khoản do thiếu acc sạch trong kho.`;
           }
         }
       } else if (isSuccess) {

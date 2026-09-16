@@ -302,10 +302,16 @@ class TestAutoLogin(unittest.TestCase):
         # Tab 3 duplicate must be replaced by ReserveUser1 from reserve pool
         self.assertEqual(updated_tabs.get("com.tinh.vv.hk"), "ReserveUser1")
 
-        # Verify cookie.txt was written with reserve cookie
+        # Verify cookie.txt was written with full User:Pass:Cookie format
         cookie_txt = self.base_dir / "cookie.txt"
         self.assertTrue(cookie_txt.is_file())
-        self.assertIn("cookie_reserve1", cookie_txt.read_text(encoding="utf-8"))
+        cookie_content = cookie_txt.read_text(encoding="utf-8")
+        self.assertIn("ReserveUser1:p_res1:_|WARNING:cookie_reserve1", cookie_content)
+
+        # Verify tab_numbers and tool guidance
+        self.assertEqual(res.get("tab_numbers"), "3,4")
+        self.assertIn("👉 Các tab cần nạp trên Tool: 3,4", res["message"])
+        self.assertIn("Vào Tool UgPhone", res["message"])
 
 
 if __name__ == "__main__":
