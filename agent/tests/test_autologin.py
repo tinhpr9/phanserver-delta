@@ -132,7 +132,8 @@ class TestAutoLogin(unittest.TestCase):
         cookie_file = self.base_dir / "Data_Tong_Cookies.txt"
         cookie_file.write_text("AutoUser1:p1:_|WARNING:auto_cookie\n", encoding="utf-8")
 
-        with mock.patch("agent.agent.send_ack") as mock_ack:
+        with mock.patch("agent.agent.send_ack") as mock_ack, \
+             mock.patch("agent.agent.query_tab_list", return_value=[]) as mock_qtabs:
             handled = agent.handle_incoming_batch_action(
                 msg, "m77", "https://mock.worker/report", "secret", state, self.state_path, self.links_path
             )
