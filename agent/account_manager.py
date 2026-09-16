@@ -53,6 +53,14 @@ def clear_ban_cache():
         _QUOTA_GUARD_CACHE.clear()
 
 
+def is_valid_roblox_username(username: str) -> bool:
+    """Xác thực định dạng username hợp lệ của Roblox (3-30 ký tự chữ, số, gạch dưới, không chứa CSS/ký tự đặc biệt)."""
+    if not username or not isinstance(username, str):
+        return False
+    u = username.strip()
+    return bool(re.match(r"^[a-zA-Z0-9_]{3,30}$", u))
+
+
 def invalidate_ban_cache(usernames=None):
     """Hủy cache cho một danh sách usernames hoặc toàn bộ nếu None."""
     with _CACHE_LOCK:
@@ -1189,8 +1197,8 @@ def replace_banned_accounts_from_reserve(m_code, num_needed, base_dir=None, rese
             for line in raw_lines:
                 stripped = line.strip()
                 if stripped and ":" in stripped:
-                    u_cand = stripped.split(":")[0].strip().lower()
-                    if u_cand not in defective_known:
+                    u_cand = stripped.split(":")[0].strip()
+                    if is_valid_roblox_username(u_cand) and u_cand.lower() not in defective_known:
                         valid_pool.append(line)
                     else:
                         non_acc_lines.append(line)
@@ -1900,7 +1908,9 @@ def auto_login_unlogged_tabs(
                     for line in f:
                         l_s = line.strip()
                         if l_s and ":" in l_s and not l_s.startswith(("#", "<", "{", "[")):
-                            reserve_usernames.add(l_s.split(":")[0].strip().lower())
+                            cand_u = l_s.split(":")[0].strip()
+                            if is_valid_roblox_username(cand_u):
+                                reserve_usernames.add(cand_u.lower())
             except Exception:
                 pass
 
@@ -1947,7 +1957,8 @@ def auto_login_unlogged_tabs(
     # 3. Candidate accounts from dev_section that are clean and not yet assigned to any valid tab
     candidate_accounts = [
         acc for acc in dev_section["accounts"]
-        if acc["username"].strip().lower() not in assigned_valid_usernames
+        if is_valid_roblox_username(acc.get("username", ""))
+        and acc["username"].strip().lower() not in assigned_valid_usernames
         and acc["username"].strip().lower() not in problematic_usernames
     ]
 
@@ -1981,7 +1992,9 @@ def auto_login_unlogged_tabs(
                         u_cand = parts[0].strip()
                         u_cand_lower = u_cand.lower()
                         if (
-                            u_cand
+                            is_valid_roblox_username(u_cand)
+                            and len(parts) >= 2
+                            and len(parts[1].strip()) >= 3
                             and u_cand_lower not in assigned_valid_usernames
                             and u_cand_lower not in problematic_usernames
                             and u_cand_lower not in known_cand_users

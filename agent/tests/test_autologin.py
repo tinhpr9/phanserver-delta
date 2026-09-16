@@ -359,6 +359,40 @@ class TestAutoLogin(unittest.TestCase):
         cookie_txt = self.base_dir / "cookie.txt"
         self.assertIn("ItsMcKenzie266:pwd_mckenzie:_|WARNING:cookie_mckenzie", cookie_txt.read_text(encoding="utf-8"))
 
+    def test_auto_login_discards_corrupted_css_lines_in_reserve(self):
+        # Setup acc.txt with only 1 user
+        acc_file = self.base_dir / "acc.txt"
+        acc_file.write_text("M77___(gag2)\nGoodUser:p1\n", encoding="utf-8")
+
+        # Reserve file has corrupted CSS lines followed by a valid Roblox user
+        reserve_file = self.base_dir / "acc_du_phong.txt"
+        reserve_file.write_text(
+            ");letter-spacing:0rem;line-height:1.4285714286\n"
+            "--c-afwt, 500: bad_css_value\n"
+            "invalid user name with spaces:pass123\n"
+            "ValidReserveUser99:pwd_valid:_|WARNING:valid_cookie_val\n",
+            encoding="utf-8"
+        )
+
+        tab_map_file = self.base_dir / "tab_accounts.json"
+        tab_map_file.write_text(json.dumps({
+            "com.tinh.vv.hi": "GoodUser",
+            "com.tinh.vv.hj": "AlienUser404",  # Needs replacement
+        }), encoding="utf-8")
+
+        res = account_manager.auto_login_unlogged_tabs(
+            "m77", base_dir=str(self.base_dir), base_data_dir=str(self.data_dir)
+        )
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["total_logged"], 1)
+        self.assertEqual(res["logged_in"][0]["username"], "ValidReserveUser99")
+
+        # Ensure no corrupted CSS was ever picked
+        updated_tabs = json.loads(tab_map_file.read_text(encoding="utf-8"))
+        self.assertEqual(updated_tabs.get("com.tinh.vv.hj"), "ValidReserveUser99")
+        self.assertNotIn("letter-spacing", json.dumps(updated_tabs))
+        self.assertNotIn("--c-afwt", json.dumps(updated_tabs))
+
 
 if __name__ == "__main__":
     unittest.main()
