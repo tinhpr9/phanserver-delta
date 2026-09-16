@@ -1446,7 +1446,7 @@ def query_tab_list(
         used_tabs.add(t)
         assigned.append((t, pkg))
 
-    # 3.5 Ultra-fast Root Batch Grep (scans all Roblox packages across /data/data and /data/user in ~50ms in 1 command)
+    # 3.5 Ultra-fast Root Batch Grep (scans all Roblox packages across /data/data and /data/user)
     batch_live_users: dict[str, str] = {}
     batch_is_exact: dict[str, bool] = {}
     batch_targets = (
@@ -1460,14 +1460,12 @@ def query_tab_list(
         "/data/data/com.roblox.client*/shared_prefs/*.xml "
         "/data/user/*/*/shared_prefs/*.xml"
     )
-    batch_regex = r'((Username|DisplayName|RobloxUsername)[\"\\ ]*:[\"\\ ]*([a-zA-Z0-9_]{3,30})|name=[\"\\ ]*(Username|DisplayName|RobloxUsername)[\"\\ ]*>[\"\\ ]*([a-zA-Z0-9_]{3,30}))'
     batch_cmd = (
-        f"su -c \"for f in {batch_targets}; do "
-        f"[ -f \\\"\\$f\\\" ] || continue; "
-        f"res=\\$(head -c 1048576 \\\"\\$f\\\" 2>/dev/null | grep -aoEi '{batch_regex}' 2>/dev/null | head -n 2); "
-        f"[ -z \\\"\\$res\\\" ] && res=\\$(grep -aoEi '{batch_regex}' \\\"\\$f\\\" 2>/dev/null | head -n 2); "
-        f"[ -n \\\"\\$res\\\" ] && echo \\\"\\$f: \\$res\\\"; "
-        f"done; true\""
+        f"su -c 'for f in {batch_targets}; do "
+        f"[ -f \"$f\" ] || continue; "
+        f"p=$(echo \"$f\" | grep -oE \"(com\\.tinh\\.vv\\.[a-z0-9_]+|com\\.roblox\\.client[a-z0-9_]*)\"); "
+        f"[ -n \"$p\" ] && echo -n \"$p: \" && grep -aoEi \"\\\"(Username|DisplayName|RobloxUsername)\\\":\\s*\\\"[^\\\"]+\\\"\" \"$f\" | head -n 2; "
+        f"done; true'"
     )
     batch_out = run_adb_shell(batch_cmd)
     if batch_out:
@@ -1488,6 +1486,9 @@ def query_tab_list(
         )
         current_pkg = None
         for line in batch_out.splitlines():
+            line = line.strip()
+            if not line:
+                continue
             m_pkg = re_pkg.search(line)
             if m_pkg:
                 current_pkg = m_pkg.group(1)
@@ -1498,7 +1499,7 @@ def query_tab_list(
             # Prioritize exact Username/RobloxUsername over DisplayName
             m_exact = re_exact_user.search(line)
             if m_exact:
-                u_name = m_exact.group(1)
+                u_name = m_exact.group(1).strip()
                 if u_name.lower() not in ("null", "none", "unknown", "guest", "false", "true", "undefined", "default", "roblox", "client", "activity", "mainactivity"):
                     batch_live_users[target_pkg] = u_name
                     batch_is_exact[target_pkg] = True
@@ -1508,7 +1509,7 @@ def query_tab_list(
             if not batch_is_exact.get(target_pkg):
                 m_disp = re_disp_name.search(line)
                 if m_disp:
-                    u_disp = m_disp.group(1)
+                    u_disp = m_disp.group(1).strip()
                     if u_disp.lower() not in ("null", "none", "unknown", "guest", "false", "true", "undefined", "default", "roblox", "client", "activity", "mainactivity"):
                         batch_live_users[target_pkg] = u_disp
                         batch_is_exact[target_pkg] = False

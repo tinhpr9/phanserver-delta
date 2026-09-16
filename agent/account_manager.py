@@ -1658,7 +1658,18 @@ def write_cookie_to_package(package: str, cookie_value: str, base_data_dir: str 
     except Exception:
         pass
 
+    # Stop package before modifying sqlite database to avoid lock / overwrite
+    is_android_env = (base_data_dir == "/data/data") and (os.path.exists("/system/bin/am") or os.path.exists("/system/bin/su") or os.path.exists("/system/xbin/su"))
+    if is_android_env:
+        try:
+            subprocess.run(["am", "force-stop", package], capture_output=True, timeout=5)
+            subprocess.run(["su", "-c", f"am force-stop {package}"], capture_output=True, timeout=5)
+        except Exception:
+            pass
+
     # Try direct sqlite3 first
+    sqlite_ok = False
+    sqlite_status = "error"
     try:
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
@@ -1709,7 +1720,8 @@ def write_cookie_to_package(package: str, cookie_value: str, base_data_dir: str 
             """, (now_chrome, clean_cookie, expires_chrome, now_chrome, now_chrome))
         conn.commit()
         conn.close()
-        return True, "sqlite_success"
+        sqlite_ok = True
+        sqlite_status = "sqlite_success"
     except Exception as e:
         # Fallback to root command if running with non-root UID
         try:
@@ -1724,10 +1736,31 @@ def write_cookie_to_package(package: str, cookie_value: str, base_data_dir: str 
             shell_cmd = f"su -c \"python3 -c \\\"{py_code}\\\"\""
             res = subprocess.run(shell_cmd, shell=True, capture_output=True, text=True, timeout=10)
             if res.returncode == 0:
-                return True, "su_success"
+                sqlite_ok = True
+                sqlite_status = "su_success"
+            else:
+                sqlite_status = str(e)
+        except Exception:
+            sqlite_status = str(e)
+
+    if sqlite_ok and is_android_env:
+        # Ensure correct permissions and restore app session
+        try:
+            su_fix_cmd = (
+                f"chmod 660 '{db_path}' 2>/dev/null; "
+                f"p_uid=$(stat -c %u:%g '{os.path.dirname(os.path.dirname(db_path))}' 2>/dev/null || echo ''); "
+                f"[ -n \"$p_uid\" ] && chown $p_uid '{db_path}' 2>/dev/null; true"
+            )
+            subprocess.run(["su", "-c", su_fix_cmd], capture_output=True, timeout=5)
         except Exception:
             pass
-        return False, str(e)
+        try:
+            subprocess.run(["am", "start", "-n", f"{package}/com.roblox.client.ActivityProtocolLaunch"], capture_output=True, timeout=5)
+            subprocess.run(["monkey", "-p", package, "-c", "android.intent.category.LAUNCHER", "1"], capture_output=True, timeout=5)
+        except Exception:
+            pass
+
+    return sqlite_ok, sqlite_status
 
 
 def auto_login_unlogged_tabs(device_id: str, base_dir: str = None, base_data_dir: str = "/data/data") -> dict:
@@ -1903,9 +1936,28 @@ def auto_login_unlogged_tabs(device_id: str, base_dir: str = None, base_data_dir
             raw_l = acc["raw_line"]
             cookie_val = raw_l[raw_l.index("_|WARNING:"):].strip()
 
-        # Write cookie to package
+        # Write cookie to package and push to device cookie.txt
         cookie_written = False
         if cookie_val:
+            # Push cookie to device cookie.txt for native tool compatibility
+            device_cookie_targets = [
+                "/storage/emulated/0/Download/cookie.txt",
+                os.path.join(bdir, "cookie.txt"),
+                os.path.join(bdir, "Cookies.txt"),
+            ]
+            for ctarget in device_cookie_targets:
+                try:
+                    os.makedirs(os.path.dirname(ctarget), exist_ok=True)
+                    with open(ctarget, "w", encoding="utf-8") as cf:
+                        cf.write(f"{cookie_val}\n")
+                except Exception:
+                    pass
+                if base_data_dir == "/data/data" and (os.path.exists("/system/bin/su") or os.path.exists("/system/xbin/su")):
+                    try:
+                        subprocess.run(["su", "-c", f'echo "{cookie_val}" > "{ctarget}"'], capture_output=True, timeout=5)
+                    except Exception:
+                        pass
+
             cookie_written, _ = write_cookie_to_package(pkg, cookie_val, base_data_dir=base_data_dir)
 
         # Record into tab_accounts mapping
