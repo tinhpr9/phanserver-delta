@@ -107,6 +107,27 @@ class TestDnsFallback(unittest.TestCase):
         dns_fallback.install_dns_fallback()
         self.assertEqual(socket.getaddrinfo, dns_fallback.resilient_getaddrinfo)
 
+    def test_preseed_instant_resolution(self):
+        dns_fallback.install_dns_fallback(preseed_hosts=["custom-worker.workers.dev"])
+        with patch.object(dns_fallback, "_original_getaddrinfo") as mock_orig:
+            res = dns_fallback.resilient_getaddrinfo("custom-worker.workers.dev", 443)
+            self.assertEqual(mock_orig.call_count, 0)
+            self.assertTrue(len(res) > 0)
+            self.assertEqual(res[0][4][0], dns_fallback.CLOUDFLARE_ANYCAST_IPS[0])
+
+    def test_timeout_fallback_on_slow_system_resolver(self):
+        def hanging_getaddrinfo(*args, **kwargs):
+            time.sleep(2.5)
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("1.2.3.4", 80))]
+
+        with patch.object(dns_fallback, "_original_getaddrinfo", side_effect=hanging_getaddrinfo):
+            with patch.object(dns_fallback, "resolve_with_fallback", return_value=["104.21.57.53"]):
+                start = time.time()
+                res = dns_fallback.resilient_getaddrinfo("slow-domain.com", 80)
+                elapsed = time.time() - start
+                self.assertLess(elapsed, 2.2)
+                self.assertEqual(res[0][4][0], "104.21.57.53")
+
 
 if __name__ == "__main__":
     unittest.main()

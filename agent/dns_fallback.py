@@ -14,6 +14,7 @@ Provides:
 3. Thread-safe in-memory caching with TTL to avoid redundant lookups.
 """
 
+import concurrent.futures
 import random
 import socket
 import struct
@@ -24,9 +25,11 @@ from typing import Any, List, Optional, Tuple
 PUBLIC_DNS_SERVERS = ["8.8.8.8", "1.1.1.1", "8.8.4.4", "9.9.9.9"]
 CLOUDFLARE_ANYCAST_IPS = ["172.67.159.108", "104.21.57.53", "104.21.80.1", "104.26.12.181"]
 DNS_CACHE_TTL_SECONDS = 300.0
+DEFAULT_PRESEED_HOSTS = ["phanserver-delta-worker.tinh1020pr.workers.dev"]
 
 _dns_cache_lock = threading.Lock()
 _dns_cache: dict[str, Tuple[List[str], float]] = {}
+_dns_executor = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="dns_fallback")
 
 
 def query_dns_udp(host: str, dns_server: str, timeout: float = 1.5) -> List[str]:
@@ -167,26 +170,54 @@ def resilient_getaddrinfo(host: Any, port: Any, family: int = 0, type: int = 0, 
     if not host or not isinstance(host, str) or _is_ip_address(host):
         return _original_getaddrinfo(host, port, family, type, proto, flags)
 
-    try:
-        return _original_getaddrinfo(host, port, family, type, proto, flags)
-    except socket.gaierror as orig_err:
-        target_port = _normalize_port(port)
-        sock_type = type if type != 0 else socket.SOCK_STREAM
-        sock_proto = proto if proto != 0 else (socket.IPPROTO_TCP if sock_type == socket.SOCK_STREAM else socket.IPPROTO_UDP)
+    target_port = _normalize_port(port)
+    sock_type = type if type != 0 else socket.SOCK_STREAM
+    sock_proto = proto if proto != 0 else (socket.IPPROTO_TCP if sock_type == socket.SOCK_STREAM else socket.IPPROTO_UDP)
 
+    # Check cache first for instant resolution without blocking
+    now = time.time()
+    with _dns_cache_lock:
+        if host in _dns_cache:
+            ips, expires = _dns_cache[host]
+            if expires > now and ips:
+                return [(socket.AF_INET, sock_type, sock_proto, "", (ip, target_port)) for ip in ips]
+
+    # Try original getaddrinfo with 1.5s timeout to prevent Android libc Bionic hang
+    try:
+        future = _dns_executor.submit(_original_getaddrinfo, host, port, family, type, proto, flags)
+        res = future.result(timeout=1.5)
+        # Cache successful IPv4 results
+        ips = []
+        for item in res:
+            if item[0] == socket.AF_INET and item[4] and item[4][0] not in ips:
+                ips.append(item[4][0])
+        if ips:
+            with _dns_cache_lock:
+                _dns_cache[host] = (ips, now + DNS_CACHE_TTL_SECONDS)
+        return res
+    except (socket.gaierror, concurrent.futures.TimeoutError, Exception) as orig_err:
         recovered_ips = resolve_with_fallback(host)
         if recovered_ips:
             print(f"[AGENT] [DNS-FALLBACK] Đã khôi phục kết nối cho '{host}' -> {recovered_ips}", flush=True)
-            results = []
-            for ip in recovered_ips:
-                results.append((socket.AF_INET, sock_type, sock_proto, "", (ip, target_port)))
-            return results
+            return [(socket.AF_INET, sock_type, sock_proto, "", (ip, target_port)) for ip in recovered_ips]
 
-        raise orig_err
+        if isinstance(orig_err, socket.gaierror):
+            raise orig_err
+        raise socket.gaierror(getattr(socket, "EAI_NONAME", -2), f"Resolution timeout or failure for {host}: {orig_err}")
 
 
-def install_dns_fallback() -> None:
-    """Install resilient_getaddrinfo as the global socket.getaddrinfo hook."""
+def install_dns_fallback(preseed_hosts: Optional[List[str]] = None) -> None:
+    """Install resilient_getaddrinfo as the global socket.getaddrinfo hook and preseed worker hosts."""
+    targets = list(DEFAULT_PRESEED_HOSTS)
+    if preseed_hosts:
+        targets.extend(preseed_hosts)
+
+    now = time.time()
+    with _dns_cache_lock:
+        for h in targets:
+            if h not in _dns_cache:
+                _dns_cache[h] = (list(CLOUDFLARE_ANYCAST_IPS), now + 86400.0)
+
     if getattr(socket, "_phanserver_dns_fallback_installed", False):
         return
     socket.getaddrinfo = resilient_getaddrinfo
