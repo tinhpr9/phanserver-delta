@@ -869,6 +869,49 @@ ReserveUser4:Pass104
         self.assertEqual(res["removed_from_acc"], 1)
         self.assertEqual(res["sync_result"], {"acc.txt": "OK", "Data_Tong_Cookies.txt": "OK"})
 
+    @patch("agent.account_manager.check_zeropoint_cookie_status")
+    @patch("agent.account_manager.sync_to_google_drive")
+    def test_run_full_checkban_pipeline_syncs_with_tab_accounts_json(self, mock_sync, mock_zp):
+        """Kiểm tra khi chạy checkban trên máy, pipeline tự động đồng bộ acc.txt theo tab_accounts.json thực tế."""
+        mock_sync.return_value = {"acc.txt": "OK", "Data_Tong_Cookies.txt": "OK"}
+        active_users = [f"ActiveTabUser{i}" for i in range(1, 11)]
+        mock_zp.return_value = {u: {"status": "ALIVE", "reason": "ZeroPoint: alive"} for u in active_users}
+
+        # Tạo tab_accounts.json với 10 tài khoản thực tế
+        tab_map = {f"com.roblox.client{i if i > 0 else ''}": active_users[i] for i in range(10)}
+        with open(os.path.join(self.test_dir, "tab_accounts.json"), "w", encoding="utf-8") as f:
+            json.dump(tab_map, f)
+
+        # acc.txt cũ có tài khoản ma/stale đã bị thay thế từ trước
+        with open(self.acc_file, "w", encoding="utf-8") as f:
+            f.write(
+                "M77___(gag2)\n"
+                "StaleGhostUser1:p1:\n"
+                "StaleGhostUser2:p2:\n"
+                + "\n".join(f"{u}:p_{u}" for u in active_users[:8])
+                + "\n"
+            )
+
+        # Tạo cookie cho 10 active accounts
+        with open(self.data_tong_file, "w", encoding="utf-8") as f:
+            for u in active_users:
+                f.write(f"{u}:pwd:_|WARNING:cookie_{u}\n")
+
+        report = run_full_checkban_pipeline("m77", base_dir=self.test_dir, device_id="m77", pull_drive=False)
+        self.assertEqual(report["total"], 10)
+        self.assertEqual(report["live"], 10)
+        self.assertEqual(report["dead"], 0)
+        self.assertEqual(report["banned"], 0)
+
+        # Kiểm tra acc.txt đã được dọn sạch StaleGhostUser và có đủ 10 ActiveTabUser
+        with open(self.acc_file, "r", encoding="utf-8") as f:
+            acc_c = f.read()
+        self.assertNotIn("StaleGhostUser1", acc_c)
+        self.assertNotIn("StaleGhostUser2", acc_c)
+        for u in active_users:
+            self.assertIn(u, acc_c)
+
 
 if __name__ == "__main__":
     unittest.main()
+

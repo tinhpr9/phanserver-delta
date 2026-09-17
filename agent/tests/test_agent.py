@@ -176,7 +176,7 @@ class TestDeviceAgent(unittest.TestCase):
         self.assertTrue(agent.handle_incoming_batch_action(
             msg, "m72", "https://mock/report", "sec", state, self.state_path, self.links_path
         ))
-        mock_pipeline.assert_called_once_with("m77")
+        mock_pipeline.assert_called_once_with("m77", device_id="m72")
         self.assertEqual(mock_ack.call_args.kwargs["batch_action"], "CHECK_BAN")
         self.assertEqual(mock_ack.call_args.kwargs["status"], "OPENED")
         self.assertTrue(mock_ack.call_args.kwargs["executed"])

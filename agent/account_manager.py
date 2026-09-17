@@ -640,11 +640,14 @@ def clean_banned_accounts(m_code_or_target, banned_usernames, base_dir=None, cat
                     continue
                 user = line_str.split(":")[0].strip().lower()
                 if user in banned_set:
-                    archived_full_lines.append(line_str)
                     user_cat = cat_map.get(user, "BANNED")
-                    if user_cat not in archived_by_category:
-                        user_cat = "BANNED"
-                    archived_by_category[user_cat].append(line_str)
+                    if user_cat in ("KEEP", "PRESERVE"):
+                        cleaned_data_tong_lines.append(line_str)
+                    else:
+                        archived_full_lines.append(line_str)
+                        if user_cat not in archived_by_category:
+                            user_cat = "BANNED"
+                        archived_by_category[user_cat].append(line_str)
                 else:
                     cleaned_data_tong_lines.append(line_str)
 
@@ -1384,7 +1387,7 @@ def sync_to_google_drive(base_dir=None, verify_rule34=True, sync_data_tong=True)
     return sync_results
 
 
-def run_full_checkban_pipeline(target, base_dir=None, auto_replace=True, use_cache=True, cache_ttl=DEFAULT_CACHE_TTL, use_zeropoint=True, pull_drive=True):
+def run_full_checkban_pipeline(target, base_dir=None, auto_replace=True, use_cache=True, cache_ttl=DEFAULT_CACHE_TTL, use_zeropoint=True, pull_drive=True, device_id=None):
     """
     Thực hiện trọn gói pipeline checkban:
     1. Trích xuất danh sách tài khoản theo target (m77, all, unassigned hoặc danh sách usernames).
@@ -1449,7 +1452,74 @@ def run_full_checkban_pipeline(target, base_dir=None, auto_replace=True, use_cac
                 usernames_to_check.append(acc["username"])
         else:
             sec = sections.get(target_lower)
-            if not sec or not sec["accounts"]:
+            # Kiểm tra nếu đang chạy trực tiếp trên thiết bị (hoặc target là device_id hiện tại)
+            # và có tệp tab_accounts.json lưu vết 10 tab đang chạy thực tế
+            tab_map_file = paths.get("tab_map_file", os.path.join(paths["base_dir"], "tab_accounts.json"))
+            if not os.path.exists(tab_map_file) and base_dir is None:
+                for cand_map in ["/storage/emulated/0/Download/Shouko/tab_accounts.json", "/storage/emulated/0/Download/tab_accounts.json"]:
+                    if os.path.exists(cand_map):
+                        tab_map_file = cand_map
+                        break
+
+            active_tab_users = []
+            is_target_current_device = (
+                (device_id is not None and device_id.lower() == target_lower)
+                or (device_id is None and is_single_m and os.path.exists(tab_map_file))
+            )
+            if is_target_current_device and os.path.exists(tab_map_file):
+                try:
+                    with open(tab_map_file, "r", encoding="utf-8", errors="ignore") as tf:
+                        tab_data = json.load(tf)
+                    if isinstance(tab_data, dict):
+                        for pkg, u in tab_data.items():
+                            u_clean = re.sub(r"\s*\(.*?\)$", "", str(u or "")).strip()
+                            if is_valid_roblox_username(u_clean):
+                                active_tab_users.append(u_clean)
+                except Exception as e:
+                    print(f"[CHECK_BAN] Lỗi đọc tab_map_file: {e}", flush=True)
+
+            if active_tab_users and len(active_tab_users) >= 8:
+                # Đảm bảo section target_lower trong acc.txt khớp với các tài khoản đang chạy trên tab thiết bị
+                sec_users = [acc["username"] for acc in (sec["accounts"] if sec and sec.get("accounts") else [])]
+                sec_user_set = {u.lower() for u in sec_users}
+                active_set = {u.lower() for u in active_tab_users}
+
+                # Nếu section trong acc.txt có tài khoản cũ không còn trên tab hoặc thiếu tài khoản mới
+                if sec_user_set != active_set:
+                    stale_users = [u for u in sec_users if u.lower() not in active_set]
+                    new_users = [u for u in active_tab_users if u.lower() not in sec_user_set]
+                    if stale_users:
+                        try:
+                            clean_banned_accounts(target_lower, stale_users, base_dir=base_dir, categories_map={u: "DEAD" for u in stale_users})
+                        except Exception as e:
+                            print(f"[CHECK_BAN] Lỗi dọn stale accounts trong acc.txt: {e}", flush=True)
+                    if new_users:
+                        new_pwd_map = {}
+                        if os.path.exists(data_tong_file):
+                            try:
+                                with open(data_tong_file, "r", encoding="utf-8", errors="ignore") as dtf:
+                                    for line in dtf:
+                                        if ":" in line:
+                                            p = line.strip().split(":")
+                                            u_n = p[0].strip().lower()
+                                            if u_n in {nu.lower() for nu in new_users} and len(p) > 1:
+                                                new_pwd_map[u_n] = p[1].strip()
+                            except Exception:
+                                pass
+                        try:
+                            add_accounts(target_lower, [f"{u}:{new_pwd_map.get(u.lower(), '')}" for u in new_users], base_dir=base_dir)
+                        except Exception as e:
+                            print(f"[CHECK_BAN] Lỗi bổ sung active accounts vào acc.txt: {e}", flush=True)
+                    if (stale_users or new_users) and base_dir is None:
+                        try:
+                            sync_to_google_drive(base_dir=base_dir)
+                        except Exception:
+                            pass
+                usernames_to_check = list(active_tab_users)
+            elif sec and sec.get("accounts"):
+                for acc in sec["accounts"]:
+                    usernames_to_check.append(acc["username"])
+            else:
                 return {
                     "target": target.upper(),
                     "total": 0,
@@ -1462,8 +1532,6 @@ def run_full_checkban_pipeline(target, base_dir=None, auto_replace=True, use_cac
                     "banned_list": [],
                     "message": f"Không tìm thấy tài khoản nào trong dàn {target.upper()} trong acc.txt."
                 }
-            for acc in sec["accounts"]:
-                usernames_to_check.append(acc["username"])
     else:
         # Target là danh sách username rời (phân tách bởi khoảng trắng hoặc dấu phẩy)
         usernames_to_check = [u.strip() for u in re.split(r"[\s,]+", target) if u.strip()]
@@ -1522,27 +1590,36 @@ def run_full_checkban_pipeline(target, base_dir=None, auto_replace=True, use_cac
                 if c:
                     user_cookie_map[u_norm] = c
 
-    # Nếu usernames_to_check không có cookie nào trong Data_Tong cục bộ, kéo lại từ Google Drive
-    found_any = any(u.lower() in user_cookie_map for u in usernames_to_check)
-    if not found_any and usernames_to_check:
-        pull_from_google_drive(base_dir, force=True)
-        if os.path.exists(data_tong_file):
-            with open(data_tong_file, "r", encoding="utf-8", errors="ignore") as f:
-                for line in f:
-                    line_str = line.strip()
-                    if not line_str or ":" not in line_str:
-                        continue
-                    parts = line_str.split(":", 1)
-                    u_norm = parts[0].strip().lower()
-                    c = ""
-                    if "_|WARNING:" in line_str:
-                        c = line_str[line_str.index("_|WARNING:"):].strip()
-                    elif len(parts) > 1 and ":" in parts[1]:
-                        c = ":".join(parts[1].split(":")[1:]).strip()
-                    else:
-                        c = parts[1].strip() if len(parts) > 1 else ""
-                    if c:
-                        user_cookie_map[u_norm] = c
+    # Nếu có bất kỳ username nào cần check mà chưa có cookie trong user_cookie_map,
+    # hoặc ở môi trường production (base_dir is None) mà chưa có cookie nào, kéo lại từ Google Drive
+    missing_any_cookie = any(u.lower() not in user_cookie_map for u in usernames_to_check)
+    if pull_drive and usernames_to_check and (missing_any_cookie or not user_cookie_map):
+        try:
+            pull_from_google_drive(base_dir, force=True)
+            if os.path.exists(data_tong_file):
+                with open(data_tong_file, "r", encoding="utf-8", errors="ignore") as f:
+                    for line in f:
+                        line_str = line.strip()
+                        if not line_str or ":" not in line_str:
+                            continue
+                        parts = line_str.split(":")
+                        u_norm = parts[0].strip().lower()
+                        pwd_cand = parts[1].strip() if len(parts) > 1 else ""
+                        if pwd_cand and u_norm not in user_pwd_map:
+                            user_pwd_map[u_norm] = pwd_cand
+                        c = ""
+                        if "_|WARNING:" in line_str:
+                            c = line_str[line_str.index("_|WARNING:"):].strip()
+                        elif len(parts) > 2:
+                            c = ":".join(parts[2:]).strip()
+                        elif len(parts) > 1 and ":" in parts[1]:
+                            c = ":".join(parts[1].split(":")[1:]).strip()
+                        else:
+                            c = parts[1].strip() if len(parts) > 1 else ""
+                        if c:
+                            user_cookie_map[u_norm] = c
+        except Exception as e:
+            print(f"[CHECK_BAN] Cảnh báo pull Data_Tong từ Google Drive: {e}", flush=True)
 
     # 3. Kiểm tra qua ZeroPoint CookieChecker API và Roblox Direct Cookie Authentication
     zp_input = {}
@@ -2300,6 +2377,33 @@ def auto_login_unlogged_tabs(
         except Exception:
             pass
 
+    # Dọn dẹp các tài khoản cũ bị thay thế khỏi acc.txt của thiết bị
+    replaced_old_users = []
+    cat_map = {}
+    for item in newly_logged:
+        r_str = str(item.get("replaced_reason", "")).strip()
+        m = re.search(r":\s*([^\s:]+)", r_str)
+        if m:
+            old_u = m.group(1).strip()
+            if is_valid_roblox_username(old_u) and old_u.lower() != item["username"].lower():
+                replaced_old_users.append(old_u)
+                if "banned" in r_str.lower():
+                    cat_map[old_u] = "BANNED"
+                elif "dead" in r_str.lower():
+                    cat_map[old_u] = "DEAD"
+                elif "face" in r_str.lower():
+                    cat_map[old_u] = "FACE_LOCK"
+                elif "captcha" in r_str.lower():
+                    cat_map[old_u] = "CAPTCHA_LOCK"
+                else:
+                    cat_map[old_u] = "KEEP"
+
+    if replaced_old_users:
+        try:
+            clean_banned_accounts(device_id, replaced_old_users, base_dir=base_dir, categories_map=cat_map)
+        except Exception as e:
+            print(f"[AUTO_LOGIN] Cảnh báo dọn dẹp tài khoản cũ bị thay thế: {e}", flush=True)
+
     # Record newly replenished accounts into dev_section in acc.txt so they are permanently tracked
     replenished_to_acc = [
         f"{item['username']}:{item.get('password', '')}"
@@ -2311,6 +2415,13 @@ def auto_login_unlogged_tabs(
             add_accounts(device_id, replenished_to_acc, base_dir=base_dir)
         except Exception:
             pass
+
+    # Đồng bộ acc.txt lên Google Drive ở môi trường production
+    if newly_logged and (replaced_old_users or replenished_to_acc) and base_dir is None:
+        try:
+            sync_to_google_drive(base_dir=base_dir)
+        except Exception as e:
+            print(f"[AUTO_LOGIN] Cảnh báo sync Google Drive: {e}", flush=True)
 
     banned_replaced = sum(1 for item in newly_logged if "banned" in item.get("replaced_reason", ""))
     dead_replaced = sum(1 for item in newly_logged if "dead" in item.get("replaced_reason", ""))

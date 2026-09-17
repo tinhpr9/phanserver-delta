@@ -2227,7 +2227,7 @@ def handle_incoming_batch_action(
             return True
         try:
             target = message.get("target") or "all"
-            result_data = account_manager.run_full_checkban_pipeline(target)
+            result_data = account_manager.run_full_checkban_pipeline(target, device_id=device_id)
             status = "OPENED"
             executed = True
             err_msg = None

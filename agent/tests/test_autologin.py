@@ -466,6 +466,50 @@ class TestAutoLogin(unittest.TestCase):
         acc_text = acc_file.read_text(encoding="utf-8")
         self.assertIn("DataTongUser99:pwd_dt99", acc_text)
 
+    def test_auto_login_cleans_replaced_accounts_from_acc_txt(self):
+        """Kiểm tra khi thay thế tài khoản dead/facelock, tài khoản cũ bị gỡ hoàn toàn khỏi acc.txt."""
+        dead_file = self.base_dir / "acc_dead_cookies.txt"
+        dead_file.write_text("OldDeadUser:p_dead:_|WARNING:dead_ck\n", encoding="utf-8")
+        face_file = self.base_dir / "acc_face_lock.txt"
+        face_file.write_text("OldFaceUser:p_face:_|WARNING:face_ck\n", encoding="utf-8")
+
+        tab_map_file = self.base_dir / "tab_accounts.json"
+        tab_map_file.write_text(json.dumps({
+            "com.tinh.vv.hi": "KeepUser1",
+            "com.tinh.vv.hj": "OldDeadUser",
+            "com.tinh.vv.hk": "OldFaceUser",
+        }), encoding="utf-8")
+
+        acc_file = self.base_dir / "acc.txt"
+        acc_file.write_text(
+            "M77___(gag2)\n"
+            "KeepUser1:p1\n"
+            "OldDeadUser:p_dead\n"
+            "OldFaceUser:p_face\n",
+            encoding="utf-8"
+        )
+
+        dt_file = self.base_dir / "Data_Tong_Cookies.txt"
+        dt_file.write_text(
+            "NewCandidateA:pwdA:_|WARNING:ckA\n"
+            "NewCandidateB:pwdB:_|WARNING:ckB\n",
+            encoding="utf-8"
+        )
+
+        res = account_manager.auto_login_unlogged_tabs(
+            "m77", base_dir=str(self.base_dir), base_data_dir=str(self.data_dir)
+        )
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["total_logged"], 2)
+
+        # Kiểm tra acc.txt: phải có NewCandidateA và NewCandidateB, không còn OldDeadUser và OldFaceUser
+        updated_acc = acc_file.read_text(encoding="utf-8")
+        self.assertIn("NewCandidateA:pwdA", updated_acc)
+        self.assertIn("NewCandidateB:pwdB", updated_acc)
+        self.assertNotIn("OldDeadUser", updated_acc)
+        self.assertNotIn("OldFaceUser", updated_acc)
+
 
 if __name__ == "__main__":
     unittest.main()
+
