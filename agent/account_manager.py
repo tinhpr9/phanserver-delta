@@ -1219,6 +1219,53 @@ def replace_banned_accounts_from_reserve(m_code, num_needed, base_dir=None, rese
 
             remaining_reserve_lines = remaining_valid
 
+        # Nếu kho dự trữ cục bộ không đủ, ưu tiên kéo bù từ Data_Tong_Cookies.txt (Cloud SSOT trên Google Drive)
+        if len(selected_replacements) < num_needed:
+            dt_file = paths.get("data_tong_file")
+            if dt_file and os.path.exists(dt_file) and os.path.getsize(dt_file) > 0:
+                all_allocated_acc = set()
+                acc_file = paths.get("acc_file")
+                if acc_file and os.path.exists(acc_file):
+                    try:
+                        with open(acc_file, "r", encoding="utf-8", errors="ignore") as af:
+                            acc_secs = parse_acc_sections(af.read())
+                            for s_v in acc_secs.values():
+                                for a in s_v.get("accounts", []):
+                                    if a.get("username"):
+                                        all_allocated_acc.add(a["username"].strip().lower())
+                    except Exception:
+                        pass
+
+                defective_all = set()
+                for k in ["acc_bi_ban_file", "acc_face_lock_file", "acc_dead_cookies_file", "acc_captcha_lock_file"]:
+                    fpath = paths.get(k)
+                    if fpath and os.path.exists(fpath):
+                        with open(fpath, "r", encoding="utf-8", errors="ignore") as df:
+                            for l in df:
+                                if ":" in l:
+                                    defective_all.add(l.strip().split(":")[0].strip().lower())
+
+                try:
+                    with open(dt_file, "r", encoding="utf-8", errors="ignore") as dtf:
+                        for line in dtf:
+                            stripped = line.strip()
+                            if not stripped or stripped.startswith(("#", "<", "{", "[")) or ":" not in stripped:
+                                continue
+                            parts = stripped.split(":")
+                            u_cand = parts[0].strip()
+                            u_lower = u_cand.lower()
+                            if (
+                                is_valid_roblox_username(u_cand)
+                                and u_lower not in defective_all
+                                and u_lower not in all_allocated_acc
+                                and not any(u_lower == sel.split(":")[0].strip().lower() for sel in selected_replacements if ":" in sel)
+                            ):
+                                selected_replacements.append(stripped)
+                                if len(selected_replacements) >= num_needed:
+                                    break
+                except Exception:
+                    pass
+
     if not selected_replacements:
         return {
             "m_code": m_code.upper(),
@@ -1885,15 +1932,27 @@ def auto_login_unlogged_tabs(
     dev_accounts = dev_section.get("accounts", [])
     dev_usernames = {acc["username"].strip().lower() for acc in dev_accounts if acc.get("username")}
 
+    other_dev_usernames = {
+        acc["username"].strip().lower()
+        for s_k, s_val in sections.items()
+        if s_k != dev_key
+        for acc in s_val.get("accounts", [])
+        if acc.get("username")
+    }
+
     # Read reserve usernames to recognize legitimate reserve accounts already assigned
     reserve_usernames = set()
     if base_dir:
         res_check_files = [
+            paths.get("data_tong_file", os.path.join(bdir, "Data_Tong_Cookies.txt")),
             paths.get("acc_du_phong_file", os.path.join(bdir, "acc_du_phong.txt")),
             os.path.join(bdir, "acc_khong_trung_moi.txt"),
         ]
     else:
         res_check_files = [
+            paths.get("data_tong_file", os.path.join(bdir, "Data_Tong_Cookies.txt")),
+            "/storage/emulated/0/Download/Shouko/Data_Tong_Cookies.txt",
+            "/storage/emulated/0/Download/Data_Tong_Cookies.txt",
             paths.get("acc_du_phong_file", os.path.join(bdir, "acc_du_phong.txt")),
             os.path.join(bdir, "acc_khong_trung_moi.txt"),
             "/storage/emulated/0/Download/acc_du_phong.txt",
@@ -1909,7 +1968,7 @@ def auto_login_unlogged_tabs(
                         l_s = line.strip()
                         if l_s and ":" in l_s and not l_s.startswith(("#", "<", "{", "[")):
                             cand_u = l_s.split(":")[0].strip()
-                            if is_valid_roblox_username(cand_u):
+                            if is_valid_roblox_username(cand_u) and cand_u.lower() not in other_dev_usernames:
                                 reserve_usernames.add(cand_u.lower())
             except Exception:
                 pass
@@ -1954,89 +2013,11 @@ def auto_login_unlogged_tabs(
             "message": f"Tất cả 10 tab trên {device_id.upper()} đều đã có tài khoản sạch hợp lệ, không có tab nào bị ban."
         }
 
-    # 3. Candidate accounts from dev_section that are clean and not yet assigned to any valid tab
-    candidate_accounts = [
-        acc for acc in dev_section["accounts"]
-        if is_valid_roblox_username(acc.get("username", ""))
-        and acc["username"].strip().lower() not in assigned_valid_usernames
-        and acc["username"].strip().lower() not in problematic_usernames
-    ]
-
-    # If dev_section does not have enough clean candidates, replenish from reserve files
-    if len(candidate_accounts) < len(tabs_to_login):
-        known_cand_users = {acc["username"].strip().lower() for acc in candidate_accounts}
-        if base_dir:
-            reserve_files = [
-                paths.get("acc_du_phong_file", os.path.join(bdir, "acc_du_phong.txt")),
-                os.path.join(bdir, "acc_khong_trung_moi.txt"),
-            ]
-        else:
-            reserve_files = [
-                paths.get("acc_du_phong_file", os.path.join(bdir, "acc_du_phong.txt")),
-                os.path.join(bdir, "acc_khong_trung_moi.txt"),
-                "/storage/emulated/0/Download/acc_du_phong.txt",
-                "/storage/emulated/0/Download/acc_khong_trung_moi.txt",
-                "/storage/emulated/0/Download/Shouko/acc_du_phong.txt",
-                "/storage/emulated/0/Download/Shouko/acc_khong_trung_moi.txt",
-            ]
-        for rf in reserve_files:
-            if not os.path.exists(rf):
-                continue
-            try:
-                with open(rf, "r", encoding="utf-8", errors="ignore") as f:
-                    for line in f:
-                        line_s = line.strip()
-                        if not line_s or line_s.startswith(("#", "<", "{", "[")):
-                            continue
-                        parts = line_s.split(":")
-                        u_cand = parts[0].strip()
-                        u_cand_lower = u_cand.lower()
-                        if (
-                            is_valid_roblox_username(u_cand)
-                            and len(parts) >= 2
-                            and len(parts[1].strip()) >= 3
-                            and u_cand_lower not in assigned_valid_usernames
-                            and u_cand_lower not in problematic_usernames
-                            and u_cand_lower not in known_cand_users
-                        ):
-                            candidate_accounts.append({
-                                "username": u_cand,
-                                "password": parts[1].strip() if len(parts) > 1 else "",
-                                "raw_line": line_s,
-                            })
-                            known_cand_users.add(u_cand_lower)
-                            if len(candidate_accounts) >= len(tabs_to_login):
-                                break
-            except Exception:
-                pass
-            if len(candidate_accounts) >= len(tabs_to_login):
-                break
-
-    if not candidate_accounts:
-        banned_tabs_count = sum(1 for _, _, r in tabs_to_login if "banned" in r)
-        dup_tabs_count = sum(1 for _, _, r in tabs_to_login if "duplicate" in r)
-        dead_tabs_count = sum(1 for _, _, r in tabs_to_login if "dead" in r)
-        face_tabs_count = sum(1 for _, _, r in tabs_to_login if "face" in r)
-        alien_tabs_count = sum(1 for _, _, r in tabs_to_login if "not_in_device" in r)
-        empty_tabs_count = sum(1 for _, _, r in tabs_to_login if r == "unassigned")
-        return {
-            "ok": True,
-            "device_id": device_id.upper(),
-            "total_unlogged": len(tabs_to_login),
-            "total_logged": 0,
-            "logged_in": [],
-            "message": (
-                f"Phát hiện {len(tabs_to_login)} tab cần nạp trên {device_id.upper()} "
-                f"({banned_tabs_count} tab ban, {dead_tabs_count} cookie chết, {face_tabs_count} FaceID, {alien_tabs_count} ngoài danh sách, {dup_tabs_count} tab trùng, {empty_tabs_count} tab trống), "
-                f"nhưng không còn tài khoản sạch khả dụng trong mục {device_id.upper()} của acc.txt hay kho dự trữ."
-            )
-        }
-
-    # 4. Load cookie map across all known sources
+    # Load cookie map across all known sources
     cookie_map = {}
     if base_dir:
         cookie_search_files = [
-            os.path.join(bdir, "Data_Tong_Cookies.txt"),
+            paths.get("data_tong_file", os.path.join(bdir, "Data_Tong_Cookies.txt")),
             os.path.join(bdir, "Cookies.txt"),
             os.path.join(bdir, "cookie.txt"),
             paths.get("acc_du_phong_file", os.path.join(bdir, "acc_du_phong.txt")),
@@ -2044,7 +2025,7 @@ def auto_login_unlogged_tabs(
         ]
     else:
         cookie_search_files = [
-            os.path.join(bdir, "Data_Tong_Cookies.txt"),
+            paths.get("data_tong_file", os.path.join(bdir, "Data_Tong_Cookies.txt")),
             os.path.join(bdir, "Cookies.txt"),
             os.path.join(bdir, "cookie.txt"),
             "/storage/emulated/0/Download/Data_Tong_Cookies.txt",
@@ -2076,6 +2057,167 @@ def auto_login_unlogged_tabs(
             except Exception:
                 pass
 
+    # 3. Candidate accounts from dev_section that are clean and not yet assigned to any valid tab
+    candidate_accounts = [
+        acc for acc in dev_section["accounts"]
+        if is_valid_roblox_username(acc.get("username", ""))
+        and acc["username"].strip().lower() not in assigned_valid_usernames
+        and acc["username"].strip().lower() not in problematic_usernames
+    ]
+
+    # If dev_section does not have enough clean candidates, replenish
+    if len(candidate_accounts) < len(tabs_to_login):
+        known_cand_users = {acc["username"].strip().lower() for acc in candidate_accounts}
+        all_allocated_acc_usernames = {
+            acc["username"].strip().lower()
+            for s_val in sections.values()
+            for acc in s_val.get("accounts", [])
+            if acc.get("username")
+        }
+
+        # PRIORITY 1: Data_Tong_Cookies.txt (Cloud SSOT trên Google Drive)
+        if base_dir:
+            dt_files = [
+                paths.get("data_tong_file", os.path.join(bdir, "Data_Tong_Cookies.txt")),
+            ]
+        else:
+            dt_files = [
+                paths.get("data_tong_file", os.path.join(bdir, "Data_Tong_Cookies.txt")),
+                "/storage/emulated/0/Download/Shouko/Data_Tong_Cookies.txt",
+                "/storage/emulated/0/Download/Data_Tong_Cookies.txt",
+            ]
+
+        # Ở chế độ thực tế, đảm bảo Data_Tong_Cookies.txt hiện diện từ Google Drive nếu thiếu
+        if base_dir is None:
+            has_dt = any(os.path.exists(f) and os.path.getsize(f) > 0 for f in dt_files)
+            if not has_dt:
+                try:
+                    pull_from_google_drive(force=False)
+                except Exception:
+                    pass
+
+        for dtf in dt_files:
+            if not os.path.exists(dtf) or os.path.getsize(dtf) == 0:
+                continue
+            try:
+                with open(dtf, "r", encoding="utf-8", errors="ignore") as f:
+                    for line in f:
+                        line_s = line.strip()
+                        if not line_s or line_s.startswith(("#", "<", "{", "[")):
+                            continue
+                        parts = line_s.split(":")
+                        u_cand = parts[0].strip()
+                        u_cand_lower = u_cand.lower()
+                        if (
+                            is_valid_roblox_username(u_cand)
+                            and u_cand_lower not in assigned_valid_usernames
+                            and u_cand_lower not in problematic_usernames
+                            and u_cand_lower not in known_cand_users
+                            and u_cand_lower not in all_allocated_acc_usernames
+                        ):
+                            pwd = parts[1].strip() if len(parts) > 1 else ""
+                            c_val = ""
+                            if "_|WARNING:" in line_s:
+                                c_val = line_s[line_s.index("_|WARNING:"):].strip()
+                            elif len(parts) > 2:
+                                c_val = ":".join(parts[2:]).strip()
+                            candidate_accounts.append({
+                                "username": u_cand,
+                                "password": pwd,
+                                "cookie": c_val,
+                                "raw_line": line_s,
+                                "source": "Data_Tong_Cookies.txt",
+                            })
+                            known_cand_users.add(u_cand_lower)
+                            if c_val and u_cand_lower not in cookie_map:
+                                cookie_map[u_cand_lower] = c_val
+                            if len(candidate_accounts) >= len(tabs_to_login):
+                                break
+            except Exception:
+                pass
+            if len(candidate_accounts) >= len(tabs_to_login):
+                break
+
+        # PRIORITY 2: Legacy reserve files ONLY if Data_Tong did not yield enough candidates
+        if len(candidate_accounts) < len(tabs_to_login):
+            if base_dir:
+                reserve_files = [
+                    paths.get("acc_du_phong_file", os.path.join(bdir, "acc_du_phong.txt")),
+                    os.path.join(bdir, "acc_khong_trung_moi.txt"),
+                ]
+            else:
+                reserve_files = [
+                    paths.get("acc_du_phong_file", os.path.join(bdir, "acc_du_phong.txt")),
+                    os.path.join(bdir, "acc_khong_trung_moi.txt"),
+                    "/storage/emulated/0/Download/acc_du_phong.txt",
+                    "/storage/emulated/0/Download/acc_khong_trung_moi.txt",
+                    "/storage/emulated/0/Download/Shouko/acc_du_phong.txt",
+                    "/storage/emulated/0/Download/Shouko/acc_khong_trung_moi.txt",
+                ]
+            for rf in reserve_files:
+                if not os.path.exists(rf):
+                    continue
+                try:
+                    with open(rf, "r", encoding="utf-8", errors="ignore") as f:
+                        for line in f:
+                            line_s = line.strip()
+                            if not line_s or line_s.startswith(("#", "<", "{", "[")):
+                                continue
+                            parts = line_s.split(":")
+                            u_cand = parts[0].strip()
+                            u_cand_lower = u_cand.lower()
+                            if (
+                                is_valid_roblox_username(u_cand)
+                                and len(parts) >= 2
+                                and len(parts[1].strip()) >= 3
+                                and u_cand_lower not in assigned_valid_usernames
+                                and u_cand_lower not in problematic_usernames
+                                and u_cand_lower not in known_cand_users
+                                and u_cand_lower not in all_allocated_acc_usernames
+                            ):
+                                pwd = parts[1].strip() if len(parts) > 1 else ""
+                                c_val = ""
+                                if "_|WARNING:" in line_s:
+                                    c_val = line_s[line_s.index("_|WARNING:"):].strip()
+                                elif len(parts) > 2:
+                                    c_val = ":".join(parts[2:]).strip()
+                                candidate_accounts.append({
+                                    "username": u_cand,
+                                    "password": pwd,
+                                    "cookie": c_val,
+                                    "raw_line": line_s,
+                                    "source": os.path.basename(rf),
+                                })
+                                known_cand_users.add(u_cand_lower)
+                                if c_val and u_cand_lower not in cookie_map:
+                                    cookie_map[u_cand_lower] = c_val
+                                if len(candidate_accounts) >= len(tabs_to_login):
+                                    break
+                except Exception:
+                    pass
+                if len(candidate_accounts) >= len(tabs_to_login):
+                    break
+
+    if not candidate_accounts:
+        banned_tabs_count = sum(1 for _, _, r in tabs_to_login if "banned" in r)
+        dup_tabs_count = sum(1 for _, _, r in tabs_to_login if "duplicate" in r)
+        dead_tabs_count = sum(1 for _, _, r in tabs_to_login if "dead" in r)
+        face_tabs_count = sum(1 for _, _, r in tabs_to_login if "face" in r)
+        alien_tabs_count = sum(1 for _, _, r in tabs_to_login if "not_in_device" in r)
+        empty_tabs_count = sum(1 for _, _, r in tabs_to_login if r == "unassigned")
+        return {
+            "ok": True,
+            "device_id": device_id.upper(),
+            "total_unlogged": len(tabs_to_login),
+            "total_logged": 0,
+            "logged_in": [],
+            "message": (
+                f"Phát hiện {len(tabs_to_login)} tab cần nạp trên {device_id.upper()} "
+                f"({banned_tabs_count} tab ban, {dead_tabs_count} cookie chết, {face_tabs_count} FaceID, {alien_tabs_count} ngoài danh sách, {dup_tabs_count} tab trùng, {empty_tabs_count} tab trống), "
+                f"nhưng không còn tài khoản sạch khả dụng trong mục {device_id.upper()} của acc.txt hay kho dự trữ."
+            )
+        }
+
     newly_logged = []
     unresolved_tabs = []
     all_new_cookies = []
@@ -2086,7 +2228,7 @@ def auto_login_unlogged_tabs(
             continue
         acc = candidate_accounts.pop(0)
         uname = acc["username"]
-        cookie_val = cookie_map.get(uname.lower())
+        cookie_val = acc.get("cookie") or cookie_map.get(uname.lower())
 
         # If no cookie in file, check if acc line itself contains cookie
         if not cookie_val and "_|WARNING:" in str(acc.get("raw_line", "")):
@@ -2115,6 +2257,8 @@ def auto_login_unlogged_tabs(
             "tab": tab_num,
             "package": pkg,
             "username": uname,
+            "password": pwd,
+            "source": acc.get("source", "acc.txt"),
             "replaced_reason": reason,
             "has_cookie": bool(cookie_val),
             "cookie_written": cookie_written
@@ -2156,6 +2300,18 @@ def auto_login_unlogged_tabs(
         except Exception:
             pass
 
+    # Record newly replenished accounts into dev_section in acc.txt so they are permanently tracked
+    replenished_to_acc = [
+        f"{item['username']}:{item.get('password', '')}"
+        for item in newly_logged
+        if item.get("username", "").strip().lower() not in dev_usernames
+    ]
+    if replenished_to_acc:
+        try:
+            add_accounts(device_id, replenished_to_acc, base_dir=base_dir)
+        except Exception:
+            pass
+
     banned_replaced = sum(1 for item in newly_logged if "banned" in item.get("replaced_reason", ""))
     dead_replaced = sum(1 for item in newly_logged if "dead" in item.get("replaced_reason", ""))
     face_replaced = sum(1 for item in newly_logged if "face" in item.get("replaced_reason", ""))
@@ -2191,7 +2347,9 @@ def auto_login_unlogged_tabs(
         t_num = item["tab"]
         u_name = item["username"]
         r_reason = item.get("replaced_reason", "")
-        msg_lines.append(f"• Tab {t_num}: {u_name} ({r_reason})")
+        src = item.get("source", "")
+        src_tag = f" [từ {src}]" if src and src != "acc.txt" else ""
+        msg_lines.append(f"• Tab {t_num}: {u_name} ({r_reason}){src_tag}")
 
     if tab_numbers_str:
         msg_lines.append(f"\n👉 Các tab cần nạp trên Tool: {tab_numbers_str}")

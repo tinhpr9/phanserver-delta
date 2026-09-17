@@ -393,6 +393,79 @@ class TestAutoLogin(unittest.TestCase):
         self.assertNotIn("letter-spacing", json.dumps(updated_tabs))
         self.assertNotIn("--c-afwt", json.dumps(updated_tabs))
 
+    def test_auto_login_prioritizes_data_tong_cookies_over_legacy_reserve(self):
+        # 1. Setup ban list
+        ban_file = self.base_dir / "acc_bi_ban.txt"
+        ban_file.write_text("BannedInDT:p_ban\n", encoding="utf-8")
+
+        # 2. Setup acc.txt with M77 and M109
+        acc_file = self.base_dir / "acc.txt"
+        acc_file.write_text(
+            "M77___(gag2)\n"
+            "DeviceUser1:pwd1\n"
+            "\n"
+            "M109(gag2)____\n"
+            "OtherDeviceUser:pwd_oth\n",
+            encoding="utf-8"
+        )
+
+        # 3. Setup Data_Tong_Cookies.txt (Cloud SSOT)
+        data_tong_file = self.base_dir / "Data_Tong_Cookies.txt"
+        data_tong_file.write_text(
+            "DataTongUser99:pwd_dt99:_|WARNING:cookie_from_datatong\n"
+            "OtherDeviceUser:pwd_oth:_|WARNING:cookie_oth\n"  # Allocated to M109, must not be stolen!
+            "BannedInDT:p_ban:_|WARNING:cookie_banned\n",    # Banned, must not be picked!
+            encoding="utf-8"
+        )
+
+        # 4. Setup legacy reserve file (acc_khong_trung_moi.txt)
+        legacy_file = self.base_dir / "acc_khong_trung_moi.txt"
+        legacy_file.write_text(
+            "LegacyReserveUser1:pwd_leg1\n",
+            encoding="utf-8"
+        )
+
+        # 5. Tab 1 has DeviceUser1, Tab 2 has AlienUser to replace
+        tab_map_file = self.base_dir / "tab_accounts.json"
+        tab_map_file.write_text(json.dumps({
+            "com.tinh.vv.hi": "DeviceUser1",
+            "com.tinh.vv.hj": "UnknownAlienUser",
+        }), encoding="utf-8")
+
+        res = account_manager.auto_login_unlogged_tabs(
+            "m77", base_dir=str(self.base_dir), base_data_dir=str(self.data_dir)
+        )
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["total_logged"], 2)
+
+        # Tab 2 MUST prioritize DataTongUser99 over LegacyReserveUser1
+        self.assertEqual(res["logged_in"][0]["tab"], 2)
+        self.assertEqual(res["logged_in"][0]["username"], "DataTongUser99")
+        self.assertEqual(res["logged_in"][0]["source"], "Data_Tong_Cookies.txt")
+
+        # Tab 3 fallback to legacy reserve ONLY after Data_Tong has no more candidates
+        self.assertEqual(res["logged_in"][1]["tab"], 3)
+        self.assertEqual(res["logged_in"][1]["username"], "LegacyReserveUser1")
+        self.assertEqual(res["logged_in"][1]["source"], "acc_khong_trung_moi.txt")
+
+        # Verify cookie written to WebView SQLite
+        db_file = self.data_dir / "com.tinh.vv.hj" / "app_webview" / "Default" / "Cookies"
+        self.assertTrue(db_file.is_file())
+        conn = sqlite3.connect(str(db_file))
+        c = conn.cursor()
+        c.execute("SELECT value FROM cookies WHERE name='.ROBLOSECURITY'")
+        row = c.fetchone()
+        conn.close()
+        self.assertEqual(row[0], "_|WARNING:cookie_from_datatong")
+
+        # Verify device cookie.txt has full User:Pass:Cookie format from Data_Tong
+        cookie_txt = self.base_dir / "cookie.txt"
+        self.assertIn("DataTongUser99:pwd_dt99:_|WARNING:cookie_from_datatong", cookie_txt.read_text(encoding="utf-8"))
+
+        # Verify acc.txt recorded DataTongUser99 under M77
+        acc_text = acc_file.read_text(encoding="utf-8")
+        self.assertIn("DataTongUser99:pwd_dt99", acc_text)
+
 
 if __name__ == "__main__":
     unittest.main()
