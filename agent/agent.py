@@ -289,14 +289,7 @@ if [ -z "$IP" ]; then
         TOGGLE_X=$((DIM_W * 88 / 100))
         TOGGLE_Y=$((DIM_H * 8 / 100))
     fi
-    CENTER_X=$((DIM_W / 2))
-    CENTER_Y=$((DIM_H / 2))
-
     input tap "$TOGGLE_X" "$TOGGLE_Y" >/dev/null 2>&1 || true
-    input tap "$CENTER_X" "$CENTER_Y" >/dev/null 2>&1 || true
-    input keyevent KEYCODE_TAB >/dev/null 2>&1 || true
-    input keyevent KEYCODE_ENTER >/dev/null 2>&1 || true
-    input keyevent KEYCODE_DPAD_CENTER >/dev/null 2>&1 || true
 fi
 
 for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
@@ -308,10 +301,8 @@ for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
         break
     fi
     if [ "$i" -eq 4 ] || [ "$i" -eq 8 ] || [ "$i" -eq 12 ]; then
-        if [ -n "$TOGGLE_X" ] && [ -n "$CENTER_X" ]; then
+        if [ -n "$TOGGLE_X" ]; then
             input tap "$TOGGLE_X" "$TOGGLE_Y" >/dev/null 2>&1 || true
-            input tap "$CENTER_X" "$CENTER_Y" >/dev/null 2>&1 || true
-            input keyevent KEYCODE_ENTER >/dev/null 2>&1 || true
         fi
     fi
     sleep 1
