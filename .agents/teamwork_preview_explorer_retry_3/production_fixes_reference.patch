@@ -1,0 +1,25 @@
+--- a/agent/agent.py
++++ b/agent/agent.py
+@@ -703,3 +703,3 @@
+             if mode == "on":
+-                ip_match = re.search(r"100\.\d{1,3}\.\d{1,3}\.\d{1,3}", stdout_text)
++                ip_match = re.search(r"\b100\.\d{1,3}\.\d{1,3}\.\d{1,3}\b", stdout_text)
+                 is_valid_ip = False
+--- a/worker/fleet_state.js
++++ b/worker/fleet_state.js
+@@ -10,2 +10,10 @@
+ 
++export function extractValidTailscaleIp(details) {
++  const match = String(details || "").match(/\b100\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\b/);
++  if (!match) return null;
++  const octets = [Number(match[1]), Number(match[2]), Number(match[3])];
++  if (octets.some((o) => o < 0 || o > 255 || Number.isNaN(o))) return null;
++  return match[0];
++}
++
+@@ -966,4 +974,3 @@
+     // Extract Tailscale CGNAT IP (100.x.y.z)
+-    const ipMatch = String(body.details || "").match(/100\.\d{1,3}\.\d{1,3}\.\d{1,3}/);
+-    const tailscaleIp = ipMatch ? ipMatch[0] : null;
++    const tailscaleIp = extractValidTailscaleIp(body.details);
+ 
