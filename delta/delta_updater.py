@@ -939,6 +939,26 @@ def filter_apks(
                 raise DeltaUpdaterError(f"Không tìm thấy APK nào khớp với '{selection}' trong Release")
             return list(matched_map.values())
 
+    # Keyword with tab index / range (e.g. "arceus:1", "delta:3")
+    if ":" in sel and not (":random" in sel or ":rnd" in sel or sel.startswith("random:")):
+        parts = sel.split(":")
+        kw = parts[0] if parts[0] != "apk" else parts[1]
+        spec = parts[-1]
+        if re.match(r"^\d+(?:-\d+|,\d+)*$", spec):
+            kw_matched = [apk for apk in install_queue if kw in apk.name.lower()]
+            if kw_matched:
+                kw_matched.sort(key=lambda x: (len(x.name), x.name))
+                sub_indices = parse_indices(spec, len(kw_matched))
+                if sub_indices:
+                    return [kw_matched[i] for i in sub_indices]
+
+    # Arceus filter
+    if sel in ("arceus", "arceus_apk", "arceus_app", "apk:arceus"):
+        arceus_matched = [apk for apk in install_queue if "arceus" in apk.name.lower()]
+        if arceus_matched:
+            arceus_matched.sort(key=lambda x: (len(x.name), x.name))
+            return arceus_matched
+
     # Single keyword / App name filter (e.g. "opera", "1.1.1.1", "delta", "roblox")
     matched = [apk for apk in install_queue if sel in apk.name.lower()]
     if not matched:
@@ -1029,6 +1049,36 @@ def filter_assets(
         ]
         if apk_matches:
             return apk_matches
+
+    # Keyword with tab index / range (e.g. "arceus:1", "arceus:1-5", "delta:3")
+    if ":" in sel and not (":random" in sel or ":rnd" in sel or sel.startswith("random:")):
+        parts = sel.split(":")
+        kw = parts[0] if parts[0] != "apk" else parts[1]
+        spec = parts[-1]
+        if re.match(r"^\d+(?:-\d+|,\d+)*$", spec):
+            kw_matches = [
+                a for a in assets
+                if kw in a.get("name", "").lower()
+                and (a.get("kind") == "apk" or a.get("name", "").lower().endswith((".apk", "_apks.zip")))
+                and not a.get("name", "").lower().endswith(("_folderbackup.zip", "_databackup.zip"))
+            ]
+            if kw_matches:
+                kw_matches.sort(key=lambda x: (len(x.get("name", "")), x.get("name", "")))
+                sub_indices = parse_indices(spec, len(kw_matches))
+                if sub_indices:
+                    return [kw_matches[i] for i in sub_indices]
+
+    # Arceus APK aliases (e.g. arceus, arceus_apk, arceus_app, apk:arceus)
+    if sel in ("arceus", "arceus_apk", "arceus_app", "apk:arceus"):
+        arceus_matches = [
+            a for a in assets
+            if "arceus" in a.get("name", "").lower()
+            and (a.get("kind") == "apk" or a.get("name", "").lower().endswith((".apk", "_apks.zip")))
+            and not a.get("name", "").lower().endswith(("_folderbackup.zip", "_databackup.zip"))
+        ]
+        if arceus_matches:
+            arceus_matches.sort(key=lambda x: (len(x.get("name", "")), x.get("name", "")))
+            return arceus_matches
 
     # 1.1.1.1 / WARP / Cloudflare aliases
     if sel in ("1.1.1.1", "warp", "cloudflare", "onedotone", "onedotonedotonedotone"):
