@@ -308,10 +308,19 @@ class TestDeltaUpdater(unittest.TestCase):
             {"name": "Shouko_FolderBackup.zip", "kind": "zip", "url": "https://example.com/shouko.zip"},
             {"name": "Hi_User1_DataBackup.zip", "kind": "zip", "url": "https://example.com/hi.zip"},
         ]
-        # "delta" keyword should match only Delta_FolderBackup.zip for folder restore
+        # "delta" keyword matches Delta APK(s), not folder backup
         matched_delta = delta_updater.filter_assets(assets, "delta")
         self.assertEqual(len(matched_delta), 1)
-        self.assertEqual(matched_delta[0]["name"], "Delta_FolderBackup.zip")
+        self.assertEqual(matched_delta[0]["name"], "Delta-2.735.apk")
+
+        # "delta_folder" / "folder:delta" / "delta_backup" matches Delta_FolderBackup.zip
+        matched_folder = delta_updater.filter_assets(assets, "delta_folder")
+        self.assertEqual(len(matched_folder), 1)
+        self.assertEqual(matched_folder[0]["name"], "Delta_FolderBackup.zip")
+
+        matched_folder_colon = delta_updater.filter_assets(assets, "folder:delta")
+        self.assertEqual(len(matched_folder_colon), 1)
+        self.assertEqual(matched_folder_colon[0]["name"], "Delta_FolderBackup.zip")
 
         # "shouko" keyword should match Shouko_FolderBackup.zip
         matched_shouko = delta_updater.filter_assets(assets, "shouko")
@@ -322,6 +331,15 @@ class TestDeltaUpdater(unittest.TestCase):
         matched_apk = delta_updater.filter_assets(assets, "delta_apk")
         self.assertEqual(len(matched_apk), 1)
         self.assertEqual(matched_apk[0]["name"], "Delta-2.735.apk")
+
+        # Tab spec resolver tests
+        self.assertEqual(delta_updater.resolve_tab_spec("1"), "1")
+        self.assertEqual(delta_updater.resolve_tab_spec("1-5"), "1-5")
+        self.assertEqual(delta_updater.resolve_tab_spec("hi"), "1")
+        self.assertEqual(delta_updater.resolve_tab_spec("com.tinh.vv.hi"), "1")
+        self.assertEqual(delta_updater.resolve_tab_spec("hr"), "10")
+        self.assertEqual(delta_updater.resolve_tab_spec("com.tinh.vv.hr"), "10")
+        self.assertIsNone(delta_updater.resolve_tab_spec("taskbar"))
 
         # "all" should exclude all DataBackup and FolderBackup archives
         matched_all = delta_updater.filter_assets(assets, "all")

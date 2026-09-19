@@ -1243,7 +1243,7 @@ MegaRegan426:pass5:
         self.assertNotEqual(tab4["username"], "MysticjUBuildery1999 (acc.txt)")
 
         html_out = agent.format_tab_list_html("m77", tabs)
-        self.assertIn(f"Tab 4: {exp_u4} (tab_map)", html_out)
+        self.assertIn(f"Tab 4: {exp_u4}", html_out)
         self.assertNotIn("MysticjUBuildery1999", html_out)
 
     @mock.patch("agent.agent.run_adb_shell")

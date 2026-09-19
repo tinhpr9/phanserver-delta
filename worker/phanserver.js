@@ -301,8 +301,11 @@ export async function handleUpdate(update, env, fleetState) {
       return;
     }
     const targetStr = parts[1];
-    const selection = parts[2] || "all";
+    let selection = parts[2] || "all";
     const targetPkg = parts[3] || null;
+    if (targetPkg && /^\d+(?:-\d+|,\d+)*$/.test(targetPkg) && ["delta", "arceus", "delta_apk", "arceus_apk", "apk", "clone"].includes(selection.toLowerCase()) && !selection.includes(":")) {
+      selection = `${selection}:${targetPkg}`;
+    }
     try {
       const ids = await resolveAndValidateTelegramTargets(targetStr, env, fleetState);
       const result = await fleetStateCall(env, fleetState, "/aot/hub/control", {

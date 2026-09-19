@@ -47,8 +47,9 @@ phanserver-delta/
 | **Kiểm tra trạng thái** | `/status` hoặc `STATUS` | Xem trạng thái hoạt động của Hub và danh sách máy Online/Offline. |
 | **Danh sách thiết bị** | `/devices` | Xem các mã máy đang kết nối (`m77`, `m72`...). |
 | **Xem file Release** | `/apks` hoặc `/release` | Xem danh sách file APK/ZIP mới nhất kèm số thứ tự (1, 2, 3...) và dung lượng. |
-| **Cài đặt 10 clone Roblox** | `/update m77 clone` | Tải và cài đặt toàn bộ 10 bản APK clone Roblox (`Delta-2.736..._clone*.apk`, ~1.6 GB). |
-| **Khôi phục cấu hình Delta** | `/update m77 delta` | Tải và bung file cấu hình `Delta_FolderBackup.zip` (7.8 MB) vào `/sdcard/Delta/`. |
+| **Cài đặt Delta Roblox** | `/update m77 delta` hoặc `/update m77 delta:1` | Tải và cài đặt toàn bộ 10 bản APK Delta clone (hoặc chỉ định tab như `delta:1`, `delta:1-5`). |
+| **Cài đặt Arceus Roblox** | `/update m77 arceus` hoặc `/update m77 arceus:1` | Tải và cài đặt toàn bộ 10 bản APK Arceus clone (hoặc chỉ định tab như `arceus:1`, `arceus:1-5`). |
+| **Khôi phục cấu hình Delta** | `/update m77 delta_folder` | Tải và bung file cấu hình `Delta_FolderBackup.zip` (7.8 MB) vào `/sdcard/Delta/`. |
 | **Cài đặt tất cả** | `/update all all` | Cài đặt toàn bộ các gói APK/ZIP trong Release cho mọi máy online. |
 | **Cài theo số thứ tự** | `/update m77 1` hoặc `1,2,5` | Cài đặt chính xác các file theo số thứ tự từ danh sách `/apks`. |
 | **Cài ngẫu nhiên** | `/update m77 random` | Bốc ngẫu nhiên gói cài đặt (`clone:random`, `random:3`). |

@@ -959,11 +959,40 @@ def filter_apks(
             arceus_matched.sort(key=lambda x: (len(x.name), x.name))
             return arceus_matched
 
+    # Delta / Clone filter
+    if sel in ("delta", "delta_apk", "delta_app", "apk:delta", "clone"):
+        delta_matched = [apk for apk in install_queue if "delta" in apk.name.lower()]
+        if delta_matched:
+            delta_matched.sort(key=lambda x: (len(x.name), x.name))
+            return delta_matched
+
     # Single keyword / App name filter (e.g. "opera", "1.1.1.1", "delta", "roblox")
     matched = [apk for apk in install_queue if sel in apk.name.lower()]
     if not matched:
         raise DeltaUpdaterError(f"Không tìm thấy APK nào khớp với '{selection}' trong Release")
     return matched
+
+
+TAB_SUFFIX_TO_INDEX: dict[str, str] = {
+    "hi": "1", "hj": "2", "hk": "3", "hl": "4", "hm": "5",
+    "hn": "6", "ho": "7", "hp": "8", "hq": "9", "hr": "10",
+}
+
+
+def resolve_tab_spec(target_pkg: Optional[str]) -> Optional[str]:
+    """Convert target_pkg (e.g. '1', '1-5', 'hi', 'com.tinh.vv.hi') to a tab index specification."""
+    if not target_pkg:
+        return None
+    raw = str(target_pkg).strip().lower()
+    if raw in TAB_SUFFIX_TO_INDEX:
+        return TAB_SUFFIX_TO_INDEX[raw]
+    if raw.startswith("com.tinh.vv."):
+        suffix = raw.split(".")[-1]
+        if suffix in TAB_SUFFIX_TO_INDEX:
+            return TAB_SUFFIX_TO_INDEX[suffix]
+    if re.match(r"^\d+(?:-\d+|,\d+)*$", raw):
+        return raw
+    return None
 
 
 def filter_assets(
@@ -1028,32 +1057,12 @@ def filter_assets(
     if exact_matches:
         return exact_matches
 
-    # Folder-specific aliases (prioritize clean single folder backup)
-    if sel in ("delta", "delta_folder", "folder:delta", "delta_backup"):
-        folder_match = [a for a in assets if a.get("name", "").lower() == "delta_folderbackup.zip"]
-        if folder_match:
-            return folder_match
-
-    if sel in ("shouko", "shouko_folder", "folder:shouko", "shouko_backup"):
-        folder_match = [a for a in assets if a.get("name", "").lower() == "shouko_folderbackup.zip"]
-        if folder_match:
-            return folder_match
-
-    # APK-specific aliases (e.g. delta_apk, apk:delta)
-    if sel in ("delta_apk", "delta_app", "apk:delta"):
-        apk_matches = [
-            a for a in assets
-            if "delta" in a.get("name", "").lower()
-            and (a.get("kind") == "apk" or a.get("name", "").lower().endswith((".apk", "_apks.zip")))
-            and not a.get("name", "").lower().endswith(("_folderbackup.zip", "_databackup.zip"))
-        ]
-        if apk_matches:
-            return apk_matches
-
-    # Keyword with tab index / range (e.g. "arceus:1", "arceus:1-5", "delta:3")
+    # Keyword with tab index / range (e.g. "arceus:1", "arceus:1-5", "delta:3", "clone:1")
     if ":" in sel and not (":random" in sel or ":rnd" in sel or sel.startswith("random:")):
         parts = sel.split(":")
         kw = parts[0] if parts[0] != "apk" else parts[1]
+        if kw == "clone":
+            kw = "delta"
         spec = parts[-1]
         if re.match(r"^\d+(?:-\d+|,\d+)*$", spec):
             kw_matches = [
@@ -1067,6 +1076,29 @@ def filter_assets(
                 sub_indices = parse_indices(spec, len(kw_matches))
                 if sub_indices:
                     return [kw_matches[i] for i in sub_indices]
+
+    # Folder-specific aliases (clean single folder backup)
+    if sel in ("delta_folder", "folder:delta", "delta_backup", "delta_data"):
+        folder_match = [a for a in assets if a.get("name", "").lower() == "delta_folderbackup.zip"]
+        if folder_match:
+            return folder_match
+
+    if sel in ("shouko", "shouko_folder", "folder:shouko", "shouko_backup"):
+        folder_match = [a for a in assets if a.get("name", "").lower() == "shouko_folderbackup.zip"]
+        if folder_match:
+            return folder_match
+
+    # Delta APK aliases (e.g. delta, delta_apk, delta_app, apk:delta, clone)
+    if sel in ("delta", "delta_apk", "delta_app", "apk:delta", "clone"):
+        delta_matches = [
+            a for a in assets
+            if "delta" in a.get("name", "").lower()
+            and (a.get("kind") == "apk" or a.get("name", "").lower().endswith((".apk", "_apks.zip")))
+            and not a.get("name", "").lower().endswith(("_folderbackup.zip", "_databackup.zip"))
+        ]
+        if delta_matches:
+            delta_matches.sort(key=lambda x: (len(x.get("name", "")), x.get("name", "")))
+            return delta_matches
 
     # Arceus APK aliases (e.g. arceus, arceus_apk, arceus_app, apk:arceus)
     if sel in ("arceus", "arceus_apk", "arceus_app", "apk:arceus"):
@@ -1114,7 +1146,22 @@ def run_delta_update(
     dl_dir.mkdir(parents=True, exist_ok=True)
     manifest = load_latest_release_manifest() if manifest_source is None else load_manifest(manifest_source)
     all_assets = _select_assets(manifest["assets"])
-    assets = filter_assets(all_assets, selection)
+
+    # Resolve effective selection if target_pkg specifies tab or index
+    effective_selection = selection
+    tab_spec = resolve_tab_spec(target_pkg)
+    if tab_spec:
+        sel_str = str(selection or "").strip().lower()
+        if not sel_str or sel_str in ("all", "apk", "roblox"):
+            effective_selection = tab_spec
+        elif sel_str in ("delta", "delta_apk", "delta_app", "clone") and ":" not in sel_str:
+            effective_selection = f"delta:{tab_spec}"
+        elif sel_str in ("arceus", "arceus_apk", "arceus_app") and ":" not in sel_str:
+            effective_selection = f"arceus:{tab_spec}"
+        elif ":" not in sel_str:
+            effective_selection = f"{sel_str}:{tab_spec}"
+
+    assets = filter_assets(all_assets, effective_selection)
     print(
         f"[RELEASE] tag={manifest.get('release_tag') or manifest.get('version')} "
         f"selected={len(assets)}/{len(all_assets)} assets",
