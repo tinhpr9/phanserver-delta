@@ -1,0 +1,181 @@
+--- a/tests/test_device_agent.py
++++ b/tests/test_device_agent.py
+@@ -274,8 +274,18 @@
+         self.assertFalse(validate_tailscale_cgnat_ip("172.16.0.1"))
+         self.assertFalse(validate_tailscale_cgnat_ip("127.0.0.1"))
+         self.assertFalse(validate_tailscale_cgnat_ip("100.300.1.1"))
++        self.assertFalse(validate_tailscale_cgnat_ip("100.1.2.2555"))
++        self.assertFalse(validate_tailscale_cgnat_ip("100.1.256.1"))
++        self.assertFalse(validate_tailscale_cgnat_ip("100.1.1.999"))
++        self.assertFalse(validate_tailscale_cgnat_ip("100.999.999.999"))
++        self.assertFalse(validate_tailscale_cgnat_ip("100.abc.1.1"))
++        self.assertFalse(validate_tailscale_cgnat_ip("100.1.2.3.4"))
++        self.assertFalse(validate_tailscale_cgnat_ip("100.-1.0.1"))
++        self.assertFalse(validate_tailscale_cgnat_ip("100.1.2.3/24"))
+         self.assertFalse(validate_tailscale_cgnat_ip("100.1.2"))
+         self.assertFalse(validate_tailscale_cgnat_ip(""))
+         self.assertFalse(validate_tailscale_cgnat_ip(None))
++        self.assertFalse(validate_tailscale_cgnat_ip(12345))
++        self.assertFalse(validate_tailscale_cgnat_ip(["100.64.0.1"]))
+ 
++    @mock.patch("agent.agent.send_ack", return_value=True)
++    @mock.patch("agent.agent.subprocess.run")
++    def test_tailscale_connect_malformed_ip_returns_failed(self, mock_subproc, mock_ack):
++        """Verify malformed IP outputs in stdout (100.300.1.1, 100.1.2.2555) are strictly rejected as FAILED."""
++        malformed_cases = [
++            ("CONNECTED: 100.300.1.1", "bad-octet-300"),
++            ("CONNECTED: 100.1.2.2555", "bad-suffix-2555"),
++            ("CONNECTED: 100.1.256.1", "bad-octet-256"),
++            ("CONNECTED: 100.abc.1.1", "bad-char-abc"),
++            ("CONNECTED: 100.1.2", "bad-short"),
++            ("CONNECTED: 100.1.2.3.4", "bad-long"),
++            ("CONNECTED: 192.168.1.1", "bad-lan-192"),
++            ("CONNECTED: 10.0.0.1", "bad-lan-10"),
++        ]
++        state = {}
++        for stdout_val, action_suffix in malformed_cases:
++            mock_subproc.return_value.returncode = 0
++            mock_subproc.return_value.stdout = f"{stdout_val}\n"
++            mock_subproc.return_value.stderr = ""
++            mock_ack.reset_mock()
++
++            action_id = f"ts-malformed-{action_suffix}"
++            message = {
++                "protocol": "fleet-batch-v1",
++                "action": "CONTROL_TAILSCALE",
++                "action_id": action_id,
++                "mode": "on",
++                "target_device_ids": [self.device_id],
++            }
++
++            handle_incoming_batch_action(
++                message, self.device_id, self.report_url, self.secret, state, self.state_path, self.links_path
++            )
++
++            self.assertTrue(mock_ack.called)
++            kwargs = mock_ack.call_args.kwargs
++            self.assertEqual(
++                kwargs["status"], "FAILED",
++                f"Expected status 'FAILED' for stdout '{stdout_val}', got '{kwargs['status']}'"
++            )
++            self.assertFalse(
++                kwargs["executed"],
++                f"Expected executed=False for stdout '{stdout_val}'"
++            )
++            self.assertIsNone(
++                kwargs["details"],
++                f"Expected details=None for stdout '{stdout_val}'"
++            )
++            self.assertIn("vpn_timeout_no_ip", kwargs["reason"])
++
++    @mock.patch("agent.agent.send_ack", return_value=True)
++    @mock.patch("agent.agent.subprocess.run")
++    def test_subprocess_timeout_and_signal_termination(self, mock_subproc, mock_ack):
++        """Verify subprocess.TimeoutExpired and SIGKILL termination return FAILED."""
++        state = {}
++        mock_subproc.side_effect = subprocess.TimeoutExpired(cmd="sh", timeout=30)
++        handle_incoming_batch_action(
++            {"protocol": "fleet-batch-v1", "action": "CONTROL_TAILSCALE", "action_id": "ts-timeout-exc", "mode": "on", "target_device_ids": [self.device_id]},
++            self.device_id, self.report_url, self.secret, state, self.state_path, self.links_path
++        )
++        self.assertEqual(mock_ack.call_args.kwargs["status"], "FAILED")
++        self.assertFalse(mock_ack.call_args.kwargs["executed"])
++
++        mock_subproc.side_effect = None
++        mock_subproc.return_value.returncode = -9
++        mock_subproc.return_value.stdout = ""
++        mock_subproc.return_value.stderr = "Killed\n"
++        handle_incoming_batch_action(
++            {"protocol": "fleet-batch-v1", "action": "CONTROL_TAILSCALE", "action_id": "ts-sigkill-exc", "mode": "on", "target_device_ids": [self.device_id]},
++            self.device_id, self.report_url, self.secret, state, self.state_path, self.links_path
++        )
++        self.assertEqual(mock_ack.call_args.kwargs["status"], "FAILED")
++        self.assertFalse(mock_ack.call_args.kwargs["executed"])
++
++    def test_screen_orientation_adversarial_resolutions(self):
++        """Test ultra-tall, square, and out-of-bound rotation inputs."""
++        coords_tall = compute_screen_coordinates(1080, 2400, rotation=0)
++        self.assertFalse(coords_tall["is_landscape"])
++        self.assertGreater(coords_tall["toggle_x"], 0)
++        self.assertLess(coords_tall["toggle_x"], 1080)
++        self.assertGreater(coords_tall["toggle_y"], 0)
++        self.assertLess(coords_tall["toggle_y"], 2400)
++
++        coords_sq = compute_screen_coordinates(1000, 1000, rotation=0)
++        self.assertEqual(coords_sq["center_x"], 500)
++        self.assertEqual(coords_sq["center_y"], 500)
++
++        coords_oob = compute_screen_coordinates(720, 1280, rotation=4)
++        self.assertFalse(coords_oob["is_landscape"])
++
++    def test_ui_keyevents_error_suppression(self):
++        """Verify UI keyevent commands in shell script have error suppression (|| true)."""
++        cmd = build_tailscale_command("on")
++        for ke in ["KEYCODE_BACK", "KEYCODE_HOME"]:
++            pattern = rf"input keyevent {ke}\s*>/dev/null\s*2>&1\s*\|\|\s*true"
++            self.assertRegex(cmd, pattern, f"Keyevent {ke} missing error suppression")
++
+--- a/tests/test_fleet_state_2pc.mjs
++++ b/tests/test_fleet_state_2pc.mjs
+@@ -412,6 +412,50 @@
+     throw new Error("Telegram off format mismatch: " + notifiedTelegram?.text);
+   }
+ 
++  // 7f. CONTROL_TAILSCALE malformed IP rejection (100.300.1.1 & 100.1.2.2555)
++  // Case A: octet > 255 (100.300.1.1)
++  const tsBadOctetRes = await (await fleet.controlFleetHub(new Request("https://localhost/aot/hub/control", {
++    method: "POST",
++    body: JSON.stringify({ protocol: "fleet-batch-v1", kind: "control_tailscale", mode: "on", target_device_ids: ["m1"], telegram_chat_id: 12345 })
++  }))).json();
++  const tsBadOctetActionId = tsBadOctetRes.tailscale.action_id;
++  await fleet.handleHeartbeat(new Request("https://localhost/report", {
++    method: "POST",
++    body: JSON.stringify({ device_id: "m1", device_group: "NOVA" })
++  }));
++  notifiedTelegram = null;
++  const tsBadOctetAck = await (await fleet.dispatchFleetAck(new Request("https://localhost/aot/ack", {
++    method: "POST",
++    body: JSON.stringify({
++      protocol: "fleet-batch-v1",
++      batch_action: "CONTROL_TAILSCALE",
++      device_id: "m1",
++      action_id: tsBadOctetActionId,
++      status: "OPENED",
++      executed: true,
++      details: "CONNECTED: 100.300.1.1"
++    })
++  }))).json();
++  if (tsBadOctetAck.status !== "FAILED") throw new Error("Expected malformed IP 100.300.1.1 to be rejected as FAILED: " + JSON.stringify(tsBadOctetAck));
++  if (!notifiedTelegram?.text?.includes("BẬT TAILSCALE THẤT BẠI") || notifiedTelegram?.text?.includes("THÀNH CÔNG")) {
++    throw new Error("Malformed IP 100.300.1.1 must not report success to Telegram: " + notifiedTelegram?.text);
++  }
++
++  // Case B: 4-digit octet suffix attack (100.1.2.2555)
++  const tsBadDigitRes = await (await fleet.controlFleetHub(new Request("https://localhost/aot/hub/control", {
++    method: "POST",
++    body: JSON.stringify({ protocol: "fleet-batch-v1", kind: "control_tailscale", mode: "on", target_device_ids: ["m1"], telegram_chat_id: 12345 })
++  }))).json();
++  const tsBadDigitActionId = tsBadDigitRes.tailscale.action_id;
++  await fleet.handleHeartbeat(new Request("https://localhost/report", {
++    method: "POST",
++    body: JSON.stringify({ device_id: "m1", device_group: "NOVA" })
++  }));
++  notifiedTelegram = null;
++  const tsBadDigitAck = await (await fleet.dispatchFleetAck(new Request("https://localhost/aot/ack", {
++    method: "POST",
++    body: JSON.stringify({
++      protocol: "fleet-batch-v1",
++      batch_action: "CONTROL_TAILSCALE",
++      device_id: "m1",
++      action_id: tsBadDigitActionId,
++      status: "OPENED",
++      executed: true,
++      details: "CONNECTED: 100.1.2.2555"
++    })
++  }))).json();
++  if (tsBadDigitAck.status !== "FAILED") throw new Error("Expected malformed IP 100.1.2.2555 to be rejected as FAILED: " + JSON.stringify(tsBadDigitAck));
++  if (!notifiedTelegram?.text?.includes("BẬT TAILSCALE THẤT BẠI") || notifiedTelegram?.text?.includes("THÀNH CÔNG") || notifiedTelegram?.text?.includes("100.1.2.255")) {
++    throw new Error("Malformed IP 100.1.2.2555 must not report success or truncated IP to Telegram: " + notifiedTelegram?.text);
++  }
++
+   // 8. CHECK_BAN is queued per device and acknowledged

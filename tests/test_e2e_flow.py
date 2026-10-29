@@ -96,6 +96,38 @@ class TestE2EFlow(unittest.TestCase):
             self.assertEqual(rerun_res["status"], "OPENED")
             mock_open.assert_not_called()  # Must not re-run launcher if already OPENED
 
+    def test_full_folder_backup_and_restore_e2e_lifecycle(self):
+        from agent import backup_manager
+
+        # 1. Prepare simulated source folder (e.g. Shouko or Delta)
+        src_folder = self.root_path / "SimulatedShouko"
+        src_folder.mkdir()
+        (src_folder / "agent_config.json").write_text('{"token": "test-tok-123", "device": "m72"}', encoding="utf-8")
+        (src_folder / "device_id.txt").write_text("m72\n", encoding="utf-8")
+        nested_dir = src_folder / "scripts"
+        nested_dir.mkdir()
+        (nested_dir / "auto_exec.lua").write_text('print("Delta Lua Hook Active")', encoding="utf-8")
+
+        # 2. Execute E2E Backup packaging
+        out_zip = backup_manager.create_folder_backup("shouko", str(src_folder), self.root_path)
+        self.assertTrue(out_zip.is_file())
+        self.assertEqual(out_zip.name, "Shouko_FolderBackup.zip")
+
+        # 3. Simulate E2E Restore pipeline on destination
+        dest_restore_dir = self.root_path / "RestoredTarget" / "SimulatedShouko"
+        with mock.patch("delta.delta_updater.root_available", return_value=True), \
+             mock.patch("subprocess.run") as mock_subproc:
+            mock_subproc.return_value = mock.Mock(returncode=0)
+
+            # Test validator in extract_zip_apks
+            extracted_apks = delta_updater.extract_zip_apks(out_zip, self.root_path / "apk_out")
+            self.assertEqual(extracted_apks, [])  # Should safely return empty list without error
+
+            # Test actual restore_zip_data logic
+            restore_ok = delta_updater.restore_zip_data(out_zip, target_pkg="shouko")
+            self.assertTrue(restore_ok)
+            self.assertTrue(mock_subproc.called)
+
 
 if __name__ == "__main__":
     unittest.main()

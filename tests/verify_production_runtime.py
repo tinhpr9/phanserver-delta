@@ -9,7 +9,8 @@ Verifies:
 4. Duplicate replay -> proof of zero duplicate execution (idempotency).
 5. Real UPDATE_DELTA with dedicated manifest -> SHA-256 verification -> root install -> postcondition.
 6. Same-command rerun -> proof of resume/idempotency.
-7. Verification of zero runtime dependency on Aotscript.
+7. Real /moveacc Transfer & Rule 34 Dual-Storage Invariance.
+8. Verification of zero runtime dependency on Aotscript.
 """
 
 import hashlib
@@ -25,7 +26,7 @@ import time
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from agent import agent, config, server_links
+from agent import account_manager, agent, config, server_links
 from delta import delta_updater
 
 
@@ -89,6 +90,7 @@ def main():
         }
         assert online_state["online"] is True
         assert "allocate_server_2pc" in online_state["capabilities"]
+        assert "move_acc" in online_state["capabilities"]
         print(f"[+] Device {device_id} transitioned successfully to ONLINE/READY with capabilities {online_state['capabilities']}")
 
         # 3. Real /phanserver <target> <tabs> -> PREPARE -> COMMIT -> server_links.txt
@@ -164,6 +166,7 @@ def main():
                     "name": "Delta-1.0.1.apk",
                     "url": f"file://{fake_apk}",
                     "sha256": expected_sha,
+                    "size": fake_apk.stat().st_size,
                 }
             ]
         }
@@ -186,6 +189,7 @@ def main():
                     "name": "Delta-1.0.2.apk",
                     "url": f"file://{fake_apk}",
                     "sha256": "badc0ffee0000000000000000000000000000000000000000000000000000000",
+                    "size": fake_apk.stat().st_size,
                 }
             ]
         }
@@ -203,8 +207,97 @@ def main():
         assert rerun_commit["status"] == "OPENED"
         print("[+] Rerun confirmed state stability & idempotency")
 
-        # 7. Confirm no runtime dependency on Aotscript paths/data/code
-        log_step("7. Old Repo Runtime Dependency Audit")
+        # 7. Real /moveacc Transfer & Rule 34 Dual-Storage Invariance
+        log_step("7. Real /moveacc Transfer & Rule 34 Dual-Storage Invariance")
+        temp_move_dir = tempfile.TemporaryDirectory(prefix="verify_moveacc_")
+        try:
+            mv_acc_path = pathlib.Path(temp_move_dir.name) / "acc.txt"
+            mv_dt_path = pathlib.Path(temp_move_dir.name) / "Data_Tong_Cookies.txt"
+            mv_state_path = pathlib.Path(temp_move_dir.name) / "state.json"
+            mv_links_path = pathlib.Path(temp_move_dir.name) / "server_links.txt"
+
+            sample_acc_text = (
+                "M109___(gag2)\n"
+                "MegaRegan426:pass426\n"
+                "UserAlpha:passA\n"
+                "UserBeta:passB\n\n"
+                "M77___(gag2)\n"
+                "Mega_Wiley623:passWiley\n"
+            )
+            sample_dt_text = (
+                "MegaRegan426:pass426:_|WARNING:-COOKIE1\n"
+                "UserAlpha:passA:_|WARNING:-COOKIE2\n"
+                "UserBeta:passB:_|WARNING:-COOKIE3\n"
+                "Mega_Wiley623:passWiley:_|WARNING:-COOKIE4\n"
+            )
+            mv_acc_path.write_text(sample_acc_text, encoding="utf-8")
+            mv_dt_path.write_text(sample_dt_text, encoding="utf-8")
+
+            orig_dt_hash = hashlib.sha256(mv_dt_path.read_bytes()).hexdigest()
+            orig_dt_size = mv_dt_path.stat().st_size
+
+            move_action_id = f"moveacc-{int(time.time()*1000)}-prodverify"
+            move_msg = {
+                "protocol": "fleet-batch-v1",
+                "action": "MOVE_ACC",
+                "action_id": move_action_id,
+                "source_m": "M109",
+                "target_m": "M77",
+                "count": 1,
+                "sync_drive": False,
+                "base_dir": temp_move_dir.name,
+                "target_device_ids": [device_id],
+            }
+
+            last_move_ack = {}
+            def mock_send_move_ack(report_url, secret, dev_id, action_id, **kwargs):
+                last_move_ack.update(kwargs)
+                return True
+
+            orig_send_ack = agent.send_ack
+            agent.send_ack = mock_send_move_ack
+            try:
+                handled = agent.handle_incoming_batch_action(
+                    move_msg, device_id, "https://worker/report", "secret", {}, mv_state_path, mv_links_path
+                )
+                assert handled is True, "handle_incoming_batch_action failed for MOVE_ACC"
+                assert last_move_ack.get("status") == "OPENED", f"MOVE_ACC failed: {last_move_ack}"
+                assert last_move_ack.get("executed") is True
+                details = json.loads(last_move_ack.get("details", "{}"))
+                assert details.get("count") == 1
+                assert details.get("source_remaining_count") == 2
+                assert details.get("target_current_count") == 2
+                print(f"[+] MOVE_ACC executed cleanly: moved {details.get('moved_accounts')}")
+
+                # Verify acc.txt backup created
+                baks = [f for f in os.listdir(temp_move_dir.name) if "acc.txt.bak_" in f]
+                assert len(baks) >= 1, "acc.txt backup was not created"
+                print(f"[+] acc.txt local backup verified: {baks[0]}")
+
+                # Verify Data_Tong_Cookies.txt 100% untouched
+                post_dt_hash = hashlib.sha256(mv_dt_path.read_bytes()).hexdigest()
+                post_dt_size = mv_dt_path.stat().st_size
+                assert orig_dt_hash == post_dt_hash, "Data_Tong_Cookies.txt SHA-256 changed!"
+                assert orig_dt_size == post_dt_size, "Data_Tong_Cookies.txt size changed!"
+                dt_baks = [f for f in os.listdir(temp_move_dir.name) if "Data_Tong_Cookies" in f and ".bak" in f]
+                assert len(dt_baks) == 0, f"Unexpected backup for Data_Tong_Cookies.txt: {dt_baks}"
+                print("[+] Data_Tong_Cookies.txt invariance verified: SHA-256 untouched, 0 backups created")
+
+                # Verify Idempotent Replay
+                last_move_ack.clear()
+                handled_replay = agent.handle_incoming_batch_action(
+                    move_msg, device_id, "https://worker/report", "secret", {}, mv_state_path, mv_links_path
+                )
+                assert handled_replay is True
+                assert last_move_ack.get("status") == "OPENED"
+                print("[+] MOVE_ACC duplicate replay idempotency verified")
+            finally:
+                agent.send_ack = orig_send_ack
+        finally:
+            temp_move_dir.cleanup()
+
+        # 8. Confirm no runtime dependency on Aotscript paths/data/code
+        log_step("8. Old Repo Runtime Dependency Audit")
         loaded_modules = [m for m in sys.modules.keys() if "Aotscript" in str(sys.modules[m])]
         assert len(loaded_modules) == 0, f"Old Aotscript modules loaded in sys.modules: {loaded_modules}"
         print("[+] sys.modules audit: 0 Aotscript references loaded")
@@ -248,7 +341,8 @@ class MockPMContext:
 
     def __enter__(self):
         def mock_run(args, **kwargs):
-            if isinstance(args, list) and len(args) > 0 and args[0] == "su" and "pm install" in args[2]:
+            args_str = " ".join(str(a) for a in args) if isinstance(args, list) else str(args)
+            if "pm install" in args_str:
                 m = subprocess.CompletedProcess(args, returncode=0, stdout="Success\n", stderr="")
                 return m
             return self.orig_run(args, **kwargs)
